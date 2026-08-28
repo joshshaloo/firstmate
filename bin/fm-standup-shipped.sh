@@ -212,10 +212,12 @@ that grants a head is the deploy step log line `production is now recorded at
 decided in one place: a step that declares a deployment environment identifies
 itself, and when none does - as with the wired bkt today - identification falls
 back to the step NAME, so a name IS load-bearing for finding the step, though it
-never grants a verdict. deploys[].identified carries that evidence class:
-environment/confident, name/weak, name/ambiguous when several steps match, or
-unparsed when the payload yielded no steps at all, which is a gap rather than an
-absence. A run is refused whole when any identified deploy step in it did not
+never grants a verdict. deploys[].identified carries that evidence class, and is
+one of exactly: environment/confident; name/weak; name/ambiguous when several
+steps match; name/absent when the payload parsed steps and the name test matched
+none of them, which is read as a known absence even though only the name was
+asked; or unparsed/unparsed when the payload yielded no steps at all, which is a
+gap rather than an absence. A run is refused whole when any identified deploy step in it did not
 complete successfully. A project on another forge reports no wired deploy source
 rather than a deployed claim. forge_prs.when_means states what its time really is:
 a Bitbucket pull request carries last activity, not a merge time.
@@ -680,7 +682,6 @@ for id in $PROJECT_IDS; do
           log_truncated=0
           if [ "${log_bytes:-0}" -ge "$FM_STANDUP_DEPLOY_LOG_BYTES" ]; then
             log_truncated=1
-            log_rc=0
           fi
           recorded=$(printf '%s' "$log_head" \
             | sed -n 's/.*production is now recorded at \([0-9a-f][0-9a-f]*\).*/\1/p' | tail -1)

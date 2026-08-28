@@ -73,6 +73,12 @@ The captain's standing rule is that done means deployed AND verified, never merg
   Say it as "the deploy that carried it succeeded", never as "production is serving it": this is not a read of production itself, and the record of what is served right now lives somewhere firstmate cannot reach.
 - **Deployed and verified** - a production check actually ran, and the closed record says so in its own words.
 
+**Known gap, and you must account for it before you trust a "merged, not yet deployed" line.**
+The shipped verdict rests on recognising the deploy step by its NAME, because the pipeline payload firstmate can read does not declare which step deploys.
+A project whose deploy step is named something the reader does not recognise - "Release to production", say - looks to it like a run that deployed nothing, so work that genuinely shipped is reported as merged and not yet deployed.
+This is a known gap with a fix already scheduled as its own task, not a subtlety to explain away.
+Until it lands, check `deploys[].identified` before speaking a "not yet deployed" line: when it says the identification rested on a name, say the deploy evidence for that project may simply not have been recognised, rather than telling the captain the work did not ship.
+
 Rules that keep this honest:
 
 - The standing principle, which governs the whole reader and not just one field: **the verdict defaults closed, and absence of evidence is reported as absence** - never resolved into a yes or a no.

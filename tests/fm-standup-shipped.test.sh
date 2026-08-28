@@ -182,9 +182,9 @@ head_fresh=$(git -C "$REPO_A" rev-parse main)
 
 runs=$(jq -nc --arg ok "$head_shipped" --arg bad "$head_fresh" '
   {values:[
-    {build_number:1042, state:{result:{name:"FAILED"}},
+    {build_number:1042, state:{result:{name:"FAILED"}}, deployment_environment:{name:"production"},
      target:{ref_name:"main", commit:{hash:$bad}}, created_on:"2026-08-28T10:00:00Z"},
-    {build_number:1041, state:{result:{name:"SUCCESSFUL"}},
+    {build_number:1041, state:{result:{name:"SUCCESSFUL"}}, deployment_environment:{name:"production"},
      target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-26T10:00:00Z"}]}')
 
 json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
@@ -214,12 +214,101 @@ assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "no usable
   "the missing deploy evidence is disclosed"
 
 # A vendor payload with no commit hash is the same class: no head, no verdict.
-runs=$(jq -nc '{values:[{build_number:9, state:{result:{name:"SUCCESSFUL"}}, target:{ref_name:"main"}}]}')
+runs=$(jq -nc '{values:[{build_number:9, state:{result:{name:"SUCCESSFUL"}},
+                         deployment_environment:{name:"production"}, target:{ref_name:"main"}}]}')
 json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
 deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
 [ "$deployed" = unknown ] || fail "a deploy run with no head must leave merges unknown, got: $deployed"
 
 pass "every unreadable deploy path withholds the verdict instead of guessing"
+
+# --- a missed field withholds a verdict, it never grants one -----------------
+#
+# A pipeline listing carries build, test, and custom runs alongside deploys, and a
+# vendor payload may not say which branch a run targeted. Both are excluded and
+# counted; neither may promote a merge to deployed.
+
+runs=$(jq -nc --arg ok "$head_fresh" '
+  {values:[{build_number:2001, state:{result:{name:"SUCCESSFUL"}},
+            deployment_environment:{name:"production"}, target:{commit:{hash:$ok}},
+            created_on:"2026-08-28T10:00:00Z"}]}')
+json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] \
+  || fail "a run whose branch cannot be determined must never grant deployed, got: $deployed"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "branch undetermined" \
+  "the excluded run says why it was excluded"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "branch could not be determined" \
+  "runs excluded for an undetermined branch are disclosed"
+
+runs=$(jq -nc --arg ok "$head_fresh" '
+  {values:[{build_number:2002, state:{result:{name:"SUCCESSFUL"}},
+            target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-28T10:00:00Z"}]}')
+json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] \
+  || fail "a green pipeline that deployed nothing must never grant deployed, got: $deployed"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "records no deployment" \
+  "a run carrying no deployment says so"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "record no deployment at all" \
+  "a repository whose runs record no deployment is disclosed, not read as a deploy train"
+
+pass "a pipeline listing is not a deploy train, and a missed field never grants a verdict"
+
+# --- a partial deploy read reports uncertainty, never a firm negative --------
+#
+# `no` is a claim too. This deployed head for the default branch forked BEFORE the
+# second merge, as a rewritten mainline leaves behind, so neither in-window merge
+# is contained in it; whether that means "not deployed" or "we could not tell"
+# depends entirely on whether the run list was read in full.
+
+git -C "$REPO_A" checkout -q -b rewritten main~2
+commit_at "$REPO_A" 2026-08-27T00:00:00Z rewritten-tip
+head_rewritten=$(git -C "$REPO_A" rev-parse rewritten)
+git -C "$REPO_A" checkout -q main
+
+runs=$(jq -nc --arg h "$head_rewritten" '
+  {values:[{build_number:3001, state:{result:{name:"SUCCESSFUL"}},
+            deployment_environment:{name:"production"},
+            target:{ref_name:"main", commit:{hash:$h}}, created_on:"2026-08-27T01:00:00Z"}]}')
+
+# Read in full: the heads actually read genuinely fail to contain either merge.
+json=$(FM_STANDUP_DEPLOY_RUNS=5 FAKE_BKT_RUNS="$runs" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | sort | join(",")')
+[ "$deployed" = no ] || fail "a complete deploy read may still say no, got: $deployed"
+
+# Truncated at the bound: a merge older than the oldest run read may have been
+# deployed by a run that was never fetched, so it degrades to unknown.
+json=$(FM_STANDUP_DEPLOY_RUNS=1 FAKE_BKT_RUNS="$runs" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
+v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .deployed')
+[ "$v11" = unknown ] || fail "a merge older than the oldest run read must be unknown, got: $v11"
+[ "$v12" = no ] || fail "a merge newer than every run read is genuinely undeployed, got: $v12"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "deploy read was partial" \
+  "a truncated deploy read is disclosed rather than presented as a firm negative"
+
+# A successful deployed run whose head is not in the local copy cannot be tested
+# at all, so nothing it might contain may be called undeployed.
+runs=$(jq -nc --arg ok "$head_shipped" '
+  {values:[{build_number:3101, state:{result:{name:"SUCCESSFUL"}},
+            deployment_environment:{name:"production"},
+            target:{ref_name:"main", commit:{hash:"0000000000000000000000000000000000000000"}},
+            created_on:"2026-08-28T10:00:00Z"},
+           {build_number:3100, state:{result:{name:"SUCCESSFUL"}},
+            deployment_environment:{name:"production"},
+            target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-26T10:00:00Z"}]}')
+json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
+v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .deployed')
+[ "$v11" = yes ] || fail "a proven containment survives an unreadable sibling head, got: $v11"
+[ "$v12" = unknown ] \
+  || fail "an unreadable deployed head must withhold the verdict, not deny it, got: $v12"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "head not in the local copy" \
+  "the untestable head is named"
+
+pass "a truncated or partial deploy read degrades to unknown instead of denying the ship"
 
 # --- merged pull requests are an opt-in network surface ---------------------
 
@@ -396,6 +485,84 @@ FM_STANDUP_MERGES=0 run "$HOME_A" "$FB_A" --window 72h >/dev/null 2>&1 || rc=$?
 expect_code 2 "$rc" "an invalid bound is refused"
 
 pass "fleet-sized sections are capped with counted opt-in expansion"
+
+# --- a squash-merging project reads as busy, never as quiet ------------------
+#
+# `--merges` alone would contribute zero rows for a project that squash- or
+# rebase-merges, and it would say so as an empty Shipped section rather than as
+# "could not see it" - the one failure the disclosure contract exists to prevent.
+
+HOME_E=$(make_home home-e)
+FB_E=$(make_fakebin "$HOME_E")
+printf -- '- epsilon [no-mistakes] - Squash-merging fixture (cloned 2026-08-01)\n' > "$HOME_E/data/projects.md"
+SQUASH="$HOME_E/projects/epsilon"
+fm_git_init_commit "$SQUASH"
+git -C "$SQUASH" branch -M main
+git -C "$SQUASH" remote add origin "git@github.com:acme/epsilon.git"
+printf 'squashed\n' > "$SQUASH/squashed.txt"
+git -C "$SQUASH" add -A
+GIT_AUTHOR_DATE=2026-08-27T09:00:00Z GIT_COMMITTER_DATE=2026-08-27T09:00:00Z \
+  git -C "$SQUASH" commit -qm "feat: land the whole change in one commit (#77)"
+printf 'direct\n' > "$SQUASH/direct.txt"
+git -C "$SQUASH" add -A
+GIT_AUTHOR_DATE=2026-08-27T10:00:00Z GIT_COMMITTER_DATE=2026-08-27T10:00:00Z \
+  git -C "$SQUASH" commit -qm "chore: a direct push with no pull request"
+git -C "$SQUASH" update-ref refs/remotes/origin/main main
+git -C "$SQUASH" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+touch "$SQUASH/.git/FETCH_HEAD"
+
+json=$(run "$HOME_E" "$FB_E" --window 72h --json)
+titles=$(printf '%s' "$json" | jq -r '[.merges[].title] | join("|")')
+assert_contains "$titles" "(#77)" "a squash merge carrying its pull request number is counted"
+assert_not_contains "$titles" "direct push" "a direct push carries no pull request and is not a merge"
+pr=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#77")) | .pr')
+[ "$pr" = "https://github.com/acme/epsilon/pull/77" ] \
+  || fail "a squash subject must still render its full pull request URL, got: $pr"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "carries no pull request number" \
+  "what the mainline read still cannot see is disclosed"
+
+pass "a squash-merging project contributes rows instead of reading as quiet"
+
+# --- merge times are absolute, so ranking and truncation are chronological ---
+
+when=$(printf '%s' "$json" | jq -r '.merges[0].when')
+case "$when" in
+  *T*Z) ;;
+  *) fail "merge times must be emitted in UTC so ordering is unambiguous, got: $when" ;;
+esac
+[ "$(printf '%s' "$json" | jq '.merges[0] | has("ct")')" = false ] \
+  || fail "the internal sort key must not leak into the output model"
+
+json=$(run "$HOME_A" "$FB_A" --window 72h --json)
+ordered=$(printf '%s' "$json" | jq -r '[.merges[].when] | . == (sort | reverse)')
+[ "$ordered" = true ] || fail "merges must be ranked newest first on absolute time"
+
+pass "merges are ranked on an unambiguous absolute time"
+
+# --- a second mate registry that cannot be followed is disclosed -------------
+
+ln -s "$MATE/data/backlog.md" "$HOME_A/data/secondmates.md"
+json=$(run "$HOME_A" "$FB_A" --window 72h --json)
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "is a symlink and was not followed" \
+  "a symlinked second mate registry is disclosed rather than silently dropped"
+rm -f "$HOME_A/data/secondmates.md"
+
+pass "a second mate registry that is not followed says so"
+
+# --- a forge time says what it actually is ----------------------------------
+
+prs=$(jq -nc '{values:[{id:11, title:"Merged long ago, commented on today",
+                        updated_on:"2026-08-26T09:05:00Z"}]}')
+json=$(FAKE_BKT_PRS="$prs" run "$HOME_A" "$FB_A" --window 72h --include-forge --json)
+means=$(printf '%s' "$json" | jq -r '.forge_prs[0].when_means')
+assert_contains "$means" "not a merge time" \
+  "a Bitbucket pull request time is labelled as last activity, never as a merge"
+[ "$(printf '%s' "$json" | jq '.forge_prs[0] | has("merged_at")')" = false ] \
+  || fail "the column must not still promise a merge time"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "timed by last activity" \
+  "what the forge time really is gets disclosed too"
+
+pass "a forge time is labelled for what it is instead of over-claiming a merge"
 
 # --- honest empty state with no registry at all -----------------------------
 

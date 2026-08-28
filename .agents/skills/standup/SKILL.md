@@ -68,21 +68,28 @@ Bound each to about five to seven items and disclose the rest as "and N more" ra
 What actually reached users inside the window.
 The captain's standing rule is that done means deployed AND verified, never merged, so this section separates three states per item and never blurs them:
 
-- **Merged, not yet deployed** - the change is on the default branch and nothing proves it is live.
-- **Deployed** - a successful deploy run's head was read and the merge commit is proven contained in it; cite the evidence (the deployed head, or the equivalent that project records).
+- **Merged, not yet deployed** - the reader returned `no`, meaning it read the deploy evidence in full and the change is genuinely not in it.
+- **Deployed** - a successful run that recorded a deployment had its head read and the merge commit is proven contained in it; cite the evidence (the deployed head, or the equivalent that project records).
 - **Deployed and verified** - a production check actually ran, and the closed record says so in its own words.
 
 Rules that keep this honest:
 
 - Never present a merge as a ship.
   The reader returns `unknown` for every merge it cannot prove deployed; render that as merged, never as shipped.
+- `unknown` and `no` are different sentences and must not be collapsed.
+  `no` means "merged, not yet deployed"; `unknown` means "we could not tell", so say that plainly and name what could not be read.
+  Never speak an `unknown` as "not yet deployed".
 - Containment is proven, not assumed.
   If a deploy run was superseded or stopped, the work it carried is shipped only when a LATER successful run contains that commit; the reader checks that against every successful head, so trust its verdict rather than run order.
+- A green pipeline is not a deploy.
+  The reader only counts a run that recorded a deployment, so when a project's runs record none it says so; report that as "we cannot see a deploy train there", never as shipped.
 - Verification is never inferred.
   No durable field records it, so read the closed record's own words (`--fields bodies`) and say "deployed, not yet verified" whenever a production check is not recorded.
 - A source that could not be read is disclosed, not silently skipped.
-  Read the reader's `omitted` lines and say what they cost in one plain sentence: an unrefreshed local copy, a deploy train that could not be read, a second mate's records on another host.
+  Read the reader's `omitted` lines and say what they cost in one plain sentence: an unrefreshed local copy, a deploy train that could not be read, a second mate's records on another host, a mainline read that hit its bound.
   Under-reporting silently is the failure this section exists to prevent.
+- Under `--include-forge`, a pull request row is timed by `when_means`, not always by its merge.
+  A Bitbucket pull request carries last activity rather than a merge time, so never date a ship from it; take the merge time from `merges` and use the forge list for titles and for merges a stale local copy has not picked up.
 - Every pull request appears as its full `https://...` URL before any shorthand.
 
 Empty state: "Nothing reached users in the last <window>."

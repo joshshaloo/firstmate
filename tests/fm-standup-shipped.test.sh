@@ -2,12 +2,15 @@
 # Behavior tests for the time-windowed shipped-evidence reader behind /standup.
 #
 # The load-bearing guarantee is that a merge is never reported as a ship: every
-# merge row stays `unknown` until a successful deploy run's head is read AND git
-# ancestry proves containment. These cases drive that boundary from both sides -
-# a proven containment, a merge that landed after the deployed head, a stopped
-# train that must not carry credit - plus the window arithmetic, the durable
-# backlog/archive close-date sources, the local-only default, and the honest
-# empty/unavailable states.
+# merge row stays `unknown` until a run's DEPLOY STEP is seen to have completed
+# successfully, its head is read, AND git ancestry proves containment. These cases
+# drive that boundary from every side - a proven containment, a merge that landed
+# after the deployed head, a deploy step that never finished, steps that could not
+# be read, a green run with no deploy step at all, a superseded train whose work a
+# later train provably carried, and a truncated read that must not harden into a
+# firm negative - plus the window arithmetic, the durable backlog/archive
+# close-date sources, the local-only default, and the honest empty/unavailable
+# states.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -27,8 +30,12 @@ NOW=2026-08-28T12:00:00Z
 fm_git_identity
 
 # A fakebin whose gh/bkt/curl RECORD every call to $NET_LOG, so a case can prove
-# the default path reaches no network at all. bkt answers with a Bitbucket-shaped
-# pipeline payload driven by $FAKE_BKT_RUNS.
+# the default path reaches no network at all. bkt answers with Bitbucket-shaped
+# payloads: $FAKE_BKT_RUNS for the pipeline listing, $FAKE_BKT_STEPS_<run> (or
+# $FAKE_BKT_STEPS) for that run's step breakdown, and $FAKE_BKT_LOG_<run> (or
+# $FAKE_BKT_LOG) for a deploy step's log. $FAKE_BKT_VIEW_FAIL and
+# $FAKE_BKT_LOG_FAIL are comma-separated run ids whose read fails outright, which
+# is how "the steps could not be read" is driven.
 make_fakebin() {  # <dir>
   local fb
   fb=$(fm_fakebin "$1")
@@ -41,8 +48,22 @@ SH
 #!/usr/bin/env bash
 echo "bkt $*" >> "$NET_LOG"
 [ "${FAKE_BKT_FAIL:-0}" = 1 ] && exit 1
-case "${1:-}" in
-  pr) printf '%s\n' "${FAKE_BKT_PRS:-{\"values\":[]\}}" ;;
+if [ "${1:-}" = pr ]; then
+  printf '%s\n' "${FAKE_BKT_PRS:-{\"values\":[]\}}"
+  exit 0
+fi
+run=${3:-}
+case "${2:-}" in
+  view)
+    case ",${FAKE_BKT_VIEW_FAIL:-}," in *,"$run",*) exit 1 ;; esac
+    v="FAKE_BKT_STEPS_$run"
+    printf '%s\n' "${!v:-${FAKE_BKT_STEPS:-{\"steps\":[]\}}}"
+    ;;
+  logs)
+    case ",${FAKE_BKT_LOG_FAIL:-}," in *,"$run",*) exit 1 ;; esac
+    v="FAKE_BKT_LOG_$run"
+    printf '%s\n' "${!v:-${FAKE_BKT_LOG:-}}"
+    ;;
   *) printf '%s\n' "${FAKE_BKT_RUNS:-{\"values\":[]\}}" ;;
 esac
 SH
@@ -173,34 +194,149 @@ pass "TOON and JSON are parity representations of one model"
 
 # --- containment: the merged-vs-deployed boundary ---------------------------
 #
-# The deployed head is the SECOND merge, so the merge that landed after it is
-# provably not contained. A newer STOPPED run for the newest merge must not carry
-# credit, which is the "superseded train" case stated in the script header.
+# A pipeline LISTING only nominates candidates; the deploy evidence is the run's
+# own deploy STEP. The deployed head is the SECOND merge, so the merge that landed
+# after it is provably not contained. A newer STOPPED run for the newest merge
+# must not carry credit, which is the "superseded train" case in the header.
 
 head_shipped=$(git -C "$REPO_A" rev-parse main~1)
 head_fresh=$(git -C "$REPO_A" rev-parse main)
 
+# A Bitbucket step breakdown: uuid, name, and a nested state/result.
+steps_json() {  # <state> <result> [name]
+  jq -nc --arg st "$1" --arg res "$2" --arg name "${3:-Deploy to production}" \
+    '{steps:[{uuid:"{step-build}", name:"Build and test",
+              state:{name:"COMPLETED", result:{name:"SUCCESSFUL"}}},
+             {uuid:"{step-deploy}", name:$name,
+              state:{name:$st, result:{name:$res}}}]}'
+}
+
 runs=$(jq -nc --arg ok "$head_shipped" --arg bad "$head_fresh" '
   {values:[
-    {build_number:1042, state:{result:{name:"FAILED"}}, deployment_environment:{name:"production"},
+    {build_number:1042, state:{result:{name:"FAILED"}},
      target:{ref_name:"main", commit:{hash:$bad}}, created_on:"2026-08-28T10:00:00Z"},
-    {build_number:1041, state:{result:{name:"SUCCESSFUL"}}, deployment_environment:{name:"production"},
+    {build_number:1041, state:{result:{name:"SUCCESSFUL"}},
      target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-26T10:00:00Z"}]}')
 
-json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
 v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
 v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .deployed')
-[ "$v11" = yes ] || fail "a merge contained in a successful deployed head must be yes, got: $v11"
-[ "$v12" = no ] || fail "a merge that landed after the successful head must be no, got: $v12"
+[ "$v11" = yes ] || fail "a merge contained in a successful deploy step's head must be yes, got: $v11"
+[ "$v12" = no ] || fail "a merge that landed after the deployed head must be no, got: $v12"
 
 assert_grep "bkt pipeline list" "$HOME_A/net.log" "--include-deploy is a network path"
+assert_grep "bkt pipeline view 1041" "$HOME_A/net.log" "the deploy evidence is read from the run's steps"
+grep -q "bkt pipeline view 1042" "$HOME_A/net.log" \
+  && fail "a run that did not succeed must never be probed for steps"
 
 # The failed run is still disclosed as evidence, but never grants a deployed verdict.
 res=$(printf '%s' "$json" | jq -r '[.deploys[] | "\(.run)=\(.result)"] | sort | join(" ")')
 assert_contains "$res" "1042=FAILED" "a stopped run stays visible as evidence"
 assert_contains "$res" "1041=SUCCESSFUL" "the successful run is the one that grants containment"
+step=$(printf '%s' "$json" | jq -r '.deploys[] | select(.run == "1041") | .deploy_step')
+[ "$step" = "COMPLETED/SUCCESSFUL" ] || fail "the deploy step's own state is reported, got: $step"
 
-pass "deployed is proven by ancestry against a successful head, and a stopped train grants nothing"
+pass "deployed is proven by a completed deploy step plus ancestry, and a stopped train grants nothing"
+
+# --- a deploy step that did not finish successfully grants nothing ----------
+
+while IFS='|' read -r st res; do
+  [ -n "$st" ] || continue
+  json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS="$(steps_json "$st" "$res")" \
+    run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+  deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+  [ "$deployed" = unknown ] \
+    || fail "a deploy step at $st/$res must leave every merge unknown, got: $deployed"
+done <<'STEPSTATES'
+IN_PROGRESS|-
+COMPLETED|FAILED
+COMPLETED|STOPPED
+STEPSTATES
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "did not complete successfully" \
+  "a deploy step that did not finish successfully says so"
+
+# A run whose steps cannot be read at all is the same class: no head, no verdict.
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_VIEW_FAIL=1041 \
+  FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] || fail "unreadable steps must leave merges unknown, got: $deployed"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "steps could not be read" \
+  "a run whose steps could not be read says so"
+
+# A green run with no deploy step at all is CI, not a deploy train.
+nodeploy=$(jq -nc '{steps:[{uuid:"{s1}", name:"Build and test",
+                            state:{name:"COMPLETED", result:{name:"SUCCESSFUL"}}}]}')
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS="$nodeploy" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] \
+  || fail "a green run that deployed nothing must never grant deployed, got: $deployed"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "no deploy step in this run" \
+  "a run with no deploy step says so"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "completed, successful deploy step" \
+  "a repository with no deploy step is disclosed, not read as a deploy train"
+
+pass "a pipeline listing is not a deploy train: only a completed, successful deploy step is"
+
+# --- the deploy log's recorded head beats the run's target commit ------------
+#
+# The run targets a commit that contains BOTH merges, but its log records an
+# earlier head as the one actually put in front of users. The recorded head wins,
+# so the later merge stays honestly undeployed.
+
+runs_log=$(jq -nc --arg h "$head_fresh" '
+  {values:[{build_number:1200, state:{result:{name:"SUCCESSFUL"}},
+            target:{ref_name:"main", commit:{hash:$h}}, created_on:"2026-08-28T10:00:00Z"}]}')
+json=$(FAKE_BKT_RUNS="$runs_log" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  FAKE_BKT_LOG="pushing bundle
+production is now recorded at $head_shipped
+done" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
+v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .deployed')
+[ "$v11" = yes ] || fail "the recorded head must still prove containment, got: $v11"
+[ "$v12" = no ] \
+  || fail "the recorded head must override the run's target commit, got: $v12"
+row=$(printf '%s' "$json" | jq -r '.deploys[] | select(.run == "1200") | "\(.head) \(.head_from)"')
+assert_contains "$row" "$head_shipped" "the recorded head is the one reported"
+assert_contains "$row" "recorded in the deploy log" "the row says where its head came from"
+
+# With no readable log the run's target commit is used, and says so.
+json=$(FAKE_BKT_RUNS="$runs_log" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  FAKE_BKT_LOG_FAIL=1200 run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+row=$(printf '%s' "$json" | jq -r '.deploys[] | select(.run == "1200") | "\(.head) \(.head_from)"')
+assert_contains "$row" "$head_fresh" "an unreadable log falls back to the run's target commit"
+assert_contains "$row" "the run's target commit" "the fallback names itself"
+v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .deployed')
+[ "$v12" = yes ] || fail "the target commit still proves containment, got: $v12"
+
+pass "the head recorded in the deploy log outranks the run's target commit"
+
+# --- a superseded train still counts through a LATER successful deploy -------
+#
+# The first deploy carried only the older merge and was then superseded. The later
+# deploy carried the newer one. Containment is tested against EVERY accepted head,
+# so recency never decides it and the older merge keeps its proven verdict.
+
+runs_two=$(jq -nc --arg old "$head_shipped" --arg new "$head_fresh" '
+  {values:[
+    {build_number:1302, state:{result:{name:"SUCCESSFUL"}},
+     target:{ref_name:"main", commit:{hash:$new}}, created_on:"2026-08-28T10:00:00Z"},
+    {build_number:1301, state:{result:{name:"STOPPED"}},
+     target:{ref_name:"main", commit:{hash:$new}}, created_on:"2026-08-27T10:00:00Z"},
+    {build_number:1300, state:{result:{name:"SUCCESSFUL"}},
+     target:{ref_name:"main", commit:{hash:$old}}, created_on:"2026-08-26T10:00:00Z"}]}')
+json=$(FAKE_BKT_RUNS="$runs_two" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = yes ] \
+  || fail "work carried by a later successful train must be yes, got: $deployed"
+assert_contains "$(printf '%s' "$json" | jq -r '[.deploys[] | select(.run == "1301") | .counted] | join("")')" \
+  "not a successful run" "the superseded train is disclosed, and grants nothing itself"
+
+pass "a superseded train is superseded by proof, never by run order"
 
 # --- an unreadable deploy train withholds the verdict rather than guessing ----
 
@@ -214,9 +350,10 @@ assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "no usable
   "the missing deploy evidence is disclosed"
 
 # A vendor payload with no commit hash is the same class: no head, no verdict.
-runs=$(jq -nc '{values:[{build_number:9, state:{result:{name:"SUCCESSFUL"}},
-                         deployment_environment:{name:"production"}, target:{ref_name:"main"}}]}')
-json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+runs_nohead=$(jq -nc '{values:[{build_number:9, state:{result:{name:"SUCCESSFUL"}},
+                                target:{ref_name:"main"}}]}')
+json=$(FAKE_BKT_RUNS="$runs_nohead" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
 deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
 [ "$deployed" = unknown ] || fail "a deploy run with no head must leave merges unknown, got: $deployed"
 
@@ -224,15 +361,14 @@ pass "every unreadable deploy path withholds the verdict instead of guessing"
 
 # --- a missed field withholds a verdict, it never grants one -----------------
 #
-# A pipeline listing carries build, test, and custom runs alongside deploys, and a
-# vendor payload may not say which branch a run targeted. Both are excluded and
-# counted; neither may promote a merge to deployed.
+# A vendor payload may not say which branch a run targeted. That run is excluded
+# and counted; it may never promote a merge to deployed.
 
-runs=$(jq -nc --arg ok "$head_fresh" '
+runs_nobranch=$(jq -nc --arg ok "$head_fresh" '
   {values:[{build_number:2001, state:{result:{name:"SUCCESSFUL"}},
-            deployment_environment:{name:"production"}, target:{commit:{hash:$ok}},
-            created_on:"2026-08-28T10:00:00Z"}]}')
-json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+            target:{commit:{hash:$ok}}, created_on:"2026-08-28T10:00:00Z"}]}')
+json=$(FAKE_BKT_RUNS="$runs_nobranch" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
 deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
 [ "$deployed" = unknown ] \
   || fail "a run whose branch cannot be determined must never grant deployed, got: $deployed"
@@ -241,19 +377,7 @@ assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "branch un
 assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "branch could not be determined" \
   "runs excluded for an undetermined branch are disclosed"
 
-runs=$(jq -nc --arg ok "$head_fresh" '
-  {values:[{build_number:2002, state:{result:{name:"SUCCESSFUL"}},
-            target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-28T10:00:00Z"}]}')
-json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
-deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
-[ "$deployed" = unknown ] \
-  || fail "a green pipeline that deployed nothing must never grant deployed, got: $deployed"
-assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "records no deployment" \
-  "a run carrying no deployment says so"
-assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "record no deployment at all" \
-  "a repository whose runs record no deployment is disclosed, not read as a deploy train"
-
-pass "a pipeline listing is not a deploy train, and a missed field never grants a verdict"
+pass "a run whose branch cannot be determined never grants a verdict"
 
 # --- a partial deploy read reports uncertainty, never a firm negative --------
 #
@@ -269,11 +393,11 @@ git -C "$REPO_A" checkout -q main
 
 runs=$(jq -nc --arg h "$head_rewritten" '
   {values:[{build_number:3001, state:{result:{name:"SUCCESSFUL"}},
-            deployment_environment:{name:"production"},
             target:{ref_name:"main", commit:{hash:$h}}, created_on:"2026-08-27T01:00:00Z"}]}')
 
 # Read in full: the heads actually read genuinely fail to contain either merge.
 json=$(FM_STANDUP_DEPLOY_RUNS=5 FAKE_BKT_RUNS="$runs" \
+  FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
   run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
 deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | sort | join(",")')
 [ "$deployed" = no ] || fail "a complete deploy read may still say no, got: $deployed"
@@ -281,6 +405,7 @@ deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | sort | j
 # Truncated at the bound: a merge older than the oldest run read may have been
 # deployed by a run that was never fetched, so it degrades to unknown.
 json=$(FM_STANDUP_DEPLOY_RUNS=1 FAKE_BKT_RUNS="$runs" \
+  FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
   run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
 v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
 v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .deployed')
@@ -289,17 +414,33 @@ v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .d
 assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "deploy read was partial" \
   "a truncated deploy read is disclosed rather than presented as a firm negative"
 
-# A successful deployed run whose head is not in the local copy cannot be tested
-# at all, so nothing it might contain may be called undeployed.
+# The step probe is bounded too, and stopping short is the same partial read.
+runs_many=$(jq -nc --arg h "$head_rewritten" --arg ok "$head_shipped" '
+  {values:[{build_number:3202, state:{result:{name:"SUCCESSFUL"}},
+            target:{ref_name:"main", commit:{hash:$h}}, created_on:"2026-08-27T02:00:00Z"},
+           {build_number:3201, state:{result:{name:"SUCCESSFUL"}},
+            target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-26T02:00:00Z"}]}')
+json=$(FM_STANDUP_DEPLOY_STEPS=1 FAKE_BKT_RUNS="$runs_many" \
+  FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "not probed within the step bound" \
+  "a candidate run left unprobed says so"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "deploy read was partial" \
+  "a step probe that stopped short is a partial read"
+v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
+[ "$v11" = unknown ] \
+  || fail "the run that would have proven this merge was never probed, so unknown, got: $v11"
+
+# A successful deploy whose head is not in the local copy cannot be tested at
+# all, so nothing it might contain may be called undeployed.
 runs=$(jq -nc --arg ok "$head_shipped" '
   {values:[{build_number:3101, state:{result:{name:"SUCCESSFUL"}},
-            deployment_environment:{name:"production"},
             target:{ref_name:"main", commit:{hash:"0000000000000000000000000000000000000000"}},
             created_on:"2026-08-28T10:00:00Z"},
            {build_number:3100, state:{result:{name:"SUCCESSFUL"}},
-            deployment_environment:{name:"production"},
             target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-26T10:00:00Z"}]}')
-json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
 v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
 v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .deployed')
 [ "$v11" = yes ] || fail "a proven containment survives an unreadable sibling head, got: $v11"
@@ -488,9 +629,11 @@ pass "fleet-sized sections are capped with counted opt-in expansion"
 
 # --- a squash-merging project reads as busy, never as quiet ------------------
 #
-# `--merges` alone would contribute zero rows for a project that squash- or
-# rebase-merges, and it would say so as an empty Shipped section rather than as
-# "could not see it" - the one failure the disclosure contract exists to prevent.
+# `--merges` alone would contribute zero rows for a project that squash-merges,
+# and it would say so as an empty Shipped section rather than as "could not see
+# it" - the one failure the disclosure contract exists to prevent. What counts is
+# a subject that SAYS "pull request #N": a bare trailing "(#N)" is equally an
+# issue reference, and a revert is not a ship at all.
 
 HOME_E=$(make_home home-e)
 FB_E=$(make_fakebin "$HOME_E")
@@ -499,29 +642,43 @@ SQUASH="$HOME_E/projects/epsilon"
 fm_git_init_commit "$SQUASH"
 git -C "$SQUASH" branch -M main
 git -C "$SQUASH" remote add origin "git@github.com:acme/epsilon.git"
-printf 'squashed\n' > "$SQUASH/squashed.txt"
-git -C "$SQUASH" add -A
-GIT_AUTHOR_DATE=2026-08-27T09:00:00Z GIT_COMMITTER_DATE=2026-08-27T09:00:00Z \
-  git -C "$SQUASH" commit -qm "feat: land the whole change in one commit (#77)"
-printf 'direct\n' > "$SQUASH/direct.txt"
-git -C "$SQUASH" add -A
-GIT_AUTHOR_DATE=2026-08-27T10:00:00Z GIT_COMMITTER_DATE=2026-08-27T10:00:00Z \
-  git -C "$SQUASH" commit -qm "chore: a direct push with no pull request"
+squash_commit() {  # <iso> <name> <subject>
+  printf '%s\n' "$2" > "$SQUASH/$2.txt"
+  git -C "$SQUASH" add -A
+  GIT_AUTHOR_DATE=$1 GIT_COMMITTER_DATE=$1 git -C "$SQUASH" commit -qm "$3"
+}
+squash_commit 2026-08-27T09:00:00Z squashed \
+  "feat: land the whole change in one commit (pull request #77)"
+squash_commit 2026-08-27T10:00:00Z direct "chore: a direct push with no pull request"
+squash_commit 2026-08-27T11:00:00Z issueref "chore: bump deps (#88)"
+squash_commit 2026-08-27T12:00:00Z reverted \
+  'Revert "feat: land the whole change (pull request #77)"'
 git -C "$SQUASH" update-ref refs/remotes/origin/main main
 git -C "$SQUASH" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 touch "$SQUASH/.git/FETCH_HEAD"
 
 json=$(run "$HOME_E" "$FB_E" --window 72h --json)
 titles=$(printf '%s' "$json" | jq -r '[.merges[].title] | join("|")')
-assert_contains "$titles" "(#77)" "a squash merge carrying its pull request number is counted"
+assert_contains "$titles" "pull request #77" "a squash merge that says so is counted"
 assert_not_contains "$titles" "direct push" "a direct push carries no pull request and is not a merge"
+assert_not_contains "$titles" "bump deps" "a bare trailing number is an issue reference, not a merge"
+assert_not_contains "$titles" "Revert" "a revert is never presented as a ship"
 pr=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#77")) | .pr')
 [ "$pr" = "https://github.com/acme/epsilon/pull/77" ] \
   || fail "a squash subject must still render its full pull request URL, got: $pr"
-assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "carries no pull request number" \
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "bare pull-request-shaped number" \
+  "a commit the reader could not confirm as a merge is disclosed as unseen, not dropped"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "does not say" \
   "what the mainline read still cannot see is disclosed"
 
-pass "a squash-merging project contributes rows instead of reading as quiet"
+pass "a squash-merging project contributes rows, and a revert or issue reference never does"
+
+# --- a deployed verdict never claims production was inspected ---------------
+
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "what production is serving right now" \
+  "the reader states plainly that it did not read production itself"
+
+pass "the deployed verdict says what it proves and what it does not"
 
 # --- merge times are absolute, so ranking and truncation are chronological ---
 

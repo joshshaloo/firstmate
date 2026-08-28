@@ -11,27 +11,36 @@
 # bin/fm-bearings-snapshot.sh and never reimplements it here.
 #
 # HONESTY CONTRACT. Merged is not shipped. Every merge row carries a separate
-# deployed verdict that is `unknown` unless a successful run that RECORDS A
-# DEPLOYMENT, on the project's own default branch, had its head read AND the merge
-# commit was PROVEN to be contained in it by git ancestry.
+# deployed verdict that is `unknown` unless a run on the project's own default
+# branch had a DEPLOY STEP that reached COMPLETED / SUCCESSFUL, that step's head
+# was read, AND the merge commit was PROVEN to be contained in it by git ancestry.
 # Containment is checked against EVERY such head gathered, never
 # assumed from ordering, so a superseded or stopped train never carries credit for
 # work only a later successful train shipped. Every path that cannot answer
 # degrades to `unknown` plus an omitted[] disclosure - an unreadable source, an
 # unfetched clone, a vendor payload without a commit, a run whose branch cannot be
-# determined, a run carrying no deployment at all - so this reader can only ever
+# determined, a run whose steps cannot be read or that has no deploy step - so
+# this reader can only ever
 # under-claim, never report an unproved ship. `no` is a firm negative and is
-# therefore also proof-bearing: a truncated run list, or a head that is not in the
+# therefore also proof-bearing: a truncated run list, a step probe that did not
+# reach every candidate, or a head that is not in the
 # local copy, downgrades to `unknown` rather than calling work undeployed.
-# Production VERIFICATION is not
+#
+# WHAT `deployed: yes` DOES NOT MEAN. It proves the deploy ran to a successful
+# finish and that the commit is contained in what that deploy carried. It is NOT
+# an independent read of what production is serving right now: the authoritative
+# record of the currently served head lives in an artifact this host holds no
+# credentials for. Production VERIFICATION is likewise not
 # emitted at all: no durable structured field records it, so the skill reads the
 # closed record's own words (--fields bodies) rather than being handed a guess.
 #
 # SOURCES, in the order they are trusted:
 #   1. Each registered project's default-branch git history in the window. The
 #      first-parent mainline is read whole and a commit counts when it is a real
-#      merge OR its subject carries the pull request number both supported forges
-#      write, so a squash-merging project reads as busy rather than as quiet. The
+#      merge OR its subject says "pull request #N" outright, the explicit form
+#      both supported forges write, so a squash-merging project reads as busy
+#      rather than as quiet. A bare trailing "(#N)" is equally an issue reference
+#      and is counted as unseen, not as a ship; a revert is never a ship. The
 #      read is bounded by FM_STANDUP_MERGE_SCAN and says when it hit that bound.
 #      Merge commits are durable project truth and need no network. The clone is
 #      read as it stands - this NEVER fetches, because firstmate does not write to
@@ -41,12 +50,18 @@
 #      registered LOCAL secondmate home, filtered on the row's own close date.
 #      bin/fm-backlog-parse-lib.sh owns that row syntax and its closed_on date.
 #   3. --include-deploy (network): the project's deploy train. Bitbucket Cloud
-#      repositories are read through `bkt pipeline list`; a project on any other
+#      repositories are read through `bkt`; a project on any other
 #      forge reports no wired deploy source, which is `unknown`, never `deployed`.
-#      That listing is NOT itself a deploy train - it carries build, test, and
-#      custom runs alike - so only a run that records a deployment environment is
-#      read as one, and a repository whose runs record none reports that instead
-#      of turning CI-green into a shipped claim.
+#      A pipeline LISTING is not itself a deploy train - it carries build, test,
+#      and custom runs alike - so `bkt pipeline list` only nominates candidates,
+#      and the evidence comes from each candidate's STEPS (`bkt pipeline view`):
+#      a run counts only when it has a deploy step that reached COMPLETED /
+#      SUCCESSFUL. Where that step's log is readable it is parsed for the head it
+#      recorded as served, which beats the run's target commit; either way the
+#      head still has to prove containment. A repository whose runs yield no such
+#      step reports that instead of turning CI-green into a shipped claim. The
+#      step probe is bounded by FM_STANDUP_DEPLOY_STEPS and says when it stopped
+#      short.
 #   4. --include-forge (network): merged pull requests in the window, through gh
 #      for GitHub remotes and bkt for Bitbucket ones. Local merge subjects already
 #      carry the PR number on both forges, so this only adds titles and catches
@@ -95,6 +110,7 @@ FM_STANDUP_MERGES=${FM_STANDUP_MERGES:-40}
 FM_STANDUP_MERGE_SCAN=${FM_STANDUP_MERGE_SCAN:-500}
 FM_STANDUP_CLOSED=${FM_STANDUP_CLOSED:-40}
 FM_STANDUP_DEPLOY_RUNS=${FM_STANDUP_DEPLOY_RUNS:-30}
+FM_STANDUP_DEPLOY_STEPS=${FM_STANDUP_DEPLOY_STEPS:-10}
 FM_STANDUP_FORGE_PRS=${FM_STANDUP_FORGE_PRS:-50}
 FM_STANDUP_NET_TIMEOUT=${FM_STANDUP_NET_TIMEOUT:-20}
 case "$FM_STANDUP_NET_TIMEOUT" in ''|*[!0-9]*|0) FM_STANDUP_NET_TIMEOUT=20 ;; esac
@@ -105,6 +121,7 @@ validate_bound FM_STANDUP_MERGES "$FM_STANDUP_MERGES"
 validate_bound FM_STANDUP_MERGE_SCAN "$FM_STANDUP_MERGE_SCAN"
 validate_bound FM_STANDUP_CLOSED "$FM_STANDUP_CLOSED"
 validate_bound FM_STANDUP_DEPLOY_RUNS "$FM_STANDUP_DEPLOY_RUNS"
+validate_bound FM_STANDUP_DEPLOY_STEPS "$FM_STANDUP_DEPLOY_STEPS"
 validate_bound FM_STANDUP_FORGE_PRS "$FM_STANDUP_FORGE_PRS"
 
 usage() {
@@ -124,32 +141,42 @@ Fields: schema, home, generated, window{spec,hours,since,since_date},
   projects{id,mode,path,forge,slug,branch,available,reason,fetched},
   merges{project,when,commit,pr,deployed,title},
   closed{id,home,project,closed_on,artifact,title},
-  deploys{project,source,run,result,branch,deployment,head,when,counted},
+  deploys{project,source,run,result,branch,deploy_step,head,head_from,when,counted},
   forge_prs{project,pr,when,when_means,title} (only under --include-forge),
   bodies{id,body} (only under --fields bodies),
   omitted{surface,reveal}.
 
 merges lists every merge commit on the default branch in the window plus every
-commit whose subject carries a pull request number, so a squash-merging project
-is not reported as quiet; merges.when is UTC. merges.deployed is yes only when a
-successful run that RECORDS A DEPLOYMENT, on that branch, had its head read and
+commit whose subject says "pull request #N" outright, so a squash-merging project
+is not reported as quiet; a bare trailing "(#N)" is equally an issue reference and
+is disclosed as unseen rather than counted, and a revert is never counted.
+merges.when is UTC. merges.deployed is yes only when a run on that branch had a
+DEPLOY STEP that reached COMPLETED / SUCCESSFUL, that step's head was read, and
 the merge commit is a proven git ancestor of it. It is no only when that read was
-complete and none of those heads contain the commit; a truncated run list or a
-head missing from the local copy leaves it unknown rather than calling the work
-undeployed. Everything else is unknown, always with a disclosure. A run whose
-branch cannot be determined, and a run that records no deployment, are excluded
-and counted: a missed field can only withhold a verdict, never grant one.
-Production verification is never emitted: read the closed record's own words with
+complete and none of those heads contain the commit; a truncated run list, a step
+probe that stopped short, or a head missing from the local copy leaves it unknown
+rather than calling the work undeployed. Everything else is unknown, always with a
+disclosure. A run whose branch cannot be determined, and a run whose steps cannot
+be read, are excluded and counted: a missed field can only withhold a verdict,
+never grant one.
+
+yes proves the deploy ran to a successful finish and carried the commit. It is NOT
+a read of what production is serving right now - that record lives in an artifact
+this host holds no credentials for - and production verification is never emitted:
+read the closed record's own words with
 --fields bodies. A project with no rows in the window is still listed under
 projects, so "quiet" is distinguishable from "not looked at".
 
-Deploy trains are wired for Bitbucket Cloud remotes (bkt pipeline list). That
-listing is not itself a deploy train, so only its deployment-recording runs are
-read as deploys. A project on another forge reports no wired deploy source rather
+Deploy trains are wired for Bitbucket Cloud remotes. `bkt pipeline list` only
+nominates candidate runs; the evidence is each run's deploy step from `bkt
+pipeline view`, and where that step's log is readable the head it recorded as
+served is preferred over the run's target commit (deploys[].head_from says which).
+A project on another forge reports no wired deploy source rather
 than a deployed claim. forge_prs.when_means states what its time really is: a
 Bitbucket pull request carries last activity, not a merge time.
 Bounds: FM_STANDUP_MERGES, FM_STANDUP_MERGE_SCAN, FM_STANDUP_CLOSED,
-FM_STANDUP_DEPLOY_RUNS, FM_STANDUP_FORGE_PRS, FM_STANDUP_NET_TIMEOUT.
+FM_STANDUP_DEPLOY_RUNS, FM_STANDUP_DEPLOY_STEPS, FM_STANDUP_FORGE_PRS,
+FM_STANDUP_NET_TIMEOUT.
 EOF
 }
 
@@ -281,6 +308,7 @@ FORGE_ROWS='[]'
 STALE_CLONES=0
 UNREADABLE_CLONES=0
 MERGE_SCAN_CAPPED=0
+MERGE_UNSEEN=0
 DEPLOY_UNAVAILABLE=0
 DEPLOY_NO_DEPLOYMENT=0
 DEPLOY_BRANCHLESS=0
@@ -322,22 +350,20 @@ for id in $PROJECT_IDS; do
     fi
     if [ -n "$branch" ] && git -C "$path" rev-parse --verify -q "$branch^{commit}" >/dev/null 2>&1; then
       available=yes
+      fetched_epoch=""
       if [ -f "$path/.git/FETCH_HEAD" ]; then
         fetched_epoch=$(file_mtime_epoch "$path/.git/FETCH_HEAD")
         case "$fetched_epoch" in
-          ''|*[!0-9]*) fetched="-" ;;
+          ''|*[!0-9]*) fetched_epoch="" ;;
           *) fetched=$(iso_of "$fetched_epoch" || printf '%s' "-") ;;
         esac
       fi
-      if [ "$fetched" = "-" ]; then
+      if [ -z "$fetched_epoch" ]; then
         reason="last refresh unknown; a stale local copy under-reports"
         STALE_CLONES=$((STALE_CLONES + 1))
-      else
-        fetched_epoch=$(epoch_of "$fetched" 2>/dev/null || printf '0')
-        if [ "$fetched_epoch" -lt "$SINCE_EPOCH" ]; then
-          reason="local copy last refreshed before the window opened"
-          STALE_CLONES=$((STALE_CLONES + 1))
-        fi
+      elif [ "$fetched_epoch" -lt "$SINCE_EPOCH" ]; then
+        reason="local copy last refreshed before the window opened"
+        STALE_CLONES=$((STALE_CLONES + 1))
       fi
     elif [ -z "$reason" ]; then
       reason="no readable default branch"
@@ -354,11 +380,14 @@ for id in $PROJECT_IDS; do
   [ "$available" = yes ] || continue
 
   # --- merges on the default branch inside the window -----------------------
-  # `--merges` alone would make a squash- or rebase-merging project read as quiet
-  # rather than as unseen, so the first-parent mainline is read whole and a row
-  # qualifies when it is a real merge commit OR its subject carries the pull
-  # request number both supported forges write. The read itself is bounded, not
-  # just the output: a one-year window on a busy mainline is otherwise unbounded.
+  # `--merges` alone would make a squash-merging project read as quiet rather
+  # than as unseen, so the first-parent mainline is read whole and a row
+  # qualifies when it is a real merge commit OR its subject says "pull request
+  # #N", the explicit form both supported forges write. A bare trailing "(#N)" on
+  # a single-parent commit is NOT that evidence - it is equally an issue
+  # reference - so those are counted as unseen and disclosed rather than
+  # presented as ships. A revert is not a ship either. The read itself is
+  # bounded, not just the output: a one-year window is otherwise unbounded.
   merges_tsv=$(git -C "$path" log "$branch" --first-parent \
     --max-count="$FM_STANDUP_MERGE_SCAN" \
     --since="$SINCE" --until="$NOW" \
@@ -367,12 +396,10 @@ for id in $PROJECT_IDS; do
   if [ "${scanned:-0}" -ge "$FM_STANDUP_MERGE_SCAN" ]; then
     MERGE_SCAN_CAPPED=$((MERGE_SCAN_CAPPED + 1))
   fi
-  # One pass over the whole TSV. The merge subject is the durable local pull
-  # request pointer on both supported forges - Bitbucket writes "(pull request
-  # #N)", GitHub writes "Merge pull request #N" or a trailing "(#N)" on a squash -
-  # and this is its single owner. A commit with no number and no second parent is
-  # a direct push, which is a real answer, not a failure.
-  new_merges=$(printf '%s' "$merges_tsv" | jq -R -s -c \
+  # One pass over the whole TSV, and the single owner of the local pull request
+  # pointer. The trailing "(#N)" form still supplies the LINK once a commit is
+  # already known to be a merge; it never qualifies one on its own.
+  merges_read=$(printf '%s' "$merges_tsv" | jq -R -s -c \
     --arg project "$id" --arg forge "$forge" --arg slug "$slug" '
     def trunc($n): tostring | gsub("\\s+"; " ") | if length > $n then .[:$n] + "…" else . end;
     def prnum:
@@ -391,26 +418,33 @@ for id in $PROJECT_IDS; do
       | {commit:.[0], ct:(.[1] | tonumber? // 0),
          parents:(.[2] | split(" ") | map(select(length > 0)) | length),
          subject:(.[3:] | join("\t"))}
-      | . + {num:(.subject | prnum)}
-      | select(.parents > 1 or .num != null)
-      | {project:$project, when:(.ct | todate), ct:.ct, commit:.commit,
-         pr:prurl(.num), deployed:"unknown", title:(.subject | trunc(90))} ]') \
-    || new_merges='[]'
-  MERGE_ROWS=$(printf '%s\n%s' "$MERGE_ROWS" "$new_merges" | jq -sc '.[0] + .[1]')
+      | . + {num:(.subject | prnum),
+             revert:(.subject | test("^[[:space:]]*Revert\\b")),
+             explicit:(.subject | test("pull request #[0-9]+"))} ]
+    | {rows: [ .[]
+               | select(.parents > 1 or (.explicit and (.revert | not)))
+               | {project:$project, when:(.ct | todate), ct:.ct, commit:.commit,
+                  pr:prurl(.num), deployed:"unknown", title:(.subject | trunc(90))} ],
+       unseen: ([ .[]
+                  | select(.parents == 1 and (.explicit | not) and (.revert | not))
+                  | select(.num != null) ] | length)}') \
+    || merges_read='{"rows":[],"unseen":0}'
+  MERGE_UNSEEN=$((MERGE_UNSEEN + $(printf '%s' "$merges_read" | jq '.unseen')))
+  MERGE_ROWS=$(printf '%s\n%s' "$MERGE_ROWS" "$merges_read" | jq -sc '.[0] + .[1].rows')
 
   # --- deploy train (opt-in, network) ---------------------------------------
   [ "$INCLUDE_DEPLOY" = 1 ] || continue
   if [ "$forge" != bitbucket ] || [ -z "$slug" ]; then
     DEPLOY_ROWS=$(printf '%s' "$DEPLOY_ROWS" | jq -c --arg project "$id" \
       '. + [{project:$project,source:"none",run:"-",result:"no wired deploy train",
-             branch:"-",deployment:"-",head:"-",when:"-",counted:"-"}]')
+             branch:"-",deploy_step:"-",head:"-",head_from:"-",when:"-",counted:"-"}]')
     DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
     continue
   fi
   if ! command -v bkt >/dev/null 2>&1; then
     DEPLOY_ROWS=$(printf '%s' "$DEPLOY_ROWS" | jq -c --arg project "$id" \
       '. + [{project:$project,source:"bkt",run:"-",result:"unavailable (bkt not found)",
-             branch:"-",deployment:"-",head:"-",when:"-",counted:"-"}]')
+             branch:"-",deploy_step:"-",head:"-",head_from:"-",when:"-",counted:"-"}]')
     DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
     continue
   fi
@@ -420,81 +454,141 @@ for id in $PROJECT_IDS; do
       --workspace "$workspace" --repo "$repo" --limit "$FM_STANDUP_DEPLOY_RUNS" 2>/dev/null); then
     DEPLOY_ROWS=$(printf '%s' "$DEPLOY_ROWS" | jq -c --arg project "$id" \
       '. + [{project:$project,source:"bkt",run:"-",result:"unavailable (deploy train read failed)",
-             branch:"-",deployment:"-",head:"-",when:"-",counted:"-"}]')
+             branch:"-",deploy_step:"-",head:"-",head_from:"-",when:"-",counted:"-"}]')
     DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
     continue
   fi
   # The vendor payload's shape is not a contract we control, so read the few
-  # plausible commit/result/branch/deployment paths and treat every miss as a
-  # withheld verdict. A missed field can only withhold a deployed verdict, never
-  # grant one: a run whose branch cannot be determined and a run that records no
-  # deployment are both excluded, because a pipeline listing carries build, test,
-  # and custom runs too and CI-green is not a deploy.
+  # plausible commit/result/branch paths and treat every miss as a withheld
+  # verdict. A missed field can only withhold a deployed verdict, never grant
+  # one: a run whose branch cannot be determined is excluded, not admitted.
   ok_runs=$(printf '%s' "$runs" | jq -c '
       def arr: if type == "array" then . elif type == "object" and (.values? | type) == "array" then .values else [] end;
       def str($v): $v | if type == "string" and . != "" then . else null end;
       def head_of: str(.target.commit.hash? // .commit.hash? // .target.commit? // .commit? // null);
       def result_of: (.state.result.name? // .result? // .state.name? // "") | ascii_upcase;
       def branch_of: str(.target.ref_name? // .target.branch? // .branch? // null);
-      def deployment_of:
-        str(.deployment_environment.name? // .deployment_environment?
-            // .environment.name? // .environment?
-            // .target.deployment_environment.name? // .target.deployment_environment?
-            // (if (.target.selector.type? // "") == "deployment"
-                then (.target.selector.pattern? // "deployment") else null end));
       [ arr[]
         | {run:((.build_number? // .uuid? // "-") | tostring),
            result:result_of,
            branch:(branch_of // "-"),
-           deployment:(deployment_of // "-"),
            head:(head_of // "-"),
            when:((.completed_on? // .created_on? // "-") | tostring)} ]' 2>/dev/null) || ok_runs='[]'
   runs_read=$(printf '%s' "$ok_runs" | jq 'length')
-  succeeded=$(printf '%s' "$ok_runs" | jq -r --arg b "${branch#origin/}" \
-    '.[] | select(.result == "SUCCESSFUL" and .deployment != "-" and .branch == $b) | .head' 2>/dev/null)
+  branchless=$(printf '%s' "$ok_runs" | jq \
+    '[ .[] | select(.result == "SUCCESSFUL" and .branch == "-") ] | length')
+  DEPLOY_BRANCHLESS=$((DEPLOY_BRANCHLESS + branchless))
+
+  # A pipeline LISTING is not a deploy train - it carries build, test, and custom
+  # runs alike - so deploy evidence comes from the run's STEPS. A candidate run is
+  # probed only when it succeeded on the default branch; it becomes a deploy head
+  # only when that run has a step that both deployed and reached COMPLETED /
+  # SUCCESSFUL. A run whose steps cannot be read, or that has no deploy step,
+  # yields no head at all. The predicate defaults closed at every stage.
+  candidate_runs=$(printf '%s' "$ok_runs" | jq -r --arg b "${branch#origin/}" \
+    '.[] | select(.result == "SUCCESSFUL" and .branch == $b) | .run' 2>/dev/null)
+  candidate_n=$(printf '%s' "$candidate_runs" | grep -c . || true)
   heads=""
   head_gaps=0
-  while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    if [ "$h" = "-" ] || ! git -C "$path" rev-parse --verify -q "$h^{commit}" >/dev/null 2>&1; then
-      head_gaps=$((head_gaps + 1))
-      continue
+  probed=0
+  STEP_ROWS='[]'
+  while IFS= read -r run_id; do
+    [ -n "$run_id" ] && [ "$run_id" != "-" ] || continue
+    [ "$probed" -lt "$FM_STANDUP_DEPLOY_STEPS" ] || break
+    probed=$((probed + 1))
+    if ! steps=$(fm_run_timed "$FM_STANDUP_NET_TIMEOUT" bkt pipeline view "$run_id" --json \
+        --workspace "$workspace" --repo "$repo" 2>/dev/null); then
+      steps=""
     fi
-    heads="$heads $h"
+    step=$(printf '%s' "$steps" | jq -c '
+        def arr: if type == "array" then . elif type == "object" then (.steps? // .values? // .pipeline?.steps? // []) else [] end
+                 | if type == "array" then . else [] end;
+        def str($v): $v | if type == "string" and . != "" then . else null end;
+        def state_of: (.state.name? // .state? // "") | tostring | ascii_upcase;
+        def result_of: (.state.result.name? // .result? // "") | tostring | ascii_upcase;
+        def env_of: str(.deployment_environment.name? // .deployment_environment?
+                        // .environment.name? // .environment? // null);
+        [ arr[]
+          | {uuid:((.uuid? // "-") | tostring), name:((.name? // "-") | tostring),
+             state:state_of, result:result_of, env:env_of}
+          | select(.env != null or (.name | ascii_downcase | test("deploy"))) ]
+        | (map(select(.state == "COMPLETED" and .result == "SUCCESSFUL")) | first)
+          // (first // null)' 2>/dev/null) || step=null
+    [ -n "$step" ] || step=null
+    step_state=$(printf '%s' "$step" | jq -r 'if . == null then "-" else "\(.state)/\(.result)" end')
+    if [ "$step" = null ]; then
+      if [ -z "$steps" ]; then
+        counted="steps could not be read"
+      else
+        counted="no deploy step in this run"
+      fi
+      head_gaps=$((head_gaps + 1))
+      head=-; head_from=-
+    elif [ "$(printf '%s' "$step" | jq -r '.state == "COMPLETED" and .result == "SUCCESSFUL"')" != true ]; then
+      counted="the deploy step did not complete successfully"
+      head=-; head_from=-
+    else
+      # The deploy step's own log records the head it put in front of users, and
+      # that beats the run's target commit whenever it can be read.
+      head=$(printf '%s' "$ok_runs" | jq -r --arg r "$run_id" '.[] | select(.run == $r) | .head' | head -1)
+      head_from="the run's target commit"
+      step_uuid=$(printf '%s' "$step" | jq -r '.uuid')
+      if [ -n "$step_uuid" ] && [ "$step_uuid" != "-" ] \
+         && log=$(fm_run_timed "$FM_STANDUP_NET_TIMEOUT" bkt pipeline logs "$run_id" \
+                    --step "$step_uuid" --workspace "$workspace" --repo "$repo" 2>/dev/null); then
+        recorded=$(printf '%s' "$log" \
+          | sed -n 's/.*production is now recorded at \([0-9a-f][0-9a-f]*\).*/\1/p' | tail -1)
+        if [ -n "$recorded" ]; then
+          head=$recorded
+          head_from="recorded in the deploy log"
+        fi
+      fi
+      if [ "$head" = "-" ] || ! git -C "$path" rev-parse --verify -q "$head^{commit}" >/dev/null 2>&1; then
+        counted="head not in the local copy"
+        head_gaps=$((head_gaps + 1))
+      else
+        counted="deploy head read"
+        heads="$heads $head"
+      fi
+    fi
+    STEP_ROWS=$(printf '%s' "$STEP_ROWS" | jq -c \
+      --arg run "$run_id" --arg step "$step_state" --arg head "$head" \
+      --arg head_from "$head_from" --arg counted "$counted" \
+      '. + [{run:$run,deploy_step:$step,head:$head,head_from:$head_from,counted:$counted}]')
   done <<EOF
-$succeeded
+$candidate_runs
 EOF
-  branchless=$(printf '%s' "$ok_runs" | jq \
-    '[ .[] | select(.result == "SUCCESSFUL" and .deployment != "-" and .branch == "-") ] | length')
-  DEPLOY_BRANCHLESS=$((DEPLOY_BRANCHLESS + branchless))
-  if [ "$(printf '%s' "$ok_runs" | jq '[ .[] | select(.result == "SUCCESSFUL" and .deployment != "-") ] | length')" -eq 0 ] \
-     && [ "$runs_read" -gt 0 ]; then
+  if [ "$candidate_n" -gt 0 ] && [ -z "${heads// /}" ]; then
     DEPLOY_NO_DEPLOYMENT=$((DEPLOY_NO_DEPLOYMENT + 1))
   fi
-  DEPLOY_ROWS=$(printf '%s\n%s' "$DEPLOY_ROWS" "$ok_runs" | jq -sc \
-    --arg project "$id" --arg heads "$heads" --arg b "${branch#origin/}" \
-    '($heads | split(" ") | map(select(length > 0))) as $readable
+  DEPLOY_ROWS=$(printf '%s\n%s\n%s' "$DEPLOY_ROWS" "$ok_runs" "$STEP_ROWS" | jq -sc \
+    --arg project "$id" --arg b "${branch#origin/}" \
+    '(.[2] | map({key:.run, value:.}) | from_entries) as $probe
      | .[0] + [ .[1][]
                 | . as $run
+                | ($probe[$run.run] // null) as $p
                 | {project:$project,source:"bkt",run:$run.run,result:$run.result,
-                   branch:$run.branch,deployment:$run.deployment,
-                   head:$run.head,when:$run.when,
-                   counted:(if $run.result != "SUCCESSFUL" then "not a successful run"
-                            elif $run.deployment == "-" then "records no deployment"
+                   branch:$run.branch,
+                   deploy_step:($p.deploy_step // "-"),
+                   head:($p.head // $run.head),
+                   head_from:($p.head_from // "-"),
+                   when:$run.when,
+                   counted:(if $p != null then $p.counted
+                            elif $run.result != "SUCCESSFUL" then "not a successful run"
                             elif $run.branch == "-" then "branch undetermined"
                             elif $run.branch != $b then "another branch"
-                            elif ($readable | index($run.head)) then "deploy head read"
-                            else "head not in the local copy" end)} ]')
+                            else "not probed within the step bound" end)} ]')
   if [ -z "${heads// /}" ]; then
     DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
     continue
   fi
   # A truncated or partial read must never produce a firm negative. The run list
-  # is capped, and an accepted run whose head is not in the local copy cannot be
-  # tested at all, so `no` survives only where the heads actually read genuinely
-  # fail to contain the commit.
+  # is capped, the step probe is capped, and an accepted run whose head is not in
+  # the local copy cannot be tested at all, so `no` survives only where the heads
+  # actually read genuinely fail to contain the commit.
   partial=0
   [ "$runs_read" -ge "$FM_STANDUP_DEPLOY_RUNS" ] && partial=1
+  [ "$candidate_n" -gt "$probed" ] && partial=1
   [ "$head_gaps" -gt 0 ] && partial=1
   if [ "$head_gaps" -gt 0 ]; then
     floor_ct=9999999999
@@ -672,6 +766,7 @@ MODEL=$(jq -n \
   --argjson remote_mates "$REMOTE_MATES" --argjson unreadable_mates "$UNREADABLE_MATES" \
   --argjson undated "$UNDATED_CLOSED" \
   --argjson scan_capped "$MERGE_SCAN_CAPPED" --argjson scan_bound "$FM_STANDUP_MERGE_SCAN" \
+  --argjson merge_unseen "$MERGE_UNSEEN" \
   --argjson no_deployment "$DEPLOY_NO_DEPLOYMENT" --argjson branchless "$DEPLOY_BRANCHLESS" \
   --argjson deploy_partial "$DEPLOY_PARTIAL" \
   --argjson activity_timed "$FORGE_ACTIVITY_TIMED" \
@@ -704,17 +799,19 @@ MODEL=$(jq -n \
         (if $remote_mates > 0 then {surface:("second mate homes on another host, not read here: \($remote_mates)"), reveal:"ask that mate for its own closed work"} else empty end),
         (if $unreadable_mates > 0 then {surface:("second mate homes with no readable records: \($unreadable_mates)"), reveal:"inspect the registered home paths"} else empty end),
         (if $mate_registry_unfollowed == 1 then {surface:"the second mate registry is a symlink and was not followed, so no second mate closed work is counted", reveal:"replace data/secondmates.md with the file itself"} else empty end),
+        (if $merge_unseen > 0 then {surface:("mainline commits carrying only a bare pull-request-shaped number, which is equally an issue reference and is not counted as a merge: \($merge_unseen)"), reveal:"--include-forge, which reads the merged list the forge itself keeps"} else empty end),
         (if $scan_capped > 0 then {surface:("projects whose mainline read hit its bound of \($scan_bound) commits: \($scan_capped); older merges in the window were not read"), reveal:"raise FM_STANDUP_MERGE_SCAN, or narrow --window"} else empty end),
         (if $undated > 0 then {surface:("closed records carrying no close date, so they cannot be placed in any window: \($undated)"), reveal:"add a close date to those backlog rows"} else empty end),
         (if $include_deploy == 1 and $deploy_gaps > 0 then {surface:("projects with no usable deployed head: \($deploy_gaps); their merges stay unconfirmed, never deployed"), reveal:"see deploys[].result"} else empty end),
-        (if $include_deploy == 1 and $no_deployment > 0 then {surface:("projects whose successful runs record no deployment at all: \($no_deployment); a pipeline listing carries build, test, and custom runs, and CI-green is not a deploy"), reveal:"see deploys[].counted"} else empty end),
+        (if $include_deploy == 1 and $no_deployment > 0 then {surface:("projects where no run yielded a completed, successful deploy step: \($no_deployment); a pipeline listing carries build, test, and custom runs, and CI-green is not a deploy"), reveal:"see deploys[].counted and deploys[].deploy_step"} else empty end),
         (if $include_deploy == 1 and $branchless > 0 then {surface:("successful runs excluded because their branch could not be determined: \($branchless); they can never grant a deployed verdict"), reveal:"see deploys[].counted"} else empty end),
-        (if $include_deploy == 1 and $deploy_partial > 0 then {surface:("projects whose deploy read was partial: \($deploy_partial); merges older than the oldest run read stay unconfirmed rather than being called undeployed"), reveal:"raise FM_STANDUP_DEPLOY_RUNS, or refresh the local copy"} else empty end),
+        (if $include_deploy == 1 and $deploy_partial > 0 then {surface:("projects whose deploy read was partial: \($deploy_partial); merges older than the oldest deploy head read stay unconfirmed rather than being called undeployed"), reveal:"raise FM_STANDUP_DEPLOY_RUNS or FM_STANDUP_DEPLOY_STEPS, or refresh the local copy"} else empty end),
         (if $include_forge == 1 and $forge_gaps > 0 then {surface:("projects whose merged pull requests could not be read: \($forge_gaps)"), reveal:"check the forge credentials"} else empty end),
         (if $include_forge == 1 and $activity_timed > 0 then {surface:("projects whose pull requests are timed by last activity, not by merge time: \($activity_timed); a Bitbucket pull request merged before the window can appear in it"), reveal:"see forge_prs[].when_means, and trust merges[] for the merge time"} else empty end),
         (if $include_deploy == 1 then empty else {surface:"deploy evidence; every merge stays unconfirmed", reveal:"--include-deploy"} end),
         (if $include_forge == 1 then empty else {surface:"merged pull requests from the forge", reveal:"--include-forge"} end),
-        {surface:"work landed by a rebase whose subject carries no pull request number; the mainline read counts merge commits and pull-request-numbered subjects", reveal:"--include-forge, which reads the merged list the forge itself keeps"},
+        {surface:"work landed by a rebase or squash whose subject does not say \"pull request #N\"; the mainline read counts merge commits and subjects that say it outright, and a revert is never counted as a ship", reveal:"--include-forge, which reads the merged list the forge itself keeps"},
+        {surface:"what production is serving right now; a deployed verdict proves the deploy ran and carried the commit, it is not a read of production itself", reveal:"the served head lives in an artifact this host holds no credentials for"},
         {surface:"production verification; no durable field records it", reveal:"read the closed record body with --fields bodies"} ]) }
 ') || { echo "fm-standup-shipped: projection failed" >&2; exit 1; }
 

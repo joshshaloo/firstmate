@@ -69,12 +69,14 @@ What actually reached users inside the window.
 The captain's standing rule is that done means deployed AND verified, never merged, so this section separates three states per item and never blurs them:
 
 - **Merged, not yet deployed** - the reader returned `no`, meaning it read the deploy evidence in full and the change is genuinely not in it.
-- **Deployed** - a deploy step ran to a successful finish and the merge commit is proven contained in the head that deploy carried; cite the evidence (the deployed head, or the equivalent that project records).
+- **Deployed** - a deploy recorded the head it put in front of users, and the merge commit is proven contained in that head; cite the evidence (the recorded head, or the equivalent that project records).
   Say it as "the deploy that carried it succeeded", never as "production is serving it": this is not a read of production itself, and the record of what is served right now lives somewhere firstmate cannot reach.
 - **Deployed and verified** - a production check actually ran, and the closed record says so in its own words.
 
 Rules that keep this honest:
 
+- The standing principle, which governs the whole reader and not just one field: **the verdict defaults closed, and absence of evidence is reported as absence** - never resolved into a yes or a no.
+  Nothing is inferred from a name, a position, an ordering, or a recency, so when the reader says it could not tell, say that; do not reason your way to a verdict it declined to give.
 - Never present a merge as a ship.
   The reader returns `unknown` for every merge it cannot prove deployed; render that as merged, never as shipped.
 - `unknown` and `no` are different sentences and must not be collapsed.
@@ -82,14 +84,19 @@ Rules that keep this honest:
   Never speak an `unknown` as "not yet deployed".
 - Containment is proven, not assumed.
   If a deploy run was superseded or stopped, the work it carried is shipped only when a LATER successful run contains that commit; the reader checks that against every successful head, so trust its verdict rather than run order.
-- A green build is not a deploy.
-  The reader only counts a run whose deploy step finished successfully, so when a project's runs yield none it says so; report that as "we cannot see a deploy train there", never as shipped.
+- A green build is not a deploy, and neither is a step named "deploy".
+  What counts is a deploy that recorded the head it served; when a project's runs record none, the reader says so, and that is "we cannot see a deploy train there", never shipped.
+- The reasons a deploy proved nothing are different sentences, and the reader keeps them apart.
+  A run refused because one of its deploy steps failed, a log that could not be read, a log cut short, and a log that recorded nothing are four different facts.
+  Read `deploys[].counted` and say the one that applies; never flatten them into "not deployed".
+- A deploy that ran but proved nothing is not a failed deploy.
+  Say "it deployed, we could not confirm what it put live" rather than implying the deploy broke.
 - A revert is not a ship, and a number in a subject line is not a merge.
   The reader counts merge commits and subjects that say "pull request #N" outright; anything else it saw is disclosed as unseen, so read that line and say the project could not be fully seen rather than calling it quiet.
 - Verification is never inferred.
   No durable field records it, so read the closed record's own words (`--fields bodies`) and say "deployed, not yet verified" whenever a production check is not recorded.
 - A source that could not be read is disclosed, not silently skipped.
-  Read the reader's `omitted` lines and say what they cost in one plain sentence: an unrefreshed local copy, a deploy train that could not be read, a second mate's records on another host, a mainline read that hit its bound.
+  Read the reader's `omitted` lines and say what they cost in one plain sentence: an unrefreshed local copy, a deploy train that could not be read, a second mate's records on another host, a mainline read that hit its bound, a deploy budget spent before every run was checked.
   Under-reporting silently is the failure this section exists to prevent.
 - Under `--include-forge`, a pull request row is timed by `when_means`, not always by its merge.
   A Bitbucket pull request carries last activity rather than a merge time, so never date a ship from it; take the merge time from `merges` and use the forge list for titles and for merges a stale local copy has not picked up.

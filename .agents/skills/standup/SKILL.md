@@ -76,7 +76,7 @@ The captain's standing rule is that done means deployed AND verified, never merg
 Rules that keep this honest:
 
 - The standing principle, which governs the whole reader and not just one field: **the verdict defaults closed, and absence of evidence is reported as absence** - never resolved into a yes or a no.
-  Nothing is inferred from a name, a position, an ordering, or a recency, so when the reader says it could not tell, say that; do not reason your way to a verdict it declined to give.
+  No verdict is inferred from a position, an ordering, or a recency, and a step name can only help LOCATE evidence, never stand in for it, so when the reader says it could not tell, say that; do not reason your way to a verdict it declined to give.
 - Never present a merge as a ship.
   The reader returns `unknown` for every merge it cannot prove deployed; render that as merged, never as shipped.
 - `unknown` and `no` are different sentences and must not be collapsed.
@@ -86,8 +86,11 @@ Rules that keep this honest:
   If a deploy run was superseded or stopped, the work it carried is shipped only when a LATER successful run contains that commit; the reader checks that against every successful head, so trust its verdict rather than run order.
 - A green build is not a deploy, and neither is a step named "deploy".
   What counts is a deploy that recorded the head it served; when a project's runs record none, the reader says so, and that is "we cannot see a deploy train there", never shipped.
+- How the reader FOUND the deploy step is itself part of the evidence, and it says so in `deploys[].identified`.
+  Where the project's own pipeline declares a deployment environment the identification is solid; where it does not, the reader falls back to the step's name, which is a convention rather than a fact, and a differently-named step is invisible to it.
+  When that line says the identification rested on a name, or that more than one step matched, or that the steps did not parse at all, treat the picture as incomplete and say so rather than reporting the project as fully seen.
 - The reasons a deploy proved nothing are different sentences, and the reader keeps them apart.
-  A run refused because one of its deploy steps failed, a log that could not be read, a log cut short, and a log that recorded nothing are four different facts.
+  A run refused because one of its deploy steps failed, a log that could not be read, a log cut short, a log that recorded nothing, a step payload that did not parse, and an identification the payload could not settle are distinct facts.
   Read `deploys[].counted` and say the one that applies; never flatten them into "not deployed".
 - A deploy that ran but proved nothing is not a failed deploy.
   Say "it deployed, we could not confirm what it put live" rather than implying the deploy broke.

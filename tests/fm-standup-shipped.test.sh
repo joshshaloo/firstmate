@@ -8,8 +8,10 @@
 # every side - a proven containment, a merge that landed after the recorded head,
 # a run refused because one deploy step failed while another succeeded, a log that
 # records nothing, a log that could not be read, a log cut short at its byte
-# bound, steps that could not be read, a green run with no deploy step at all (a
-# known fact, not a gap), a superseded train whose work a later train provably
+# bound (including a multibyte one), steps that could not be read, a payload that
+# parsed no steps at all, a deploy step the name test cannot see, an ambiguous
+# identification, a green run with no deploy step (a known fact, not a gap), a
+# superseded train whose work a later train provably
 # carried, and a truncated or budget-exhausted read that must not harden into a
 # firm negative - plus the window arithmetic, the durable backlog/archive
 # close-date sources, the local-only default, and the honest empty/unavailable
@@ -39,7 +41,8 @@ fm_git_identity
 # $FAKE_BKT_LOG) for a deploy step's log, with $FAKE_BKT_LOG_STEP_<uuid> winning
 # over both so one run's steps can answer differently. $FAKE_BKT_VIEW_FAIL and
 # $FAKE_BKT_LOG_FAIL are comma-separated run ids whose read fails outright, which
-# is how "the steps could not be read" is driven.
+# is how "the steps could not be read" is driven; the default step payload parses
+# to no steps at all, which is the separate "could not be identified" case.
 make_fakebin() {  # <dir>
   local fb
   fb=$(fm_fakebin "$1")
@@ -328,10 +331,71 @@ STEPSTATES
 
 pass "a run is refused whole when any deploy step in it did not complete successfully"
 
+# --- how the deploy step was IDENTIFIED is itself evidence, and it says so ----
+#
+# One owner answers "which step is the production deploy, and what does that rest
+# on". A step that declares a deployment environment identifies itself; when none
+# does, identification falls back to the step name, which is a convention rather
+# than a fact, and every row carries which of the two it was.
+
+declared=$(jq -nc '{steps:[
+  {uuid:"{step-build}", name:"Build and test",
+   state:{name:"COMPLETED", result:{name:"SUCCESSFUL"}}},
+  {uuid:"{step-ship}", name:"Ship it", deployment_environment:{name:"production"},
+   state:{name:"COMPLETED", result:{name:"SUCCESSFUL"}}}]}')
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS="$declared" \
+  FAKE_BKT_LOG="$(recorded_log "$head_shipped")" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
+[ "$v11" = yes ] || fail "a declared deployment environment identifies its own step, got: $v11"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].identified')" "environment/confident" \
+  "a self-declaring step is reported as a confident identification"
+assert_not_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "identified only by its NAME" \
+  "a declared environment needs no name-dependence disclosure"
+
+# The wired bkt declares no environment, so the name carries the identification -
+# and a deploy step named something else is invisible to that test. The reader
+# says so rather than presenting the project as fully seen.
+unmatched=$(jq -nc '{steps:[{uuid:"{step-release}", name:"Release to production",
+                             state:{name:"COMPLETED", result:{name:"SUCCESSFUL"}}}]}')
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS="$unmatched" \
+  FAKE_BKT_LOG="$(recorded_log "$head_shipped")" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] \
+  || fail "a step the name test cannot see must never grant a verdict, got: $deployed"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].identified')" "name/absent" \
+  "the row says the identification rested on a name and found nothing"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "identified only by its NAME" \
+  "name-based identification is disclosed as the weak evidence it is"
+
+# Two deploy-named steps: which one is production is not decidable from the
+# payload, so the identification is reported ambiguous and only a recorded head
+# settles it.
+ambiguous=$(jq -nc '{steps:[
+  {uuid:"{step-staging}", name:"Deploy to staging",
+   state:{name:"COMPLETED", result:{name:"SUCCESSFUL"}}},
+  {uuid:"{step-prod}", name:"Deploy to production",
+   state:{name:"COMPLETED", result:{name:"SUCCESSFUL"}}}]}')
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS="$ambiguous" \
+  FAKE_BKT_LOG_STEP_stepprod="$(recorded_log "$head_shipped")" \
+  FAKE_BKT_LOG_STEP_stepstaging="staging is up, nothing recorded" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].identified')" "name/ambiguous" \
+  "several matching steps are reported as an ambiguous identification"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "more than one deploy-named step" \
+  "an ambiguous identification is disclosed"
+v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .deployed')
+[ "$v11" = yes ] \
+  || fail "the recorded head settles an ambiguous identification, got: $v11"
+
+pass "the identification has one owner and its evidence class travels with every row"
+
 # --- steps that could not be read differ from a run with no deploy step -----
 #
-# Both grant nothing, but only one is a GAP. A build-only run alongside a real
-# deploy run must not make "merged, not yet deployed" unreachable.
+# Three different facts: the steps could not be read, the payload parsed nothing,
+# and the payload parsed steps of which none is a deploy. Only the last is a
+# known absence; the other two are gaps.
 
 json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_VIEW_FAIL=1041 \
   run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
@@ -339,6 +403,15 @@ deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(","
 [ "$deployed" = unknown ] || fail "unreadable steps must leave merges unknown, got: $deployed"
 assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "steps could not be read" \
   "a run whose steps could not be read says so"
+
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS='{"steps":[]}' \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] || fail "an unparseable step payload must leave merges unknown, got: $deployed"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "did not parse" \
+  "a payload that yielded no steps is a gap, not a definitive absence"
+assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "neither be found nor ruled out" \
+  "a payload that parsed nothing is disclosed as its own fact"
 
 nodeploy=$(jq -nc '{steps:[{uuid:"{s1}", name:"Build and test",
                             state:{name:"COMPLETED", result:{name:"SUCCESSFUL"}}}]}')
@@ -354,11 +427,11 @@ assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "no run re
 
 # A build-only run beside a real deploy run: the build run is a known fact, not a
 # gap, so the merge the deploy genuinely did not carry still reads as `no`.
-runs_mixed=$(jq -nc --arg ok "$head_shipped" '
+runs_mixed=$(jq -nc '
   {values:[{build_number:1402, state:{result:{name:"SUCCESSFUL"}},
-            target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-28T10:00:00Z"},
+            target:{ref_name:"main"}, created_on:"2026-08-28T10:00:00Z"},
            {build_number:1401, state:{result:{name:"SUCCESSFUL"}},
-            target:{ref_name:"main", commit:{hash:$ok}}, created_on:"2026-08-26T10:00:00Z"}]}')
+            target:{ref_name:"main"}, created_on:"2026-08-26T10:00:00Z"}]}')
 json=$(FAKE_BKT_RUNS="$runs_mixed" \
   FAKE_BKT_STEPS_1402="$nodeploy" \
   FAKE_BKT_STEPS_1401="$(steps_json COMPLETED SUCCESSFUL)" \
@@ -372,10 +445,11 @@ v12=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#12")) | .d
 assert_not_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "deploy read was partial" \
   "a build-only run must not manufacture a partial-read disclosure"
 
-pass "a run with no deploy step is a known fact; only an unreadable one is a gap"
+pass "a parsed run with no deploy step is a known fact; an unread or unparsed one is a gap"
 
-# --- the deploy probe has an aggregate budget, and its log read is bounded ---
+# --- the deploy probe budget bounds every call it measures, listing included --
 
+: > "$HOME_A/net.log"
 json=$(FM_STANDUP_DEPLOY_PROBES=1 FAKE_BKT_RUNS="$runs_mixed" \
   FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
   FAKE_BKT_LOG="$(recorded_log "$head_shipped")" \
@@ -385,9 +459,14 @@ assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "deploy bu
 deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
 [ "$deployed" = unknown ] \
   || fail "work the budget stopped us testing must stay unknown, got: $deployed"
+assert_grep "bkt pipeline list" "$HOME_A/net.log" "the listing itself is one of the budgeted calls"
+grep -q "bkt pipeline view" "$HOME_A/net.log" \
+  && fail "the listing must consume the single allowed probe, leaving none for a step read"
 
-# A log longer than the byte bound is read only up to that bound; the recorded
-# line beyond it is missing evidence, disclosed rather than guessed at.
+pass "the deploy budget bounds exactly the calls it measures"
+
+# --- a bounded log read is bounded in BYTES, and says truncated, not unreadable
+
 long_log="$(recorded_log "$head_shipped")"
 json=$(FM_STANDUP_DEPLOY_LOG_BYTES=8 FAKE_BKT_RUNS="$runs" \
   FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
@@ -398,7 +477,20 @@ deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(","
 assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "truncated" \
   "a log cut short at the byte bound says so"
 
-pass "the deploy probe is bounded in aggregate and its log read is bounded in bytes"
+# head -c cuts bytes, so the truncation test must count bytes: a multibyte log
+# yields fewer CHARACTERS than bytes and would otherwise read as unreadable.
+json=$(FM_STANDUP_DEPLOY_LOG_BYTES=8 FAKE_BKT_RUNS="$runs" \
+  FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  FAKE_BKT_LOG="▶▶▶▶ deploying
+$long_log" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+counted=$(printf '%s' "$json" | jq -r '.deploys[].counted')
+assert_contains "$counted" "truncated" \
+  "a multibyte log cut at the byte bound is truncated, not unreadable"
+assert_not_contains "$counted" "could not be read" \
+  "a truncated log and an unreadable log stay distinguishable"
+
+pass "the log read is bounded in bytes and its shortfall is named correctly"
 
 # --- a superseded train still counts through a LATER successful deploy -------
 #

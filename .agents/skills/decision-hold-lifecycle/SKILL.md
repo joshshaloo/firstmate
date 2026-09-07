@@ -36,5 +36,5 @@ Bearings reads the resulting structured state and must never compensate by scrap
 7. Use the script's `resolve` command with the captain's exact answer source and every routed task; it writes the canonical answer file, releases the routed work, and closes the Captain's Call item together.
 8. Confirm Bearings no longer shows the closed hold and that routed work remains in structured backlog state.
 
-`bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, retry behavior, and close ordering.
+`bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, answer recording and reconciliation, retry behavior, and close ordering.
 `docs/decision-hold-lifecycle.md` records the mechanism and regression evidence without restating this policy.

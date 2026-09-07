@@ -36,10 +36,11 @@
 #
 # `resolve` requires every --routed-to task to exist and to be blocked by the hold.
 # It is the only command that writes data/captain-decisions answer files: it
-# copies the provided decision text into the canonical answer file, writes the
-# same decision and routed identities into the hold body, clears those dependency
-# edges, and marks the hold Done as one rollback-protected action. Any failure
-# restores the prior backlog and answer-file state.
+# copies the provided decision text into that hold identity's canonical answer
+# file, data/captain-decisions/<hold-id>.md, writes the same decision and routed
+# identities into the hold body, clears those dependency edges, and marks the
+# hold Done as one rollback-protected action. Any failure restores the prior
+# backlog and answer-file state.
 # An answer belongs to exactly one hold identity, never to a bare decision key.
 # A resolution written by the current code records `Answer record: <home-relative
 # answer path> (v<answer-format-version>)` in the hold body. That marker is what

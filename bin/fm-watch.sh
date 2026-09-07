@@ -148,8 +148,8 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
-# A captain-held or paused crew whose agent has confidently exited uses the same
-# bounded cadence, while a live or ambiguously read agent still surfaces once.
+# A captain-held crew whose agent has confidently exited uses the same bounded
+# cadence.
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
@@ -265,11 +265,12 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
-# escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
+# escalates once STALE_ESCALATE_SECS have elapsed. Immediately before escalation,
+# an active no-mistakes run-step with recent log or worktree file activity inside
+# that same wedge window resets the timer, so pane idleness alone does not wake on
+# a healthy long-running gate. Shared by both places a hash can be absorbed this
+# way: the plain non-terminal path, and the stale_is_terminal-overridden path (a
+# captain-relevant status-log line that an active run/busy pane outranked).
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
   local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
@@ -281,6 +282,12 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        if crew_run_step_recent_activity "$win"; then
+          date +%s > "$since_file"
+          rm -f "$escalation_file"
+          triage_log "absorbed $label timer reset by recent run-step activity: $win"
+          return
+        fi
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
         reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
@@ -293,6 +300,71 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
       fi
       ;;
   esac
+}
+
+path_has_recent_mtime() {  # <path> <seconds>
+  local root=$1 secs=$2 now f m
+  [ -d "$root" ] || return 1
+  now=$(date +%s)
+  while IFS= read -r f; do
+    m=$(stat_mtime "$f") || continue
+    case "$m" in ''|*[!0-9]*) continue ;; esac
+    [ $((now - m)) -le "$secs" ] && return 0
+  done < <(find "$root" -path "$root/.git" -prune -o -type f -print 2>/dev/null)
+  return 1
+}
+
+nm_status_run_id() {  # <worktree>
+  local wt=$1 out run_id timeout_secs
+  [ -d "$wt" ] || return 1
+  command -v no-mistakes >/dev/null 2>&1 || return 1
+  timeout_secs=${FM_CREW_STATE_NM_TIMEOUT:-10}
+  case "$timeout_secs" in ''|*[!0-9]*) timeout_secs=10 ;; esac
+  if command -v timeout >/dev/null 2>&1; then
+    out=$(cd "$wt" && timeout "$timeout_secs" no-mistakes axi status 2>/dev/null) || true
+  elif command -v gtimeout >/dev/null 2>&1; then
+    out=$(cd "$wt" && gtimeout "$timeout_secs" no-mistakes axi status 2>/dev/null) || true
+  else
+    out=$(cd "$wt" && no-mistakes axi status 2>/dev/null) || true
+  fi
+  run_id=$(printf '%s\n' "$out" | awk -F: '/^[[:space:]]*id:/ { gsub(/[[:space:]\"]/, "", $2); print $2; exit }')
+  [ -n "$run_id" ] || return 1
+  printf '%s' "$run_id"
+}
+
+no_mistakes_log_root() {
+  if [ -n "${NO_MISTAKES_HOME:-}" ]; then
+    printf '%s' "$NO_MISTAKES_HOME"
+  else
+    printf '%s/.no-mistakes' "$HOME"
+  fi
+}
+
+task_pipeline_activity_recent() {  # <task>
+  local task=$1 meta wt run_id logs_root
+  meta="$STATE/$task.meta"
+  [ -f "$meta" ] || return 1
+  wt=$(grep '^worktree=' "$meta" | tail -1 | cut -d= -f2- || true)
+  if [ -n "$wt" ] && path_has_recent_mtime "$wt" "$STALE_ESCALATE_SECS"; then
+    return 0
+  fi
+  run_id=$(nm_status_run_id "$wt" 2>/dev/null || true)
+  [ -n "$run_id" ] || return 1
+  logs_root=$(no_mistakes_log_root)/logs/$run_id
+  path_has_recent_mtime "$logs_root" "$STALE_ESCALATE_SECS"
+}
+
+crew_run_step_recent_activity() {  # <window>
+  local win=$1 task line state src
+  task=$(window_to_task "$win" "$STATE")
+  [ -n "$task" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$task" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  src=${line#*source: }; src=${src%% *}
+  [ "$state" = working ] || return 1
+  [ "$src" = run-step ] || return 1
+  task_pipeline_activity_recent "$task"
 }
 
 # busy_turn_over_age: 0 iff <task>'s latest completed-turn marker is at least
@@ -332,7 +404,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   rf="$STATE/.paused-resurfaced-$key"
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
   if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
-    reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
+    reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on the pause cadence not a wedge; confirm the wait still holds)"
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
     wake "$reason"
@@ -358,10 +430,11 @@ clear_pause_tracking() {  # <window>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# A declared paused: line keeps the pause cadence unless the run-step has moved
+# to done, failed, parked, or blocked behind that old pause line.
+# A captain-held transfer keeps its older dead-agent rule.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive
+  local win=$1 task=$2 key last recheck_file class agent_alive line state
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
@@ -370,6 +443,25 @@ pause_state_class() {  # <window> <task>
   if ! status_is_paused_or_captain_held "$last"; then
     rm -f "$recheck_file"
     crew_absorb_class "$task"
+    return
+  fi
+  if status_is_paused "$last"; then
+    line=$("$FM_CREW_STATE_BIN" "$task" 2>/dev/null) || true
+    case "$line" in
+      state:*)
+        state=${line#state: }
+        state=${state%% *}
+        case "$state" in
+          done|failed|parked|blocked)
+            rm -f "$recheck_file"
+            printf 'none'
+            return
+            ;;
+        esac
+        ;;
+    esac
+    date +%s > "$recheck_file"
+    printf 'paused'
     return
   fi
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
@@ -942,15 +1034,17 @@ EOF
           # unmodified terminal-status behavior).
         else
           # Non-terminal stale: a crew gone quiet without a captain-relevant status.
-          # Decided once per distinct stale hash (the costly state reads run only
-          # on first sight, never every poll) via pause_state_class, which returns:
+          # Decided once per distinct stale hash, plus pause-state rechecks on an
+          # unchanged paused hash, via pause_state_class, which returns:
           #   - working: an actively-running pipeline legitimately sits on a static
           #     pane (e.g. waiting on CI), so absorb and start the wedge timer so a
-          #     genuinely frozen run still escalates past STALE_ESCALATE_SECS;
-          #   - paused: the crew declared an external wait, or a declared pause or
-          #     captain hold is paired with a confidently dead agent, so absorb on
-          #     the long PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
-          #   - none: no running pipeline, no exact busy verdict, no declared pause.
+          #     genuinely frozen run still escalates past STALE_ESCALATE_SECS unless
+          #     fresh pipeline activity resets that timer at the threshold;
+          #   - paused: the crew declared an external wait, or a captain hold is
+          #     paired with a confidently dead agent, so absorb on the long
+          #     PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
+          #   - none: no running pipeline, no exact busy verdict, no declared pause,
+          #     or a run-step state that must surface behind an old pause line.
           #     Surface immediately so firstmate inspects the inconclusive state
           #     (it may be done via an interactive menu that wrote no done: status,
           #     waiting on a decision, or wedged) instead of leaving the finish to
@@ -980,7 +1074,7 @@ EOF
                          printf '%s' "$h" > "$sf"
                          wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf"
                          triage_log "absorbed non-terminal stale (provably working): $w" ;;
-                *)       handle_paused_stale "$w" "$task" "$h" ;;
+                *)       surface_nonterminal_stale "$w" "$h" ;;
               esac
             else
               wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf"

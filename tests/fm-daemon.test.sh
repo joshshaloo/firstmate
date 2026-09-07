@@ -222,7 +222,7 @@ test_stale_paused_classifies_pause() {
 
 # handle_wake on a paused stale records a pause marker, drops any pre-existing wedge
 # marker (so a working->paused pane is not still wedge-aged), and does NOT escalate
-# on the wake itself - the recheck is housekeeping's job on the long cadence.
+# on the wake itself - the recheck is housekeeping's job on the pause cadence.
 test_handle_wake_paused_records_pause_marker() {
   local dir state key win
   dir=$(make_supercase handle-paused)
@@ -346,7 +346,7 @@ test_housekeeping_paused_resurfaces_and_resets() {
   [ -e "$state/.subsuper-paused-$key" ] || fail "pause marker cleared instead of reset for the next window"
   age=$(( $(date +%s) - $(cat "$state/.subsuper-paused-$key" 2>/dev/null || echo 0) ))
   [ "$age" -lt 60 ] || fail "pause marker was not reset to now on re-surface (age ${age}s)"
-  pass "housekeeping re-surfaces a stale declared pause on the long cadence and resets its window"
+  pass "housekeeping re-surfaces a stale declared pause on the pause cadence and resets its window"
 }
 
 # A pause whose pane became busy again (the crew resumed) drops its marker without

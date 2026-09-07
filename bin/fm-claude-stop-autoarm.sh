@@ -35,10 +35,12 @@
 #     for this home. A clean close with no actionable reason and no remaining
 #     need exits 0 silently.
 #   - Continuity: a suppressed typed failure never ends the hook while a live
-#     watcher has no translator. The owner re-arms exactly once so this hook
-#     attaches to the surviving watcher and keeps translating its wakes, and the
-#     close of THAT cycle is what the rules above classify. If the re-arm cannot
-#     prove it started or attached to a watcher, the failure alarm path runs.
+#     watcher has no translator. Every cycle close consults the health predicate,
+#     and each proof re-arms so this hook attaches to the surviving watcher and
+#     keeps translating its wakes; the close of THAT cycle is classified the same
+#     way. REARM_MAX bounds how many re-arms one firing may take. An exhausted
+#     bound, a close with no health proof, or a re-arm that cannot prove it
+#     started or attached to a watcher all run the failure alarm path.
 #
 # The epoch ledger state/.claude-autoarm-epoch records the latest claim and
 # outcome so the synchronous Stop guard (bin/fm-turnend-guard.sh --claude) can
@@ -60,6 +62,10 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 GRACE=${FM_GUARD_GRACE:-300}
 OWNER_LOCK="$STATE/.claude-autoarm.lock"
 EPOCH="$STATE/.claude-autoarm-epoch"
+# The single owner of how many proven-healthy re-arms one firing may take before
+# an absorbed-wake chain stops being credible and becomes the failure alarm.
+# Deliberately not an environment knob: the bound is a contract, not a tuning.
+REARM_MAX=3
 
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
@@ -180,11 +186,14 @@ classify_arm_close() {
 # --- classify and translate ---------------------------------------------------
 # An absorbed-wake race can print the typed empty-cycle failure while this home
 # still holds an identity-matched watcher with a fresh beacon: that cycle
-# started, beat, and had its wake absorbed, so it is healthy, never FAILED. A
-# healthy verdict must not leave that watcher without a wake translator, so the
-# owner re-arms exactly once (the arm reports attached and follows the surviving
-# watcher) and classifies the close of that cycle instead.
-REARMED=0
+# started, beat, and had its wake absorbed, so it is healthy, never FAILED. The
+# same race can repeat one cycle deeper, so the health predicate is consulted on
+# EVERY typed-failed close, never skipped because a re-arm already happened. A
+# healthy verdict must not leave that watcher without a wake translator, so each
+# proof re-arms (the arm reports attached and blocks following the surviving
+# watcher) and the close of that cycle is classified the same way, up to
+# REARM_MAX re-arms per firing.
+REARMS=0
 while :; do
   run_arm
 
@@ -200,16 +209,16 @@ while :; do
 
   [ "$ACTIONABLE" -eq 0 ] || break
   [ "$TYPED_FAILED" -eq 1 ] || break
-  [ "$REARMED" -eq 0 ] || break
   fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME" || break
-  REARMED=1
+  [ "$REARMS" -lt "$REARM_MAX" ] || break
+  REARMS=$((REARMS + 1))
   write_epoch arming
 done
 
 # Default closed: the suppression only holds when the re-arm proved it owns a
 # watcher, by reporting the one it started or attached to, or by returning an
 # actionable wake it translated. An unproven re-attach takes the alarm path.
-if [ "$REARMED" -eq 1 ] && [ "$ACTIONABLE" -eq 0 ] && [ "$ATTACHED" -eq 0 ]; then
+if [ "$REARMS" -gt 0 ] && [ "$ACTIONABLE" -eq 0 ] && [ "$ATTACHED" -eq 0 ]; then
   FAILED=1
 fi
 

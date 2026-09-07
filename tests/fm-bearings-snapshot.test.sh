@@ -1103,7 +1103,10 @@ test_perl_fallback_bounds_github_call() {
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp rm; do
+  # timeout/gtimeout are deliberately absent: that absence is what forces the perl
+  # fallback this test exercises. awk is granted like its POSIX peers above, because
+  # fm-fleet-snapshot.sh already calls awk unguarded on this same snapshot path.
+  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp rm awk; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
   started=$(date +%s)

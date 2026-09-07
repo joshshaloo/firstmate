@@ -585,6 +585,47 @@ test_accepted_large_home_summaries_never_reach_jq_argv() {
   pass "accepted large home summaries and the record accumulator avoid jq argv"
 }
 
+# status_open_decisions folds the whole status log with no byte cap, and the
+# reconciliation derived from it re-emits every entry with three added fields, so
+# it is always the largest value in the record build. Neither may reach jq by argv,
+# and a builder failure must be loud rather than a silently absent home.
+test_large_parent_decision_set_never_reaches_jq_argv() {
+  local home mate fakebin pad i snap reconciliation_bytes json
+  home=$(make_home parent-decision-argv-limit)
+  : > "$home/data/secondmates.md"
+  printf '## Done\n' > "$home/data/backlog.md"
+  mate=$(make_landed_secondmate "$home" wide)
+  fm_write_secondmate_meta "$home/state/wide.meta" "$mate" "firstmate:fm-wide" sample
+  pad=$(printf '%0180d' 0 | tr '0' 'x')
+  : > "$home/state/wide.status"
+  i=1
+  while [ "$i" -le 500 ]; do
+    printf 'needs-decision [key=topic-%04d]: %s\n' "$i" "$pad" >> "$home/state/wide.status"
+    i=$((i + 1))
+  done
+
+  fakebin=$(make_fakebin "$home")
+  snap=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z "$FLEET" --json) \
+    || fail "canonical snapshot must succeed with a few hundred unresolved keyed parent decisions"
+  reconciliation_bytes=$(printf '%s' "$snap" \
+    | jq -c '.secondmate_current.records[0].parent_event.reconciliation' | LC_ALL=C wc -c | tr -d ' ')
+  [ "$reconciliation_bytes" -gt "$MAX_ARG_STRLEN" ] \
+    || fail "fixture reconciliation is only $reconciliation_bytes bytes; it must exceed MAX_ARG_STRLEN"
+  printf '%s' "$snap" | jq -e '
+    (.secondmate_current.records | length) == .secondmate_current.shown
+      and (.secondmate_current.records | length) == 1
+      and (.secondmate_current.records[0].parent_event.open_decisions | length) == 500
+      and .secondmate_current.records[0].provenance.selected == "structured-home"
+  ' >/dev/null || fail "a large parent decision set silently dropped the secondmate from the aggregation"
+
+  json=$(run "$home" "$fakebin" --json) \
+    || fail "bearings must succeed with a few hundred unresolved keyed parent decisions"
+  printf '%s' "$json" | jq -e '
+    (.secondmates | length) == 1 and (.secondmates | any(.state == "unknown") | not)
+  ' >/dev/null || fail "a large parent decision set lost or downgraded the secondmate home"
+  pass "a large parent decision set and its reconciliation avoid jq argv"
+}
+
 test_secondmate_and_child_bounds_are_disclosed() {
   local home fakebin id mate child json expanded canonical i
   home=$(make_home secondmate-bounds)
@@ -1957,6 +1998,7 @@ test_structured_child_decision_reaches_captains_call
 test_bad_secondmate_homes_never_revive_parent_work
 test_oversized_secondmate_summary_stays_strict_unknown
 test_accepted_large_home_summaries_never_reach_jq_argv
+test_large_parent_decision_set_never_reaches_jq_argv
 test_secondmate_and_child_bounds_are_disclosed
 test_parent_decision_is_untrusted_contradiction_only
 test_parent_evidence_reconciles_by_verb_and_key

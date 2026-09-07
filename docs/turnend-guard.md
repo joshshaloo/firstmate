@@ -56,7 +56,9 @@ The Stop auto-arm also rechecks the same identity-matched fresh-beacon predicate
 That healthy verdict never leaves the home without a wake translator: the auto-arm re-arms, so the hook attaches to the surviving watcher and blocks following it, and the close of that re-attached cycle is classified by the same rules.
 The recheck runs on every typed-failed close, never skipped because a re-arm already happened, because the absorbed-wake race can repeat one cycle deeper.
 The hook's own `REARM_MAX` constant (default 3, deliberately not an environment knob) bounds how many re-arms one firing may take, so an absorbed-wake chain that never resolves still ends in a visible alarm.
-The suppression is default closed: an exhausted bound, a close whose health cannot be proven, or a re-arm that reports neither a started nor an attached watcher and returns no actionable wake of its own all take the ordinary exit-2 failure alarm rather than a silent clean exit.
+The suppression is default closed: an exhausted bound, a close whose health cannot be proven, or a re-arm that reports neither a started nor an attached watcher and returns no actionable wake of its own all take the exit-2 failure alarm rather than a silent clean exit.
+That alarm never asserts a supervision state the firing did not measure: a close that proved a live watcher reports the absorbed-wake chain as unresolved after the re-arm bound and that the hook stopped translating wakes, and the `supervision is down` wording stays reserved for a close where no live watcher was proven.
+Both carry the same close evidence and the same repair command.
 When none of those proofs appears, it re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override), then allows degraded with a visible `systemMessage`.
 Any allow resets the budget.
 

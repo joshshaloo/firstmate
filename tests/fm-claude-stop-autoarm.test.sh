@@ -513,9 +513,13 @@ test_rearm_bound_exhaustion_takes_the_alarm_path() {
   [ "$(arm_runs "$dir")" = "$((max + 1))" ] \
     || fail "an unending absorbed-wake chain must stop after $max re-arms, arm ran $(arm_runs "$dir") time(s)"
   expect_code 2 "$status" "an exhausted re-arm bound must fall back to the failure alarm"
-  assert_contains "$out" "watcher cycle FAILED" "the exhausted bound must carry the failure banner"
+  assert_contains "$out" "absorbed-wake chain unresolved after $max re-arms" \
+    "the exhausted bound must name the unresolved chain it measured"
+  assert_contains "$out" "bin/fm-watch-arm.sh" "the exhausted bound must still carry the repair command"
+  assert_not_contains "$out" "supervision is down" \
+    "the banner must not claim supervision is down while the closing cycle proved a live watcher"
   [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
-  pass "auto-arm: the bounded re-arm chain defaults closed to the alarm once exhausted"
+  pass "auto-arm: the bounded re-arm chain defaults closed to an honest alarm once exhausted"
 }
 
 test_healthy_verdict_alarms_when_reattach_is_unconfirmed() {

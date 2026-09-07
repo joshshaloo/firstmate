@@ -40,7 +40,9 @@
 #     keeps translating its wakes; the close of THAT cycle is classified the same
 #     way. REARM_MAX bounds how many re-arms one firing may take. An exhausted
 #     bound, a close with no health proof, or a re-arm that cannot prove it
-#     started or attached to a watcher all run the failure alarm path.
+#     started or attached to a watcher all run the failure alarm path, which
+#     reports the unresolved absorbed-wake chain rather than supervision being
+#     down whenever the closing cycle did prove a live watcher.
 #
 # The epoch ledger state/.claude-autoarm-epoch records the latest claim and
 # outcome so the synchronous Stop guard (bin/fm-turnend-guard.sh --claude) can
@@ -194,6 +196,7 @@ classify_arm_close() {
 # watcher) and the close of that cycle is classified the same way, up to
 # REARM_MAX re-arms per firing.
 REARMS=0
+HEALTHY_AT_CLOSE=0
 while :; do
   run_arm
 
@@ -206,10 +209,12 @@ while :; do
   fi
 
   classify_arm_close
+  HEALTHY_AT_CLOSE=0
 
   [ "$ACTIONABLE" -eq 0 ] || break
   [ "$TYPED_FAILED" -eq 1 ] || break
   fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME" || break
+  HEALTHY_AT_CLOSE=1
   [ "$REARMS" -lt "$REARM_MAX" ] || break
   REARMS=$((REARMS + 1))
   write_epoch arming
@@ -237,11 +242,23 @@ if ! need_supervision; then
 fi
 
 write_epoch rewake
+# The banner never asserts a supervision state this firing did not measure: the
+# "supervision is down" wording is reserved for a close where no live watcher was
+# proven, and a close that did prove one names the unresolved absorbed-wake chain
+# instead. Both carry the same close evidence and repair.
+print_failure_detail() {
+  [ -n "$OUT" ] && grep -E '^(watcher:|signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
+  printf 'Run bin/fm-wake-drain.sh first. Then repair supervision with bin/fm-watch-arm.sh as its own Claude Code background task (never shell &). If the failure repeats, treat it as a blocker and report it instead of ending blind.\n'
+}
+
 if [ "$FAILED" -eq 1 ]; then
   {
-    printf 'firstmate watcher cycle FAILED - supervision is down while this home still needs it.\n'
-    [ -n "$OUT" ] && grep -E '^(watcher:|signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
-    printf 'Run bin/fm-wake-drain.sh first. Then repair supervision with bin/fm-watch-arm.sh as its own Claude Code background task (never shell &). If the failure repeats, treat it as a blocker and report it instead of ending blind.\n'
+    if [ "$HEALTHY_AT_CLOSE" -eq 1 ]; then
+      printf 'firstmate watcher absorbed-wake chain unresolved after %s re-arms - a live watcher still holds this home, but this Stop hook stopped translating its wakes.\n' "$REARMS"
+    else
+      printf 'firstmate watcher cycle FAILED - supervision is down while this home still needs it.\n'
+    fi
+    print_failure_detail
   } >&2
 else
   {

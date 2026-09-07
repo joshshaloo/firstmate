@@ -63,7 +63,10 @@ slot_guarded() {
 }
 case "$*" in
   *"send-keys"*" exit Enter"*)
+    # Leaving the treehouse subshell puts the pane back in the project checkout,
+    # which is exactly what spawn polls for before asking for another slot.
     printf 'exit\n' >> "${FM_FAKE_EXIT_SENDS:?}"
+    printf '%s\n' "${FM_FAKE_PROJECT_DIR:?}" > "$selected_file"
     exit 0
     ;;
   *"send-keys"*"cd "*)
@@ -395,7 +398,8 @@ test_unproven_guards_refuse_before_get() {
   claim_slot occupant-guardless "$SLOT_A"
   mkdir -p "$HOME_DIR/state/$id.wtguard"
 
-  out=$(run_claim_spawn "$id" "fm-occupant-guardless" claude)
+  out=$(FM_SPAWN_WORKTREE_GUARD_POLLS=3 FM_SPAWN_WORKTREE_GUARD_POLL_INTERVAL=0.05 \
+    run_claim_spawn "$id" "fm-occupant-guardless" claude)
   status=$?
   expect_code 1 "$status" "spawn should refuse when the recorded-worktree guards cannot be proven live"
   assert_contains "$out" "could not be proven live" \
@@ -429,6 +433,8 @@ test_guard_ignoring_treehouse_is_refused_and_retried() {
   [ "$(cat "$COUNTFILE")" = 2 ] || fail "the refused slot was not re-requested exactly once"
   [ -f "$EXIT_SENDS_FILE" ] && [ "$(grep -c . "$EXIT_SENDS_FILE")" = 1 ] \
     || fail "the refused treehouse subshell was not exited before the retry"
+  assert_contains "$out" "asking for a different slot (attempt 1 of 3)" \
+    "the retry only ran after the pane settled back in the project checkout"
   pass "a claimed slot handed out despite the guards is refused, exited, and re-asked"
 }
 

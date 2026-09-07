@@ -98,10 +98,10 @@
 #   already records as its worktree=. Those records are authoritative occupancy and
 #   outrank treehouse's process-based detection, which goes stale whenever a live
 #   crewmate's shell sits outside its worktree and is cleared entirely by a reboot.
-#   Before any treehouse get, spawn forks short-lived cwd guards of its own into every
+#   Before every treehouse get, spawn forks short-lived cwd guards of its own into every
 #   recorded worktree so treehouse cannot reset a slot this home already records as
-#   claimed, and refuses the launch outright unless every one of those guards proves
-#   it entered its worktree and is still running.
+#   claimed, and refuses the launch outright unless every one of those guards proves,
+#   on that attempt, that it entered its worktree and is still running.
 #   A same-id relaunch whose recorded endpoint is missing, or whose tmux endpoint is
 #   a dead shell, reuses its recorded worktree directly without treehouse get; a
 #   missing recorded worktree or conflicting claim refuses instead of allocating a
@@ -285,8 +285,8 @@ CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 WT_GUARDS_STARTED=0
 WT_GUARD_PIDS=
+WT_GUARD_PATHS=
 WT_GUARD_MARKER=
-WT_PROTECTED_REPORT=""
 T=
 
 parse_orca_worktree_result() {
@@ -1432,33 +1432,22 @@ spawn_send_key() {  # <target> <key>
 # be what stands between a recorded worktree and a reset. Owning the forks also
 # makes the invariant provable - each guard reports the worktree it actually
 # entered and must still be running - so a spawn that cannot prove protection
-# refuses before any `treehouse get` instead of proceeding on an assumption.
+# refuses before a `treehouse get` instead of proceeding on an assumption.
 spawn_start_worktree_record_guards() {
-  local meta recorded recorded_real recorded_project recorded_project_real same_project claim
-  local guard_paths marker secs pid running max interval i missing dead p
+  local meta recorded recorded_real marker secs p
   [ "$KIND" != secondmate ] || return 0
   [ "$BACKEND" != orca ] || return 0
   [ -d "$STATE" ] || return 0
-  guard_paths=
+  WT_GUARD_PATHS=
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] && [ ! -L "$meta" ] || continue
     recorded=$(fm_meta_get "$meta" worktree)
     [ -n "$recorded" ] || continue
     [ -d "$recorded" ] || continue
     recorded_real=$(real_path_or_raw "$recorded")
-    guard_paths="${guard_paths}${recorded_real}"$'\n'
-    same_project=0
-    recorded_project=$(fm_meta_get "$meta" project)
-    if [ -n "$recorded_project" ]; then
-      recorded_project_real=$(real_path_or_raw "$recorded_project")
-      [ "$recorded_project_real" = "$PROJ_ABS_REAL" ] && same_project=1
-    fi
-    [ "$same_project" = 1 ] || continue
-    claim=$(worktree_meta_claim "$recorded_real") || claim=
-    [ -n "$claim" ] || continue
-    WT_PROTECTED_REPORT="${WT_PROTECTED_REPORT}$(worktree_claim_line "$claim")"$'\n'
+    WT_GUARD_PATHS="${WT_GUARD_PATHS}${recorded_real}"$'\n'
   done
-  [ -n "$guard_paths" ] || return 0
+  [ -n "$WT_GUARD_PATHS" ] || return 0
   marker="$STATE/$ID.wtguard"
   rm -f "$marker" 2>/dev/null || true
   WT_GUARD_MARKER=$marker
@@ -1471,18 +1460,30 @@ spawn_start_worktree_record_guards() {
     WT_GUARD_PIDS="${WT_GUARD_PIDS}${WT_GUARD_PIDS:+ }$!"
     WT_GUARDS_STARTED=1
   done <<EOF
-$guard_paths
+$WT_GUARD_PATHS
 EOF
-  max=${FM_SPAWN_WORKTREE_POLLS:-60}
-  interval=${FM_SPAWN_WORKTREE_POLL_INTERVAL:-1}
+}
+
+# Proof, not a one-time assumption: this runs before EVERY `treehouse get`, not
+# just the first. A guard killed between attempts (OOM, an operator sweeping
+# stray sleeps, FM_SPAWN_WORKTREE_GUARD_SECS elapsing on a slow spawn) leaves
+# its worktree unprotected for the next get, and the record check downstream can
+# only refuse the slot AFTER treehouse has already reset it.
+# The budget is its own knob: this waits on local fork+cd, which settles in
+# milliseconds, while FM_SPAWN_WORKTREE_POLLS bounds a treehouse allocation.
+spawn_prove_worktree_record_guards() {
+  local max interval i missing dead p pid running
+  [ -n "$WT_GUARD_PATHS" ] || return 0
+  max=${FM_SPAWN_WORKTREE_GUARD_POLLS:-100}
+  interval=${FM_SPAWN_WORKTREE_GUARD_POLL_INTERVAL:-0.05}
   i=0
   while :; do
     missing=
     while IFS= read -r p; do
       [ -n "$p" ] || continue
-      grep -Fqx -- "$p" "$marker" 2>/dev/null || { missing=$p; break; }
+      grep -Fqx -- "$p" "$WT_GUARD_MARKER" 2>/dev/null || { missing=$p; break; }
     done <<EOF
-$guard_paths
+$WT_GUARD_PATHS
 EOF
     [ -n "$missing" ] || break
     i=$((i + 1))
@@ -1503,6 +1504,28 @@ EOF
     spawn_refuse_unguarded "guard process $dead is no longer running"
     return 1
   }
+}
+
+# Built only where it is read - the settle-timeout diagnostic. Every line costs
+# a live backend liveness probe through worktree_meta_claim, which the happy
+# path must not pay for records that were never in the way.
+spawn_protected_worktree_report() {
+  local meta recorded recorded_real recorded_project recorded_project_real claim
+  [ -d "$STATE" ] || return 0
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    recorded=$(fm_meta_get "$meta" worktree)
+    [ -n "$recorded" ] || continue
+    [ -d "$recorded" ] || continue
+    recorded_project=$(fm_meta_get "$meta" project)
+    [ -n "$recorded_project" ] || continue
+    recorded_project_real=$(real_path_or_raw "$recorded_project")
+    [ "$recorded_project_real" = "$PROJ_ABS_REAL" ] || continue
+    recorded_real=$(real_path_or_raw "$recorded")
+    claim=$(worktree_meta_claim "$recorded_real") || continue
+    [ -n "$claim" ] || continue
+    worktree_claim_line "$claim"
+  done
 }
 
 spawn_refuse_unguarded() {  # <detail>
@@ -1604,16 +1627,16 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] && [ "$REUSE_RECORDED_WOR
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # Bounded re-acquire: a slot refused by the occupancy check below is asked for
   # again rather than accepted or silently retargeted. Recorded worktrees are
-  # held by verified guard processes before the first `treehouse get`, so
+  # held by guard processes that are re-proven before every `treehouse get`, so
   # treehouse's process-based detector cannot reset a slot that this home's
   # metadata already owns. The guards are protection, not a substitute for the
   # occupancy check: a treehouse that hands out a protected slot anyway is still
   # caught below, refused, exited, and re-asked, so the retry ladder stays
-  # reachable. WT_PROTECTED_REPORT (what the guards hold) and WT_REFUSED_REPORT
-  # (what this spawn was actually offered and refused) are kept apart so a
-  # failure is never blamed on records that were never in the way. Polls stay
-  # per-attempt so a genuinely exhausted pool fails within a bounded time with
-  # the claimants named.
+  # reachable. What the guards hold (reported lazily on timeout) and
+  # WT_REFUSED_REPORT (what this spawn was actually offered and refused) are kept
+  # apart so a failure is never blamed on records that were never in the way.
+  # Polls stay per-attempt so a genuinely exhausted pool fails within a bounded
+  # time with the claimants named.
   WT_ATTEMPTS=${FM_SPAWN_WORKTREE_ATTEMPTS:-3}
   WT_POLLS=${FM_SPAWN_WORKTREE_POLLS:-60}
   WT_POLL_INTERVAL=${FM_SPAWN_WORKTREE_POLL_INTERVAL:-1}
@@ -1635,10 +1658,28 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     } >&2
   }
 
-  spawn_start_worktree_record_guards || exit 1
+  # The pane must be back in the project checkout before another `treehouse get`
+  # is sent: two lines landing in the pty together let readline swallow the get
+  # along with the buffered `exit`, and the pool would look exhausted when it was
+  # not. Every other pane transition here is settled by polling; so is this one.
+  wt_wait_for_project_pane() {
+    local i=0 p p_real
+    while [ "$i" -lt "$WT_POLLS" ]; do
+      p=$(spawn_current_path "$WT_TARGET" || true)
+      p_real=""
+      [ -z "$p" ] || p_real=$(real_path_or_raw "$p")
+      [ "$p_real" = "$PROJ_ABS_REAL" ] && return 0
+      i=$((i + 1))
+      sleep "$WT_POLL_INTERVAL"
+    done
+    return 1
+  }
+
+  spawn_start_worktree_record_guards
 
   while :; do
     wt_attempt=$((wt_attempt + 1))
+    spawn_prove_worktree_record_guards || exit 1
     spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
     # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
@@ -1694,11 +1735,12 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
         wt_claim_refuse "treehouse offered no further worktree"
         exit 1
       fi
-      if [ -n "$WT_PROTECTED_REPORT" ]; then
+      wt_protected=$(spawn_protected_worktree_report)
+      if [ -n "$wt_protected" ]; then
         {
           printf 'error: refusing to launch %s: treehouse get did not enter a worktree within %s polls, so this spawn never got an unprotected slot.\n' "$ID" "$WT_POLLS"
           printf "This home's task records protect the worktree(s) below from reuse, so an exhausted pool is one likely cause:\n"
-          printf '%s' "$WT_PROTECTED_REPORT"
+          printf '%s\n' "$wt_protected"
           printf 'Those records are authoritative occupancy regardless of treehouse process detection, and spawn never discards one.\n'
           printf 'Recover or tear down the named task(s) to release their worktrees, widen the pool, or check that treehouse itself is working. Inspect target %s.\n' "$T"
         } >&2
@@ -1719,6 +1761,14 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     if [ "$wt_attempt" -ge "$WT_ATTEMPTS" ]; then
       spawn_cleanup_worktree_record_guards
       wt_claim_refuse "$WT_ATTEMPTS attempt(s) exhausted"
+      exit 1
+    fi
+    if ! wt_wait_for_project_pane; then
+      spawn_cleanup_worktree_record_guards
+      {
+        printf 'error: refusing to launch %s: the refused treehouse subshell did not return the pane to %s within %s polls.\n' "$ID" "$PROJ_ABS" "$WT_POLLS"
+        printf 'Asking for another slot from inside %s could hand this spawn the same claimed worktree again. Inspect target %s.\n' "$wt_real" "$T"
+      } >&2
       exit 1
     fi
     echo "warning: treehouse offered ${wt_real}, already recorded as another task's worktree; asking for a different slot (attempt $wt_attempt of $WT_ATTEMPTS)" >&2

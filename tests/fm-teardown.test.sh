@@ -4,51 +4,67 @@
 # The check refuses to tear down a worktree whose work has not LANDED, because
 # treehouse return hard-resets the worktree. "Landed" means reachable from a remote
 # OR - for a normal ship task whose commits are not so reachable - its PR is merged
-# and GitHub reports a PR head that contains the current local work, or its content
-# is already in the up-to-date default branch.
+# and GitHub reports a PR head that contains the current local work, or its work is
+# already in the up-to-date landing branch. A local-only task lands locally, so only
+# a merge into its local landing branch counts there.
 #
-# Covers three fixes:
+# Covers four fixes:
 #   - local-only fork-remote: a fork IS a remote, so fork-pushed upstream-
 #     contribution PRs are teardown-eligible (the pre-fix code false-refused them).
 #   - squash-merge-then-delete-branch: the branch's own commits live nowhere on a
 #     remote after a squash merge deletes the head branch, yet the change is fully in
 #     main. Reachability alone false-refused this common GitHub flow; the check now
-#     recognizes a merged PR head containing the local work (or the content already
-#     in main) as landed.
+#     recognizes a merged PR head containing the local work (or the work already
+#     in the landing branch) as landed.
+#   - directed landing branches: the work may target a non-default release branch
+#     recorded in task metadata or passed as --landing-branch, and a squash landing
+#     still proves landed after the landing branch gains later unrelated edits to
+#     the same files.
 #   - teardown-lock-race: a killed crew process can leave a transient worktree
 #     git index.lock that blocks teardown. The return path retries on the lock
 #     error signature (even if the lock self-clears mid-check), then only removes a
 #     provably stale lock before re-running safety checks.
 #
 # Matrix:
-#   (a) local-only + HEAD on a fork remote-tracking branch     -> ALLOW  (fork fix)
-#   (b) local-only + truly unpushed work (no remote, not main) -> REFUSE (safety)
-#   (c) local-only + merged into local main, no remote         -> ALLOW  (no regression)
-#   (d) no-mistakes + HEAD on origin remote-tracking branch    -> ALLOW  (no regression)
-#   (e) no-mistakes + unpushed, no PR, content not in default  -> REFUSE (safety)
-#   (f) local-only + truly unpushed + --force                  -> ALLOW  (escape hatch)
-#   (g) no-mistakes + squash-merged PR, exact PR head          -> ALLOW  (squash fix)
-#   (h) no-mistakes + no PR but content already in default     -> ALLOW  (content fallback)
-#   (i) no-mistakes + dirty worktree, even when work landed     -> REFUSE (dirty wins)
-#   (j) no-mistakes + gh lookup errors + content not in default -> REFUSE (fail-safe)
-#   (k) no-mistakes + merged PR but HEAD moved afterward        -> REFUSE (stale PR)
-#   (l) no-mistakes + stale origin/main but fetched content     -> ALLOW  (fresh fetch)
-#   (m) no-mistakes + local HEAD ancestor of merged PR head     -> ALLOW  (lagging local)
-#   (n) no-mistakes + replayed unpushed patch in merged PR head -> ALLOW  (replayed local)
-#   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
-#   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
-#   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
+#   - local-only + HEAD on a fork remote-tracking branch -> ALLOW  (fork fix)
+#   - local-only + truly unpushed work (no remote, not main) -> REFUSE (safety)
+#   - local-only + merged into local main, no remote -> ALLOW  (no regression)
+#   - local-only + content equivalent only on a remote ref -> REFUSE (lands locally)
+#   - local-only + recorded landing branch with a local head -> ALLOW (directed target)
+#   - local-only + recorded landing branch only on origin -> REFUSE (names the target)
+#   - no-mistakes + HEAD on origin remote-tracking branch -> ALLOW  (no regression)
+#   - no-mistakes + unpushed, no PR, content not in default -> REFUSE (safety)
+#   - local-only + truly unpushed + --force -> ALLOW  (escape hatch)
+#   - no-mistakes + squash-merged PR, exact PR head -> ALLOW  (squash fix)
+#   - no-mistakes + no PR but content already in default -> ALLOW  (content fallback)
+#   - no-mistakes + squash-landed, target later edits file -> ALLOW  (merge-tree proof)
+#   - no-mistakes + no PR but content in recorded release -> ALLOW  (non-default target)
+#   - no-mistakes + no PR but explicit release target -> ALLOW  (operator target)
+#   - no-mistakes + dirty worktree, even when work landed -> REFUSE (dirty wins)
+#   - no-mistakes + target content differs -> REFUSE (safety + files)
+#   - no-mistakes + target missing change -> REFUSE (safety + files)
+#   - no-mistakes + unknown explicit target -> REFUSE (absent on origin)
+#   - no-mistakes + recorded target, origin unreachable -> REFUSE (unverified, not wrong)
+#   - no-mistakes + gh lookup errors + content not in target -> REFUSE (fail-safe)
+#   - no-mistakes + merged PR but HEAD moved afterward -> REFUSE (stale PR)
+#   - no-mistakes + stale origin/main but fetched content -> ALLOW  (fresh fetch)
+#   - no-mistakes + local HEAD ancestor of merged PR head -> ALLOW  (lagging local)
+#   - no-mistakes + replayed unpushed patch in merged PR head -> ALLOW (replayed local)
+#   - fm-pr-check rerun after HEAD moved -> no stale pr_head
+#   - fm-pr-check when local HEAD lags -> record remote PR head
+#   - fm-pr-check on a GitHub PR records the PR base branch -> record landing_branch
+#   - no-mistakes + NO pr= recorded, PR discovered by branch -> ALLOW  (yolo/no-CI merge)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
-#   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
-#   (s) index.lock with a live holder, any age                -> lock kept, REFUSE
-#   (t) lsof error while checking index.lock                  -> lock kept, REFUSE
-#   (u) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
-#   (v) non-linked repo index.lock                            -> lock removed, ALLOW
-#   (w) index.lock mtime read failure                         -> lock kept, REFUSE
-#   (x) transient lock cleared after first failed return      -> retry ALLOW
-#   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#   - provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
+#   - index.lock with a live holder, any age -> lock kept, REFUSE
+#   - lsof error while checking index.lock -> lock kept, REFUSE
+#   - dirty worktree after stale lock cleanup -> lock removed, REFUSE
+#   - non-linked repo index.lock -> lock removed, ALLOW
+#   - index.lock mtime read failure -> lock kept, REFUSE
+#   - transient lock cleared after first failed return -> retry ALLOW
+#   - persistent lock (never clears, not provably stale) -> REFUSE loudly
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -210,7 +226,7 @@ land_on_origin_main() {
 
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
 add_gh_pr_merged_for_head() {
-  local case_dir=$1 head=$2
+  local case_dir=$1 head=$2 base=${3:-main}
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
@@ -228,6 +244,7 @@ case "\${1:-} \${2:-}" in
     case " \$* " in
       *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
+      *"baseRefName"*) printf '%s\n' '$base' ; exit 0 ;;
     esac
     ;;
 esac
@@ -248,6 +265,11 @@ append_pr_meta_for_current_head() {
 append_pr_meta_url() {
   local case_dir=$1
   printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+}
+
+append_landing_branch_meta() {
+  local case_dir=$1 branch=$2
+  printf 'landing_branch=%s\n' "$branch" >> "$case_dir/state/task-x1.meta"
 }
 
 commit_tree_from_wt_head() {
@@ -564,7 +586,35 @@ test_local_only_truly_unpushed_refuses() {
 
   expect_code 1 "$rc" "truly-unpushed: teardown should refuse"
   grep -q REFUSED "$case_dir/stderr" || fail "truly-unpushed: no REFUSED line in stderr"
+  assert_grep "local-only worktree" "$case_dir/stderr" \
+    "truly-unpushed: refusal did not identify the local-only mode"
+  assert_grep "bin/fm-merge-local.sh after the captain approves" "$case_dir/stderr" \
+    "truly-unpushed: refusal did not offer the approved local merge path"
   pass "local-only worktree with truly unpushed work is refused (safety preserved)"
+}
+
+# A local-only project lands its work in the local default branch. Content that
+# only matches a remote ref proves nothing about the local landing, so teardown
+# must still refuse and point at bin/fm-merge-local.sh rather than at --force.
+test_local_only_content_equivalent_on_remote_refuses() {
+  local case_dir rc
+  case_dir=$(make_case local-only-remote-equivalent)
+  write_meta "$case_dir" local-only ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_equivalent_patch_on_origin_branch "$case_dir" main feature.txt hello "remote squash landing" >/dev/null
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "local-only-remote-equivalent: remote content equivalence must not authorize a local-only teardown"
+  grep -q REFUSED "$case_dir/stderr" || fail "local-only-remote-equivalent: no REFUSED line in stderr"
+  assert_grep "local-only worktree" "$case_dir/stderr" \
+    "local-only-remote-equivalent: refusal did not identify the local-only mode"
+  assert_grep "bin/fm-merge-local.sh after the captain approves" "$case_dir/stderr" \
+    "local-only-remote-equivalent: refusal did not offer the approved local merge path"
+  pass "local-only worktree whose content only matches a remote ref is still refused"
 }
 
 test_local_only_merged_to_local_main_allows() {
@@ -587,6 +637,55 @@ test_local_only_merged_to_local_main_allows() {
   expect_code 0 "$rc" "merged-main: teardown should succeed when work is merged into local main"
   ! grep -q REFUSED "$case_dir/stderr" || fail "merged-main: teardown printed a REFUSED line"
   pass "local-only worktree with work merged into local main is torn down (no regression)"
+}
+
+# A recorded landing target that resolves to a local head is the branch the work
+# is judged against, exactly like the default branch is when nothing is recorded.
+test_local_only_recorded_local_landing_branch_allows() {
+  local case_dir rc wt_head
+  case_dir=$(make_case local-only-recorded-local-target)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "release work"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/release-Aug2026 "$wt_head"
+  append_landing_branch_meta "$case_dir" release-Aug2026
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "local-only-recorded-local-target: work merged into the recorded local landing branch should tear down"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "local-only-recorded-local-target: teardown printed a REFUSED line"
+  pass "local-only worktree merged into its recorded local landing branch is torn down"
+}
+
+# The recorded target exists only on origin while the work happens to be merged
+# into local main. Falling back to main would clear work that never landed on the
+# branch it was directed at, so teardown must refuse and name the recorded target.
+test_local_only_recorded_remote_only_landing_branch_refuses() {
+  local case_dir rc wt_head
+  case_dir=$(make_case local-only-recorded-remote-target)
+  write_meta "$case_dir" local-only ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  land_equivalent_patch_on_origin_branch "$case_dir" release-Aug2026 feature.txt hello "release landing" >/dev/null
+  append_landing_branch_meta "$case_dir" release-Aug2026
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "local-only-recorded-remote-target: a remote-only recorded target must not fall back to the local default branch"
+  assert_grep "directed at landing branch release-Aug2026, which has no local head" "$case_dir/stderr" \
+    "local-only-recorded-remote-target: refusal did not name the recorded target"
+  assert_grep "has no local head" "$case_dir/stderr" \
+    "local-only-recorded-remote-target: refusal did not explain why the target is unresolvable"
+  assert_grep "Record or pass the correct --landing-branch, or land the work on release-Aug2026 and rerun" "$case_dir/stderr" \
+    "local-only-recorded-remote-target: refusal did not name the two real exits"
+  pass "local-only worktree with a remote-only recorded landing branch refuses instead of falling back"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -803,6 +902,26 @@ test_pr_check_records_remote_head_when_local_lags() {
   pass "fm-pr-check records the remote PR head when the local worktree lags"
 }
 
+test_pr_check_records_landing_branch() {
+  local case_dir pr_head count
+  case_dir=$(make_case pr-check-landing-branch)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head" release-Aug2026
+
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null
+
+  grep -qxF "landing_branch=release-Aug2026" "$case_dir/state/task-x1.meta" \
+    || fail "pr-check-landing-branch: did not record the GitHub PR base branch"
+  count=$(grep -c '^landing_branch=' "$case_dir/state/task-x1.meta" || true)
+  expect_code 1 "$count" "pr-check-landing-branch: should record exactly one landing_branch"
+  pass "fm-pr-check records landing_branch from the GitHub PR base branch"
+}
+
 test_content_in_default_fallback_allows() {
   local case_dir rc
   case_dir=$(make_case content-landed)
@@ -821,6 +940,198 @@ test_content_in_default_fallback_allows() {
   expect_code 0 "$rc" "content-landed: teardown should succeed when content is already in the default branch"
   ! grep -q REFUSED "$case_dir/stderr" || fail "content-landed: teardown printed a REFUSED line"
   pass "worktree whose content already landed in the default branch is torn down (content fallback)"
+}
+
+test_recorded_non_default_landing_branch_allows() {
+  local case_dir rc
+  case_dir=$(make_case recorded-release-landed)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_equivalent_patch_on_origin_branch "$case_dir" release-Aug2026 feature.txt hello "release landing" >/dev/null
+  append_landing_branch_meta "$case_dir" release-Aug2026
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "recorded-release-landed: teardown should accept content landed on the recorded non-default branch"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "recorded-release-landed: teardown printed a REFUSED line"
+  pass "recorded non-default landing branch allows content-equivalent cleanup"
+}
+
+test_explicit_non_default_landing_branch_allows() {
+  local case_dir rc
+  case_dir=$(make_case explicit-release-landed)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_equivalent_patch_on_origin_branch "$case_dir" release-Aug2026 feature.txt hello "release landing" >/dev/null
+
+  set +e
+  run_teardown "$case_dir" --landing-branch release-Aug2026 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "explicit-release-landed: teardown should accept content landed on the explicit non-default branch"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "explicit-release-landed: teardown printed a REFUSED line"
+  pass "explicit non-default landing branch allows content-equivalent cleanup"
+}
+
+test_landing_branch_content_differs_refuses_with_files() {
+  local case_dir rc
+  case_dir=$(make_case recorded-release-differs)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_equivalent_patch_on_origin_branch "$case_dir" release-Aug2026 feature.txt goodbye "different release landing" >/dev/null
+  append_landing_branch_meta "$case_dir" release-Aug2026
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "recorded-release-differs: teardown should refuse when touched-file content differs"
+  grep -q REFUSED "$case_dir/stderr" || fail "recorded-release-differs: no REFUSED line in stderr"
+  assert_grep "files differing from landing branch release-Aug2026" "$case_dir/stderr" \
+    "recorded-release-differs: refusal did not name the landing target"
+  assert_grep "feature.txt" "$case_dir/stderr" \
+    "recorded-release-differs: refusal did not name the differing file"
+  pass "landing-branch content mismatch refuses and names the differing file"
+}
+
+test_landing_branch_missing_change_refuses_with_files() {
+  local case_dir rc tmp
+  case_dir=$(make_case recorded-release-missing)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  tmp="$case_dir/_release"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  git -C "$tmp" push -q origin HEAD:refs/heads/release-Aug2026
+  rm -rf "$tmp"
+  append_landing_branch_meta "$case_dir" release-Aug2026
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "recorded-release-missing: teardown should refuse when the landing branch lacks the touched file"
+  grep -q REFUSED "$case_dir/stderr" || fail "recorded-release-missing: no REFUSED line in stderr"
+  assert_grep "files differing from landing branch release-Aug2026" "$case_dir/stderr" \
+    "recorded-release-missing: refusal did not name the landing target"
+  assert_grep "feature.txt" "$case_dir/stderr" \
+    "recorded-release-missing: refusal did not name the missing file"
+  pass "landing branch missing the branch change refuses and names the missing file"
+}
+
+test_unknown_landing_branch_refuses() {
+  local case_dir rc
+  case_dir=$(make_case unknown-release)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+
+  set +e
+  run_teardown "$case_dir" --landing-branch release-missing > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "unknown-release: teardown should refuse when the landing branch cannot be read"
+  grep -q REFUSED "$case_dir/stderr" || fail "unknown-release: no REFUSED line in stderr"
+  assert_grep "directed at landing branch release-missing, which does not exist on origin" "$case_dir/stderr" \
+    "unknown-release: refusal did not report the branch as absent from origin"
+  assert_grep "recorded landing branch release-missing does not exist on origin" "$case_dir/stderr" \
+    "unknown-release: refusal did not state the absent-branch fact"
+  assert_grep "Record or pass the correct --landing-branch, or land the work on release-missing and rerun" "$case_dir/stderr" \
+    "unknown-release: refusal did not name the two real exits"
+  assert_grep "will not judge the work against a different branch" "$case_dir/stderr" \
+    "unknown-release: refusal did not rule out a default-branch fallback"
+  assert_grep "Only with the captain's explicit OK to discard the work, --force." "$case_dir/stderr" \
+    "unknown-release: refusal did not end with the shared discard footer"
+  assert_not_contains "$(cat "$case_dir/stderr")" "origin was unreachable" \
+    "unknown-release: an absent branch must not be reported as an unreachable origin"
+  pass "a landing branch absent from origin refuses and names the target"
+}
+
+# An unreachable origin is a different fact from a wrong branch. The work here HAS
+# landed on main, so blaming the recorded branch would send the operator to fix
+# something that is already correct; teardown must say landing is unverified.
+test_unreachable_origin_refuses_without_blaming_the_branch() {
+  local case_dir rc stderr
+  case_dir=$(make_case origin-unreachable)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_on_origin_main "$case_dir" feature.txt hello
+  append_landing_branch_meta "$case_dir" main
+  git -C "$case_dir/project" remote set-url origin "$case_dir/gone.git"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  stderr=$(cat "$case_dir/stderr")
+
+  expect_code 1 "$rc" "origin-unreachable: teardown must fail closed when landing cannot be verified"
+  assert_grep "origin was unreachable" "$case_dir/stderr" \
+    "origin-unreachable: refusal did not report the unreachable origin"
+  assert_grep "could not reach or authenticate to origin to verify landing on main" "$case_dir/stderr" \
+    "origin-unreachable: refusal did not state the unverified-landing fact"
+  assert_grep "git fetch origin +refs/heads/main:refs/remotes/origin/main" "$case_dir/stderr" \
+    "origin-unreachable: refusal did not name the exact fetch that failed"
+  assert_grep "Restore access to origin and rerun teardown." "$case_dir/stderr" \
+    "origin-unreachable: refusal did not offer the restore-access exit"
+  assert_grep "Only with the captain's explicit OK to discard the work, --force." "$case_dir/stderr" \
+    "origin-unreachable: refusal did not end with the shared discard footer"
+  assert_not_contains "$stderr" "does not exist on origin" \
+    "origin-unreachable: an outage must never be reported as a wrong branch"
+  assert_not_contains "$stderr" "Record or pass the correct --landing-branch" \
+    "origin-unreachable: an outage must not tell the operator to re-record a correct branch"
+  pass "an unreachable origin refuses as unverified landing, never as a wrong branch"
+}
+
+# A squash landing followed by an unrelated later edit to the same file: the raw
+# touched-file comparison sees a difference, but 3-way merging the landing branch
+# with HEAD reproduces the landing branch's tree, which proves the work landed.
+test_squash_landed_then_landing_branch_advanced_allows() {
+  local case_dir rc tmp
+  case_dir=$(make_case content-landed-advanced)
+  write_meta "$case_dir" no-mistakes ship
+
+  # Shared base: a ten-line feature.txt on origin/main and on the task branch.
+  tmp="$case_dir/_base"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  seq 1 10 | sed 's/^/line/' > "$tmp/feature.txt"
+  git -C "$tmp" add -- feature.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "base feature"
+  git -C "$tmp" push -q origin HEAD:main
+  rm -rf "$tmp"
+  git -C "$case_dir/project" fetch -q origin main
+  git -C "$case_dir/wt" reset -q --hard refs/remotes/origin/main
+
+  # The task branch appends a line; that change squash-lands on main, and a later
+  # unrelated change then edits the file's first line.
+  printf '%s\n' appended >> "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" add -- feature.txt
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -q -m "append a line"
+  tmp="$case_dir/_land"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  printf '%s\n' appended >> "$tmp/feature.txt"
+  git -C "$tmp" add -- feature.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "squash the appended line"
+  sed -i.bak '1s/.*/changed1/' "$tmp/feature.txt"
+  rm -f "$tmp/feature.txt.bak"
+  git -C "$tmp" add -- feature.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "unrelated later edit"
+  git -C "$tmp" push -q origin HEAD:main
+  rm -rf "$tmp"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "content-landed-advanced: squash-landed work must stay teardown-eligible after the landing branch advances"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "content-landed-advanced: teardown printed a REFUSED line"
+  pass "squash-landed work is torn down after the landing branch edits the same file"
 }
 
 test_content_fallback_refreshes_stale_origin_ref() {
@@ -1403,6 +1714,9 @@ test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_local_only_content_equivalent_on_remote_refuses
+test_local_only_recorded_local_landing_branch_allows
+test_local_only_recorded_remote_only_landing_branch_refuses
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
@@ -1417,7 +1731,15 @@ test_squash_merged_pr_allows_replayed_unpushed_patch
 test_merged_pr_with_later_local_commit_refuses
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
+test_pr_check_records_landing_branch
 test_content_in_default_fallback_allows
+test_squash_landed_then_landing_branch_advanced_allows
+test_recorded_non_default_landing_branch_allows
+test_explicit_non_default_landing_branch_allows
+test_landing_branch_content_differs_refuses_with_files
+test_landing_branch_missing_change_refuses_with_files
+test_unknown_landing_branch_refuses
+test_unreachable_origin_refuses_without_blaming_the_branch
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses

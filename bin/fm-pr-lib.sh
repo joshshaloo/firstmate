@@ -213,6 +213,15 @@ fm_pr_head_valid() {
   [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
 }
 
+fm_pr_branch_name_valid() {
+  local branch=${1-}
+  [ -n "$branch" ] || return 1
+  case "$branch" in
+    -*|refs/*) return 1 ;;
+  esac
+  git check-ref-format "refs/heads/$branch" >/dev/null 2>&1
+}
+
 fm_pr_file_mode() {
   if [ "$(uname)" = Darwin ]; then
     stat -f %Lp "$1" 2>/dev/null
@@ -313,6 +322,12 @@ fm_pr_metadata_identity_parse() {
         if [ "$seen_pr" -eq 1 ]; then
           value=${line#pr_head=}
           fm_pr_head_valid "$value" || post_pr_invalid=1
+        fi
+        ;;
+      landing_branch=*)
+        if [ "$seen_pr" -eq 1 ]; then
+          value=${line#landing_branch=}
+          fm_pr_branch_name_valid "$value" || post_pr_invalid=1
         fi
         ;;
       x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)

@@ -67,6 +67,7 @@ A zellij spawn additionally version-gates against the installed `zellij` binary'
 A cmux spawn additionally version-gates against the installed `cmux` binary's version, requires `jq`, and requires the control socket to be reachable and accessible (see [`docs/cmux-backend.md`](cmux-backend.md) "Setup" for the one-time socket-access configuration this needs; Automation mode is the recommended socket control mode, with Password mode supported via `config/cmux-socket-password`), refusing loudly and non-retryably on a `cmuxOnly`/unauthenticated socket.
 A backend spawn refusal from a missing dependency, version gate, or unauthenticated socket is terminal for that selected backend; firstmate surfaces it as a blocker instead of silently retrying another backend.
 Task meta records `backend=` only for a non-default backend; an absent `backend=` means `tmux`, preserving existing default-path meta files.
+PR-ready metadata may also record `landing_branch=` from the forge's base branch so cleanup can verify work landed on a directed non-default branch.
 Every new task records `endpoint_task_id=` as the cleanup binding between the metadata filename and its opaque runtime endpoint.
 A herdr task additionally records `herdr_session=`, `herdr_workspace_id=`, `herdr_tab_id=`, and `herdr_pane_id=`.
 A zellij task additionally records `zellij_session=`, `zellij_tab_id=`, and `zellij_pane_id=`.
@@ -78,7 +79,10 @@ Otherwise an exact task id matching `state/<id>.meta` wins before the legacy `fm
 A metadata-routed selector returns the recorded backend target (`terminal=` for Orca, otherwise `window=`), and matching explicit targets can still recover the recorded backend when metadata contains the same endpoint.
 Only metadata-routed task selectors carry secondmate-marker and Codex-harness context; explicit endpoint escape hatches do not.
 These five sentences are the single owner of the task-selector vocabulary; backend guides and other documents point here instead of restating the resolution order.
-`fm-teardown.sh <id>` takes a task id directly and validates the complete metadata-only endpoint identity before any runtime dispatch or cleanup mutation.
+`fm-teardown.sh <id>` takes a task id directly, accepts an optional `--landing-branch <branch>` when the task metadata lacks the directed target, and validates the complete metadata-only endpoint identity before any runtime dispatch or cleanup mutation.
+A `local-only` project resolves that landing branch to a local head only and accepts nothing but work merged into it, since its work lands locally; a merged forge PR or content matching a remote ref never authorizes a `local-only` teardown.
+Recording no landing target means the default branch is the target, while a recorded target that is definitively absent is refused by name rather than falling back to the default branch, so work is never judged against a branch it was not directed at.
+An origin that cannot be reached or authenticated is reported as its own fact - landing unverified, naming the fetch that failed - so a transient outage is never presented as a wrongly recorded branch; all three cases refuse.
 Missing, empty, duplicate, malformed, backend-inconsistent, or task-mismatched endpoint records are preserved and refused.
 Legacy tmux metadata remains cleanup-compatible when its exact window name is `fm-<id>`; opaque non-tmux endpoints require their recorded `endpoint_task_id=` binding.
 `FM_HOME` determines Herdr's home label: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses `2ndmate-<secondmate-id>`.

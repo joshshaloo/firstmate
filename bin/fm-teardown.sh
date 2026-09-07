@@ -9,18 +9,23 @@
 # reachable from any remote-tracking branch (a fork counts as a remote, so
 # upstream-contribution PRs pushed to a fork satisfy this in any mode), OR - for a
 # normal ship task whose commits are not so reachable - when its PR is merged and
-# GitHub reports a PR head that contains the current local work, or its content is
-# already present in the up-to-date default branch. This recognizes the common
-# squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
-# on a remote yet the change is fully in main.
+# GitHub reports a PR head that contains the current local work, or its work is
+# already present in the up-to-date landing branch. The landing branch comes from
+# --landing-branch, then the task's recorded landing_branch= metadata, then the
+# project's default branch. This recognizes non-default release landings and the
+# common squash-merge-then-delete-branch flow, where the branch's own commits live
+# nowhere on a remote yet the change is fully in the branch it targeted.
 # The PR itself is resolved from the task's recorded pr= when present, or - when
 # no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
 # where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
 # up a merged PR whose head branch matches the worktree's branch, fetching its head
 # via refs/pull/<n>/head when the branch itself was deleted. So a missing pr= never
 # by itself causes a false refusal of landed work.
-# A gh lookup error falls back to the content check; if that is also inconclusive,
-# teardown refuses rather than risk discarding unlanded work.
+# A gh lookup error falls back to the landing-branch content check; if that is
+# also inconclusive, teardown refuses rather than risk discarding unlanded work.
+# Commit identity on the landing branch is accepted. When identity fails, the
+# content check compares only the files changed by the work branch against the
+# landing branch and requires zero differing lines; a refusal names those files.
 # Uncommitted changes are never landed.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
@@ -52,7 +57,9 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force]
+# Usage: fm-teardown.sh <task-id> [--landing-branch <branch>] [--force]
+#   --landing-branch names the branch the work was directed to when metadata does
+#   not already record it; the default branch remains the fallback.
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
@@ -113,7 +120,35 @@ if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   exit 2
 fi
 ID=$1
-FORCE=${2:-}
+shift
+FORCE=
+TEARDOWN_LANDING_BRANCH_ARG=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --force)
+      [ -z "$FORCE" ] || { echo "error: duplicate --force" >&2; exit 2; }
+      FORCE=--force
+      shift
+      ;;
+    --landing-branch|--target-branch)
+      [ -z "$TEARDOWN_LANDING_BRANCH_ARG" ] || { echo "error: duplicate landing branch" >&2; exit 2; }
+      [ "$#" -ge 2 ] || { echo "error: --landing-branch requires a branch name" >&2; exit 2; }
+      TEARDOWN_LANDING_BRANCH_ARG=$2
+      fm_pr_branch_name_valid "$TEARDOWN_LANDING_BRANCH_ARG" || { echo "error: invalid landing branch" >&2; exit 2; }
+      shift 2
+      ;;
+    --landing-branch=*|--target-branch=*)
+      [ -z "$TEARDOWN_LANDING_BRANCH_ARG" ] || { echo "error: duplicate landing branch" >&2; exit 2; }
+      TEARDOWN_LANDING_BRANCH_ARG=${1#*=}
+      fm_pr_branch_name_valid "$TEARDOWN_LANDING_BRANCH_ARG" || { echo "error: invalid landing branch" >&2; exit 2; }
+      shift
+      ;;
+    *)
+      echo "error: unknown teardown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never tear
 # down a worktree (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -134,6 +169,7 @@ T_ORCA=
 "$FM_ROOT/bin/fm-guard.sh" || true
 HOME_PATH=$(grep '^home=' "$META" | cut -d= -f2- || true)
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
+LANDING_BRANCH_META=$(grep '^landing_branch=' "$META" | tail -1 | cut -d= -f2- || true)
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
 # (/tmp/fm-<id>/); absent for tasks spawned before that change, so tolerate empty.
 TASK_TMP=$(grep '^tasktmp=' "$META" | cut -d= -f2- || true)
@@ -471,40 +507,99 @@ pr_is_merged() {
   unpushed_patches_are_in_pr_head "$head"
 }
 
-# Is the branch's content already present in the up-to-date default branch? Fetches
-# first, then 3-way merges the default branch with HEAD: when HEAD introduces nothing
-# the default branch does not already contain (e.g. its change landed via squash) the
-# merged tree equals the default branch's tree. This isolates branch-only changes, so
-# unrelated commits the default branch gained past the merge-base do not count as
-# "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
-# so the caller refuses rather than guesses.
-content_in_default() {
-  local name ref default_tree merged_tree
-  name=$(default_branch) || return 1
-  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
-    ref="refs/remotes/origin/$name"
-  elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
-    ref="refs/heads/$name"
+landing_branch_for_content_check() {
+  if [ -n "$TEARDOWN_LANDING_BRANCH_ARG" ]; then
+    printf '%s\n' "$TEARDOWN_LANDING_BRANCH_ARG"
+    return 0
+  fi
+  if [ -n "$LANDING_BRANCH_META" ]; then
+    printf '%s\n' "$LANDING_BRANCH_META"
+    return 0
+  fi
+  default_branch
+}
+
+resolve_landing_branch_ref() {
+  local branch=$1 ref
+  fm_pr_branch_name_valid "$branch" || return 1
+  if [ "$MODE" = local-only ] \
+    && git -C "$WT" rev-parse --quiet --verify "refs/heads/$branch" >/dev/null 2>&1; then
+    ref="refs/heads/$branch"
+  elif git -C "$WT" remote get-url origin >/dev/null 2>&1; then
+    git -C "$WT" fetch --quiet origin "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 || return 1
+    ref="refs/remotes/origin/$branch"
+  elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$branch" >/dev/null 2>&1; then
+    ref="refs/heads/$branch"
   else
     return 1
   fi
-  default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
-  [ -n "$default_tree" ] || return 1
-  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
-  merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
-  [ "$merged_tree" = "$default_tree" ]
+  git -C "$WT" rev-parse --quiet --verify "$ref^{commit}" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$ref"
+}
+
+# Is the branch's content already present in the up-to-date landing branch?
+# Fetches first, then compares only the files changed by the work branch since
+# its merge-base with the landing branch. This isolates branch-only changes, so
+# unrelated commits the landing branch gained past the merge-base do not count
+# as missing work. Returns non-zero when the target branch is unavailable, the
+# history is unreadable, the work branch touched no files, or any touched file
+# differs. On a content mismatch, LANDING_REFUSAL_DETAIL names the exact files.
+content_in_landing_branch() {
+  local landing_branch=$1 ref base paths_tmp diff_files path status=1
+  LANDING_REFUSAL_DETAIL=
+  ref=$(resolve_landing_branch_ref "$landing_branch") || {
+    LANDING_REFUSAL_DETAIL="landing branch $landing_branch is unavailable."
+    return 1
+  }
+  base=$(git -C "$WT" merge-base HEAD "$ref" 2>/dev/null) || {
+    LANDING_REFUSAL_DETAIL="cannot compare HEAD to landing branch $landing_branch."
+    return 1
+  }
+  paths_tmp=$(mktemp "${TMPDIR:-/tmp}/fm-teardown-paths.XXXXXX") || return 1
+  if git -C "$WT" diff --name-only -z "$base..HEAD" -- > "$paths_tmp" 2>/dev/null; then
+    if [ ! -s "$paths_tmp" ]; then
+      LANDING_REFUSAL_DETAIL="content proof found no changed files; commit identity must prove landing."
+    else
+      set --
+      while IFS= read -r -d '' path; do
+        set -- "$@" "$path"
+      done < "$paths_tmp"
+      if [ "$#" -gt 0 ]; then
+        if diff_files=$(git -C "$WT" diff --name-only "$ref" HEAD -- "$@" 2>/dev/null); then
+          if [ -z "$diff_files" ]; then
+            status=0
+          else
+            LANDING_REFUSAL_DETAIL=$(printf 'files differing from landing branch %s:\n%s' "$landing_branch" "$diff_files")
+          fi
+        else
+          LANDING_REFUSAL_DETAIL="cannot compare touched files to landing branch $landing_branch."
+        fi
+      fi
+    fi
+  fi
+  rm -f -- "$paths_tmp"
+  return "$status"
 }
 
 # Has the worktree's committed work actually LANDED, though its commits are not
 # reachable from any remote-tracking branch? True when a merged PR proves the
-# current local work is contained in the PR head, OR the content is already in the
-# default branch (fallback, which also covers the no-PR and gh-error paths). False
-# only for genuinely unlanded work.
+# current local work is contained in the PR head, OR the current HEAD commit is
+# an ancestor of the landing branch, OR the touched-file content is already in
+# the landing branch. False only for genuinely unlanded work or unreadable proof.
 work_is_landed() {
-  local branch=$1
+  local branch=$1 landing_branch ref
+  LANDING_REFUSAL_DETAIL=
   pr_is_merged "$branch" && return 0
-  content_in_default
+  landing_branch=$(landing_branch_for_content_check) || {
+    LANDING_REFUSAL_DETAIL="cannot determine landing branch for $PROJ; expected origin/HEAD, main, or master."
+    return 1
+  }
+  ref=$(resolve_landing_branch_ref "$landing_branch") || {
+    LANDING_REFUSAL_DETAIL="landing branch $landing_branch is unavailable."
+    return 1
+  }
+  git -C "$WT" merge-base --is-ancestor HEAD "$ref" 2>/dev/null && return 0
+  content_in_landing_branch "$landing_branch"
 }
 
 backlog_refresh_reminder() {
@@ -753,7 +848,7 @@ teardown_treehouse_return() {
 }
 
 validate_worktree_teardown_safety() {
-  local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
+  local dirty_raw dirty unpushed_raw unpushed branch
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
@@ -780,25 +875,7 @@ validate_worktree_teardown_safety() {
   fi
   unpushed=$(printf '%s\n' "$unpushed_raw" | head -5)
 
-  if [ -n "$unpushed" ] && [ "$MODE" = local-only ]; then
-    DEFAULT=$(default_branch) || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
-    if ! unmerged_raw=$(git -C "$WT" log --oneline HEAD --not "$DEFAULT" -- 2>/dev/null); then
-      if worktree_safety_blocked_by_lock "commits not on $DEFAULT"; then
-        return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
-      fi
-      echo "REFUSED: cannot inspect worktree $WT for commits not on $DEFAULT." >&2
-      echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
-      return 1
-    fi
-    unmerged=$(printf '%s\n' "$unmerged_raw" | head -5)
-    if [ -n "$dirty" ] || [ -n "$unmerged" ]; then
-      echo "REFUSED: local-only worktree $WT has work not yet merged into $DEFAULT and not on any remote." >&2
-      [ -n "$dirty" ] && echo "uncommitted changes present" >&2
-      [ -n "$unmerged" ] && printf 'commits not yet on %s:\n%s\n' "$DEFAULT" "$unmerged" >&2
-      echo "Merge the branch into local $DEFAULT first (bin/fm-merge-local.sh after the captain approves), or push to a fork/remote, or get the captain's explicit OK to discard, then --force." >&2
-      return 1
-    fi
-  elif [ -n "$dirty" ]; then
+  if [ -n "$dirty" ]; then
     echo "REFUSED: worktree $WT has uncommitted changes." >&2
     echo "uncommitted changes present" >&2
     echo "Commit them (or get the captain's explicit OK to discard, then --force)." >&2
@@ -812,7 +889,8 @@ validate_worktree_teardown_safety() {
     if ! work_is_landed "$branch"; then
       echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
       printf 'unpushed commits:\n%s\n' "$unpushed" >&2
-      echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
+      [ -z "$LANDING_REFUSAL_DETAIL" ] || printf '%s\n' "$LANDING_REFUSAL_DETAIL" >&2
+      echo "Push the branch, land its PR, record or pass the correct --landing-branch, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
   fi

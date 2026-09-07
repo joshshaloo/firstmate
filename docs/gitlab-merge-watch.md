@@ -195,6 +195,7 @@ No armed watch is lost by upgrading.
 `bin/fm-pr-merge.sh` still addresses GitHub only, by owner and repository.
 It refuses a GitLab merge request URL rather than sending it to the wrong forge, so merging a merge request stays a deliberate manual step until merge parity lands separately.
 
-A GitLab task records no `pr_head=`.
-`gh` exposes the head commit as a selectable field, while plain `glab` exposes it only inside its JSON output, which would need a JSON processor firstmate does not require.
-Both consumers already treat it as optional: `bin/fm-teardown.sh` reads the head from the forge at teardown rather than from metadata and falls back to its provider-agnostic content check, and `bin/fm-review-diff.sh` resolves the head from the remote when none is recorded.
+A GitLab task records no `pr_head=` or `landing_branch=`.
+`gh` exposes the head commit and base branch as selectable fields, while plain `glab` exposes equivalent data only inside its JSON output, which would need a JSON processor firstmate does not require.
+Both consumers already treat the head as optional: `bin/fm-teardown.sh` reads it from the forge at teardown and falls back to its content check, and `bin/fm-review-diff.sh` resolves the head from the remote when none is recorded.
+For a GitLab merge request aimed away from the default branch, pass `fm-teardown.sh --landing-branch <branch>` so the content check compares against the directed branch.

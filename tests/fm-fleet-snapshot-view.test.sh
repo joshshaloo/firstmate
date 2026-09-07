@@ -562,6 +562,30 @@ EOF
   pass "snapshot parses tasks-axi rows and respects operational overrides"
 }
 
+test_large_backlog_does_not_use_json_as_jq_argv() {
+  local home out i filler
+  home=$(make_home large-backlog)
+  filler=$(printf '%0500d' 0 | tr '0' 'x')
+  {
+    printf '## In flight\n\n## Queued\n'
+    i=1
+    while [ "$i" -le 300 ]; do
+      printf -- '- [ ] queued-%03d - Large queued task %03d %s (repo: alpha) (kind: ship)\n' "$i" "$i" "$filler"
+      i=$((i + 1))
+    done
+    printf '\n## Done\n'
+  } > "$home/data/backlog.md"
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot must succeed with a parsed backlog larger than MAX_ARG_STRLEN"
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-fleet-snapshot.v1"
+      and (.backlog.records | length) == 300
+      and .main_inventory.valid == true
+      and (.tasks | length) == 0
+  ' >/dev/null || fail "large backlog snapshot had unexpected content"
+  pass "large parsed backlog is transported to jq without argv-size failure"
+}
+
 test_view_renders_snapshot() {
   local home fakebin view
   home=$(make_home view)
@@ -792,5 +816,6 @@ test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
+test_large_backlog_does_not_use_json_as_jq_argv
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status

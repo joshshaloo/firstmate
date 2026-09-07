@@ -11,6 +11,10 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
+FLEET="$ROOT/bin/fm-fleet-snapshot.sh"
+# Linux caps a single argv/envp string at MAX_ARG_STRLEN, which is well below
+# the byte policy the snapshot applies to a secondmate home summary.
+MAX_ARG_STRLEN=131072
 TMP_ROOT=$(fm_test_tmproot fm-bearings)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -525,6 +529,103 @@ EOF
   pass "an oversized secondmate summary retains the strict empty unknown fallback"
 }
 
+append_bulk_landed_rows() {  # <secondmate-home> <count>
+  local mate=$1 count=$2 pad i
+  pad=$(printf '%0110d' 0 | tr '0' 'x')
+  i=1
+  while [ "$i" -le "$count" ]; do
+    printf -- '- [x] landed-%04d - %s (repo: sample) (kind: ship) (merged 2026-07-01)\n' \
+      "$i" "$pad" >> "$mate/data/backlog.md"
+    i=$((i + 1))
+  done
+}
+
+# A home summary inside FM_SNAPSHOT_SECONDMATE_MAX_BYTES can still be twice
+# MAX_ARG_STRLEN, and the accumulated record set crosses it regardless of any
+# single summary. Both must reach jq by file, never by argv.
+test_accepted_large_home_summaries_never_reach_jq_argv() {
+  local home alpha beta fakebin summary_bytes snap records_bytes json
+  home=$(make_home landed-argv-limit)
+  : > "$home/data/secondmates.md"
+  printf '## Done\n' > "$home/data/backlog.md"
+  alpha=$(make_landed_secondmate "$home" alpha)
+  beta=$(make_landed_secondmate "$home" beta)
+  append_bulk_landed_rows "$alpha" 450
+  append_bulk_landed_rows "$beta" 450
+
+  summary_bytes=$(FM_HOME="$alpha" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=0 "$FLEET" --secondmate-home-summary \
+    | LC_ALL=C wc -c | tr -d ' ')
+  [ "$summary_bytes" -gt "$MAX_ARG_STRLEN" ] \
+    || fail "fixture home summary is only $summary_bytes bytes; it must exceed MAX_ARG_STRLEN"
+  [ "$summary_bytes" -le 262144 ] \
+    || fail "fixture home summary is $summary_bytes bytes; it must stay inside the accepted byte policy"
+
+  fakebin=$(make_fakebin "$home")
+  snap=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    FM_SNAPSHOT_SECONDMATES=0 FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=0 "$FLEET" --json) \
+    || fail "canonical snapshot must succeed when accepted home summaries exceed MAX_ARG_STRLEN"
+  records_bytes=$(printf '%s' "$snap" | jq -c '.secondmate_current.records' | LC_ALL=C wc -c | tr -d ' ')
+  [ "$records_bytes" -gt "$MAX_ARG_STRLEN" ] \
+    || fail "accumulated secondmate records are only $records_bytes bytes; they must exceed MAX_ARG_STRLEN"
+  printf '%s' "$snap" | jq -e '
+    (.secondmate_current.records | length) == 2
+      and all(.secondmate_current.records[];
+              .provenance.selected == "structured-home" and .current.state == "no_active_work")
+      and (.secondmate_landed.records | length) == 900
+  ' >/dev/null || fail "large accepted home summaries did not survive the aggregation"
+
+  json=$(run "$home" "$fakebin" --json --all-landed) \
+    || fail "--all-landed must succeed when accepted home summaries exceed MAX_ARG_STRLEN"
+  printf '%s' "$json" | jq -e '
+    (.landed | length) == 900
+      and ([.landed[].owner] | unique) == ["alpha","beta"]
+      and (.secondmates | any(.state == "unknown") | not)
+  ' >/dev/null || fail "--all-landed lost or downgraded the large secondmate homes"
+  pass "accepted large home summaries and the record accumulator avoid jq argv"
+}
+
+# status_open_decisions folds the whole status log with no byte cap, and the
+# reconciliation derived from it re-emits every entry with three added fields, so
+# it is always the largest value in the record build. Neither may reach jq by argv,
+# and a builder failure must be loud rather than a silently absent home.
+test_large_parent_decision_set_never_reaches_jq_argv() {
+  local home mate fakebin pad i snap reconciliation_bytes json
+  home=$(make_home parent-decision-argv-limit)
+  : > "$home/data/secondmates.md"
+  printf '## Done\n' > "$home/data/backlog.md"
+  mate=$(make_landed_secondmate "$home" wide)
+  fm_write_secondmate_meta "$home/state/wide.meta" "$mate" "firstmate:fm-wide" sample
+  pad=$(printf '%02200d' 0 | tr '0' 'x')
+  : > "$home/state/wide.status"
+  i=1
+  while [ "$i" -le 70 ]; do
+    printf 'needs-decision [key=topic-%04d]: %s\n' "$i" "$pad" >> "$home/state/wide.status"
+    i=$((i + 1))
+  done
+
+  fakebin=$(make_fakebin "$home")
+  snap=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z "$FLEET" --json) \
+    || fail "canonical snapshot must succeed with an over-limit unresolved keyed parent decision set"
+  reconciliation_bytes=$(printf '%s' "$snap" \
+    | jq -c '.secondmate_current.records[0].parent_event.reconciliation' | LC_ALL=C wc -c | tr -d ' ')
+  [ "$reconciliation_bytes" -gt "$MAX_ARG_STRLEN" ] \
+    || fail "fixture reconciliation is only $reconciliation_bytes bytes; it must exceed MAX_ARG_STRLEN"
+  printf '%s' "$snap" | jq -e '
+    (.secondmate_current.records | length) == .secondmate_current.shown
+      and (.secondmate_current.records | length) == 1
+      and (.secondmate_current.records[0].parent_event.open_decisions | length) == 70
+      and .secondmate_current.records[0].provenance.selected == "structured-home"
+  ' >/dev/null || fail "a large parent decision set silently dropped the secondmate from the aggregation"
+
+  json=$(run "$home" "$fakebin" --json) \
+    || fail "bearings must succeed with an over-limit unresolved keyed parent decision set"
+  printf '%s' "$json" | jq -e '
+    (.secondmates | length) == 1 and (.secondmates | any(.state == "unknown") | not)
+  ' >/dev/null || fail "a large parent decision set lost or downgraded the secondmate home"
+  pass "a large parent decision set and its reconciliation avoid jq argv"
+}
+
 test_secondmate_and_child_bounds_are_disclosed() {
   local home fakebin id mate child json expanded canonical i
   home=$(make_home secondmate-bounds)
@@ -1002,7 +1103,7 @@ test_perl_fallback_bounds_github_call() {
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find; do
+  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp rm; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
   started=$(date +%s)
@@ -1896,6 +1997,8 @@ test_active_child_overrides_old_parent_event
 test_structured_child_decision_reaches_captains_call
 test_bad_secondmate_homes_never_revive_parent_work
 test_oversized_secondmate_summary_stays_strict_unknown
+test_accepted_large_home_summaries_never_reach_jq_argv
+test_large_parent_decision_set_never_reaches_jq_argv
 test_secondmate_and_child_bounds_are_disclosed
 test_parent_decision_is_untrusted_contradiction_only
 test_parent_evidence_reconciles_by_verb_and_key

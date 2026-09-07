@@ -575,7 +575,7 @@ task_json_lines() {
              steer:"bin/fm-send.sh fm-\($id) \u0027<instruction>\u0027",
              return_channel_note:null}
           end)
-      }'
+      }' || return 1
   done
   } > "$rows_file" || return 1
   jq -s 'sort_by(.id)' "$rows_file"

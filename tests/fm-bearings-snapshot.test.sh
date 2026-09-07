@@ -596,17 +596,17 @@ test_large_parent_decision_set_never_reaches_jq_argv() {
   printf '## Done\n' > "$home/data/backlog.md"
   mate=$(make_landed_secondmate "$home" wide)
   fm_write_secondmate_meta "$home/state/wide.meta" "$mate" "firstmate:fm-wide" sample
-  pad=$(printf '%0180d' 0 | tr '0' 'x')
+  pad=$(printf '%02200d' 0 | tr '0' 'x')
   : > "$home/state/wide.status"
   i=1
-  while [ "$i" -le 500 ]; do
+  while [ "$i" -le 70 ]; do
     printf 'needs-decision [key=topic-%04d]: %s\n' "$i" "$pad" >> "$home/state/wide.status"
     i=$((i + 1))
   done
 
   fakebin=$(make_fakebin "$home")
   snap=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z "$FLEET" --json) \
-    || fail "canonical snapshot must succeed with a few hundred unresolved keyed parent decisions"
+    || fail "canonical snapshot must succeed with an over-limit unresolved keyed parent decision set"
   reconciliation_bytes=$(printf '%s' "$snap" \
     | jq -c '.secondmate_current.records[0].parent_event.reconciliation' | LC_ALL=C wc -c | tr -d ' ')
   [ "$reconciliation_bytes" -gt "$MAX_ARG_STRLEN" ] \
@@ -614,12 +614,12 @@ test_large_parent_decision_set_never_reaches_jq_argv() {
   printf '%s' "$snap" | jq -e '
     (.secondmate_current.records | length) == .secondmate_current.shown
       and (.secondmate_current.records | length) == 1
-      and (.secondmate_current.records[0].parent_event.open_decisions | length) == 500
+      and (.secondmate_current.records[0].parent_event.open_decisions | length) == 70
       and .secondmate_current.records[0].provenance.selected == "structured-home"
   ' >/dev/null || fail "a large parent decision set silently dropped the secondmate from the aggregation"
 
   json=$(run "$home" "$fakebin" --json) \
-    || fail "bearings must succeed with a few hundred unresolved keyed parent decisions"
+    || fail "bearings must succeed with an over-limit unresolved keyed parent decision set"
   printf '%s' "$json" | jq -e '
     (.secondmates | length) == 1 and (.secondmates | any(.state == "unknown") | not)
   ' >/dev/null || fail "a large parent decision set lost or downgraded the secondmate home"

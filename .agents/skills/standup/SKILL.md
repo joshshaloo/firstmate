@@ -36,8 +36,8 @@ That is why this skill has its own time-windowed reader and Bearings does not.
 - Treat a window token and a registered project name as the ONLY invocation options.
   Do not read a natural-language request such as "just the last two days" or "only the forge work" as an option unless the standalone token was actually typed; ask one short question instead when it matters.
 - Chat is the only surface.
-  There is deliberately no board mode: the standup is a two-minute read the captain answers by talking, and `/bearings lavish` already owns the interactive surface for acting on open items.
-  When the captain wants to click through decisions after the standup, offer `/bearings lavish` rather than building a second board.
+  There is deliberately no board mode: the standup is a two-minute read the captain answers by talking, and `/bearings` already owns the optional Lavish review board for acting on open items.
+  When the captain wants to click through decisions after the standup, offer that Bearings board rather than building a second one.
 
 ## What it does
 
@@ -97,7 +97,7 @@ Rules that keep this honest:
   Read `deploys[].evidence_sought`, `deploys[].evidence_found`, and `deploys[].evidence_unavailable` before speaking a shipped verdict.
   Say the missing piece in the captain's words: no declared production deploy step for that repository, a step not present in that run, a step that did not complete successfully, unreadable steps, an unreadable log, or no recorded production head.
 - The reasons a deploy proved nothing are different sentences, and the reader keeps them apart.
-  A run refused because one of its deploy steps failed, a log that could not be read, a log cut short, a log that recorded nothing, a step payload that did not parse, and an identification the payload could not settle are distinct facts.
+  A run refused because one of its deploy steps failed, a log that could not be read, a log cut short, a log that recorded nothing, a step payload that did not parse, an identification the payload could not settle, and a run that carried no identifier to probe at all are distinct facts.
   Read `deploys[].counted` and `deploys[].deploy_step_outcome` and say the one that applies; never flatten them into "not deployed".
 - A deploy that ran but proved nothing is not a failed deploy.
   Say "it deployed, we could not confirm what it put live" rather than implying the deploy broke.

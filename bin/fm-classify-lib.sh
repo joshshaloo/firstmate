@@ -193,8 +193,12 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
+  command -v awk >/dev/null 2>&1 || {
+    printf 'fm-classify-lib: awk not found; refusing to fold the %s status stream\n' "$mode" >&2
+    return 1
+  }
   # shellcheck disable=SC2016 # awk program; shell values enter through -v above.
-  "${AWK:-/usr/bin/awk}" -v mode="$mode" -v resolve="$resolve" -v held="$held" -v pause="$pause" '
+  awk -v mode="$mode" -v resolve="$resolve" -v held="$held" -v pause="$pause" '
     function trim_leading(s) { sub(/^[[:space:]]+/, "", s); return s }
     function trim_both(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     function status_verb(line, p) {
@@ -209,6 +213,7 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
       start = index(p, "[key=")
       if (start == 0) return "default"
       k = substr(p, start + 5)
+      if (index(k, "]") == 0) return "default"
       sub(/\].*$/, "", k)
       if (k == "" || k !~ /^[A-Za-z0-9._-]+$/) return ""
       return k
@@ -292,7 +297,7 @@ status_open_activities() {  # <status-file-or-dash>
   local f=$1
   if [ "$f" = - ]; then
     _fm_status_open_activities_stream
-    return 0
+    return
   fi
   [ -f "$f" ] || return 0
   _fm_status_open_activities_stream < "$f"

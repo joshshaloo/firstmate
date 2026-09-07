@@ -295,12 +295,21 @@ resolved: default was answered
 needs-decision [key=custom]: blocker became a choice with latest note
 needs-decision [key=bad key]: malformed key is ignored
 EOF
+  cat > "$state/malformed.status" <<'EOF'
+needs-decision [key=race: unterminated key token folds under default
+resolved: default was answered
+blocked [key=]: empty key is ignored
+blocked [key=bad key]: invalid characters are ignored
+needs-decision [key=route: second unterminated token reopens default
+captain-held [key=hold: unterminated token closes default
+needs-decision [key=stale: unterminated token opens default again
+EOF
   for f in "$state"/*.status; do
-    old=$(legacy_status_open_decisions "$f")
-    new=$(status_open_decisions "$f")
+    old=$(legacy_status_open_decisions "$f"; printf 'X')
+    new=$(status_open_decisions "$f"; printf 'X')
     [ "$new" = "$old" ] || fail "new open-decision fold diverged from legacy fold for $f: old=[$old] new=[$new]"
   done
-  pass "status_open_decisions matches the legacy fold on keyed, resolved, held, multi, and legacy fixtures"
+  pass "status_open_decisions matches the legacy fold on keyed, resolved, held, multi, malformed, and legacy fixtures"
 }
 
 test_open_decision_fold_500_entry_timing_guard() {

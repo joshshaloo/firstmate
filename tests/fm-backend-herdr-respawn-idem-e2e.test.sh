@@ -5,22 +5,17 @@
 # across a server restart").
 #
 # herdr persists its whole session layout (workspaces/tabs/panes) and
-# restores it after a server restart, including a reboot. Before this fix, a
-# restored fm-<id> task tab came back a husk - a dead pane, or a plain
-# agent-less shell in the saved cwd - and bin/backends/herdr.sh's
-# fm_backend_herdr_create_task refused to spawn into it unconditionally,
-# because a same-labeled tab already existed. Every fleet respawn after a
-# real herdr server restart needed the operator to manually close each husk
-# pane first (this reproduced again on 2026-07-03).
+# restores it after a server restart, including a reboot. A restored fm-<id>
+# task tab comes back a husk - a dead pane, or a plain agent-less shell in the
+# saved cwd - never the crewmate that used to be there.
 #
 # This test drives a REAL `herdr session stop` + fresh `herdr server` restart
 # (the same "ID stability" mechanism docs/herdr-backend.md already documents:
 # the pane survives alive, but agent_status resets and nothing is registered
 # in it - exactly the restored-plain-shell husk shape), then proves
-# fm_backend_herdr_create_task now closes-and-replaces the resulting husk
-# instead of refusing, while a GENUINELY live duplicate (a real registered
-# agent, via herdr's own `pane report-agent`) still refuses exactly as
-# before. Adapter-level (fm_backend_herdr_container_ensure/create_task), not
+# fm_backend_herdr_create_task refuses the duplicate tab and leaves it intact
+# for explicit reconciliation instead of closing and replacing it. Adapter-level
+# (fm_backend_herdr_container_ensure/create_task), not
 # through the full bin/fm-spawn.sh + treehouse pipeline - mirrors
 # tests/fm-backend-herdr-prune-safety-e2e.test.sh's own style, and avoids any
 # question of whether treehouse itself supports re-acquiring a worktree for
@@ -123,60 +118,46 @@ if herdr agent get "$CREW_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
 fi
 pass "repro confirmed: after a real session restart, both task panes survive alive but with no registered agent - the restored-layout husk"
 
-# --- 3. BEFORE the fix this would refuse; now it closes-and-replaces -------
+# --- 3. duplicate husks refuse and remain for explicit reconciliation -------
 
-RESPAWN_CREW_IDS=$(fm_backend_herdr_create_task "$CONTAINER" "$CREW_LABEL" "$PROJ_CWD") \
-  || fail "REGRESSION: create_task refused to respawn into the crewmate-shaped husk instead of closing-and-replacing it - this is the exact 2026-07-03 incident (manual pane close required)"
-read -r NEW_CREW_TAB_ID NEW_CREW_PANE_ID <<EOF
-$RESPAWN_CREW_IDS
-EOF
-if [ -z "$NEW_CREW_TAB_ID" ] || [ -z "$NEW_CREW_PANE_ID" ]; then
-  fail "husk respawn (crewmate-shaped) did not return new tab/pane ids"
+if fm_backend_herdr_create_task "$CONTAINER" "$CREW_LABEL" "$PROJ_CWD" >/dev/null 2>&1; then
+  fail "REGRESSION: create_task should refuse the crewmate-shaped restored husk"
 fi
-[ "$NEW_CREW_PANE_ID" != "$CREW_PANE_ID" ] || fail "husk respawn (crewmate-shaped) returned the SAME pane id - nothing was actually replaced"
-if herdr pane get "$CREW_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
-  fail "REGRESSION: the old crewmate-shaped husk pane should have been closed by close-and-replace, but it still exists"
+if ! herdr pane get "$CREW_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
+  fail "REGRESSION: the refused crewmate-shaped husk pane should have survived untouched"
 fi
-pass "fixed: create_task closes and replaces the crewmate-shaped restored husk instead of refusing - no manual pane close needed"
+pass "fixed: create_task refuses the crewmate-shaped restored husk and leaves it for explicit reconciliation"
 
-RESPAWN_SM_IDS=$(fm_backend_herdr_create_task "$CONTAINER" "$SM_LABEL" "$PROJ_CWD") \
-  || fail "REGRESSION: create_task refused to respawn into the secondmate-shaped husk instead of closing-and-replacing it"
-read -r NEW_SM_TAB_ID NEW_SM_PANE_ID <<EOF
-$RESPAWN_SM_IDS
-EOF
-if [ -z "$NEW_SM_TAB_ID" ] || [ -z "$NEW_SM_PANE_ID" ]; then
-  fail "husk respawn (secondmate-shaped) did not return new tab/pane ids"
+if fm_backend_herdr_create_task "$CONTAINER" "$SM_LABEL" "$PROJ_CWD" >/dev/null 2>&1; then
+  fail "REGRESSION: create_task should refuse the secondmate-shaped restored husk"
 fi
-[ "$NEW_SM_PANE_ID" != "$SM_PANE_ID" ] || fail "husk respawn (secondmate-shaped) returned the SAME pane id - nothing was actually replaced"
-if herdr pane get "$SM_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
-  fail "REGRESSION: the old secondmate-shaped husk pane should have been closed by close-and-replace, but it still exists"
+if ! herdr pane get "$SM_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
+  fail "REGRESSION: the refused secondmate-shaped husk pane should have survived untouched"
 fi
-pass "fixed: create_task closes and replaces the secondmate-shaped restored husk instead of refusing - same fix, same function, both spawn shapes"
+pass "fixed: create_task refuses the secondmate-shaped restored husk and leaves it for explicit reconciliation"
 
 WS_TABS=$(herdr tab list --workspace "$WSID" --session "$SESSION" 2>&1)
 WS_COUNT=$(printf '%s' "$WS_TABS" | jq -r '.result.tabs? // [] | length')
-[ "$WS_COUNT" = 2 ] || fail "expected exactly 2 tabs (the two replacements, husks closed, no leaks), got $WS_COUNT: $WS_TABS"
-pass "fixed: the workspace holds exactly the 2 replacement tabs after both respawns - no leaked husk tabs, no destroyed workspace"
+[ "$WS_COUNT" = 2 ] || fail "expected exactly 2 original husk tabs, got $WS_COUNT: $WS_TABS"
+pass "fixed: the workspace still holds exactly the original husk tabs after refused respawns"
 
 # --- 4. a GENUINELY live duplicate still refuses, unchanged -----------------
-# Register a real agent (herdr's own native registration primitive) on one of
-# the freshly-respawned panes, then confirm a further same-labeled spawn
-# attempt refuses exactly as before - the husk fix must never touch a pane
-# that actually has something registered in it.
+# Register a real agent on one husk and confirm another same-labeled spawn
+# attempt still refuses without touching it.
 
-herdr pane report-agent "$NEW_CREW_PANE_ID" --source fm-respawn-e2e --agent fm-respawn-live-agent --state idle --session "$SESSION" >/dev/null 2>&1 \
-  || fail "could not register a live agent on the respawned crewmate-shaped pane"
+herdr pane report-agent "$CREW_PANE_ID" --source fm-respawn-e2e --agent fm-respawn-live-agent --state idle --session "$SESSION" >/dev/null 2>&1 \
+  || fail "could not register a live agent on the crewmate-shaped pane"
 
 if fm_backend_herdr_create_task "$CONTAINER" "$CREW_LABEL" "$PROJ_CWD" >/dev/null 2>&1; then
   fail "REGRESSION: create_task should refuse a same-labeled tab whose pane hosts a genuinely live registered agent"
 fi
-if ! herdr pane get "$NEW_CREW_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
+if ! herdr pane get "$CREW_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
   fail "REGRESSION: the live-agent pane should have survived the refused create_task call untouched"
 fi
-pass "fixed: a genuinely live duplicate (a real registered agent) still refuses exactly as before - the husk fix never closes a live pane"
+pass "fixed: a genuinely live duplicate still refuses and remains untouched"
 
-fm_backend_herdr_kill "$SESSION:$NEW_CREW_PANE_ID"
-fm_backend_herdr_kill "$SESSION:$NEW_SM_PANE_ID"
+fm_backend_herdr_kill "$SESSION:$CREW_PANE_ID"
+fm_backend_herdr_kill "$SESSION:$SM_PANE_ID"
 
 cleanup_all
 trap - EXIT

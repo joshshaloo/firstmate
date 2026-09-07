@@ -94,6 +94,7 @@ Real test cleanup uses only an isolated non-`firstmate` session and the guard in
 - There is no native busy or push-event signal, so supervision uses capture/hash polling for screen changes and each harness adapter's semantic lifecycle for worker state.
   Grok alone retains its isolated rendered-tail fallback.
 - There is no verified agent-process liveness signal, so a dead Zellij secondmate is reported inconclusive rather than auto-respawned.
+  The same missing proof makes a same-id crewmate relaunch refuse while the task's metadata still exists, because spawn will not reuse a recorded worktree it cannot prove is agent-free.
 - New-tab focus restoration has a narrow visible race.
 - CLI exit status is not meaningful; a target can still disappear after structural readiness checks.
 - Worktree cwd discovery requires the spawn-time marker probe.

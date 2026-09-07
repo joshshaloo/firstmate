@@ -68,7 +68,10 @@ fm_backend_tmux_container_ensure() {
 }
 
 # fm_backend_tmux_create_task: create the task's window in <proj-abs>,
-# refusing an existing <window-name> in <session>. Mirrors fm-spawn.sh's
+# refusing an existing <window-name> in <session>. Same-id recovery that has
+# already proven an existing window is a dead shell reuses that endpoint in
+# fm-spawn.sh before this create path is called, so this helper keeps the
+# ordinary duplicate-window refusal. Mirrors fm-spawn.sh's
 # duplicate-check-then-new-window sequence, including the exact error text
 # (session:window, matching how fm-spawn.sh composed its own $T). Prints the
 # created window's stable window id on stdout for the caller to target.
@@ -89,6 +92,31 @@ fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints 
     return 1
   fi
   wid=$(tmux new-window -dP -F '#{window_id}' -t "$ses:" -n "$wname" -c "$proj_abs") || return 1
+  tmux set-window-option -t "$wid" automatic-rename off 2>/dev/null || true
+  tmux set-window-option -t "$wid" allow-rename off 2>/dev/null || true
+  printf '%s\n' "$wid"
+}
+
+# fm_backend_tmux_adopt_task: resolve an already-recorded <session>:<window>
+# handle to its STABLE window id and re-pin the window name, so a same-id
+# relaunch that reuses an existing window targets it exactly the way
+# fm_backend_tmux_create_task hands out a fresh one. Without this a reused
+# endpoint would stay name-targeted, and tmux's silent fall back to the active
+# client's window on an unknown name is precisely what the stable id exists to
+# prevent. The resolved id is verified to still carry <window> so that fallback
+# can never be mistaken for a successful resolve.
+fm_backend_tmux_adopt_task() {  # <target> -> prints window id
+  local target=$1 wname wid resolved
+  case "$target" in
+    *:*:*|'':*|*:'') return 1 ;;
+    *:*) ;;
+    *) return 1 ;;
+  esac
+  wname=${target#*:}
+  wid=$(tmux display-message -p -t "$target" '#{window_id}' 2>/dev/null) || return 1
+  [ -n "$wid" ] || return 1
+  resolved=$(tmux display-message -p -t "$wid" '#{window_name}' 2>/dev/null) || return 1
+  [ "$resolved" = "$wname" ] || return 1
   tmux set-window-option -t "$wid" automatic-rename off 2>/dev/null || true
   tmux set-window-option -t "$wid" allow-rename off 2>/dev/null || true
   printf '%s\n' "$wid"

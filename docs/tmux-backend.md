@@ -48,6 +48,8 @@ A target-existence check proves only that the pane exists.
 The deeper tmux agent-liveness probe first verifies exact window membership, then reads `#{pane_current_command}` to distinguish a running harness process from a bare idle shell.
 It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi process names as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 Only `dead` and `missing` authorize recovery because a false dead result could launch a duplicate agent.
+For a same-id relaunch, `fm-spawn.sh` reuses the recorded worktree directly; a missing tmux endpoint gets recreated with the same task window name, while a dead-shell endpoint is reused in place after changing it back to the recorded worktree.
+A reused endpoint is adopted by its stable window id and has its name re-pinned first, exactly as a freshly created window is, so the rename-critical steps can never fall back to the active client's window.
 
 The verified Pi Launcher path reports the exact foreground command `pi-launcher` for both pi and pi-signed, while direct executable identities `pi`, `pi-signed`, and `Pi` remain accepted exactly.
 Similar or prefixed process names are not accepted through those exact Pi-family entries.

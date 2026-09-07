@@ -24,11 +24,12 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-worktree-claim)
 
 # make_claim_fakebin <dir> builds a fake tmux that models the treehouse pool as
-# an ordered list of slots (FM_FAKE_SLOTS_FILE, one absolute path per line):
-# `#{pane_current_path}` reports the slot matching how many `treehouse get`
-# sends the pane has received, clamped to the last line. Clamping IS the
-# pool-exhausted shape - a `treehouse get` with nothing left to hand out leaves
-# the pane exactly where it was.
+# an ordered list of slots (FM_FAKE_SLOTS_FILE, one absolute path per line).
+# It models treehouse's process-based occupancy the way fm-spawn's guards make
+# it observable: a slot listed in a live state/<id>.wtguard marker is held by a
+# guard process and is skipped, and selecting a claimed slot that no guard was
+# holding is recorded as a protection violation.
+# With no unclaimed slot, the pane remains in FM_FAKE_PROJECT_DIR.
 #
 # The occupant's liveness comes from the same fake: FM_FAKE_WINDOWS lists the
 # window names `list-windows` reports (an absent window is an authoritatively
@@ -41,20 +42,80 @@ make_claim_fakebin() {
 #!/usr/bin/env bash
 set -u
 countfile="${FM_FAKE_GET_COUNTFILE:?FM_FAKE_GET_COUNTFILE unset}"
+selected_file="${FM_FAKE_SELECTED_FILE:?FM_FAKE_SELECTED_FILE unset}"
+slot_claimed() {
+  local slot=$1 meta recorded
+  for meta in "${FM_STATE_OVERRIDE:?}"/*.meta; do
+    [ -f "$meta" ] || continue
+    recorded=$(grep '^worktree=' "$meta" 2>/dev/null | cut -d= -f2-)
+    [ "$recorded" = "$slot" ] && return 0
+  done
+  return 1
+}
+slot_guarded() {
+  local slot=$1 marker real
+  real=$(cd "$slot" 2>/dev/null && pwd -P) || return 1
+  for marker in "${FM_STATE_OVERRIDE:?}"/*.wtguard; do
+    [ -f "$marker" ] || continue
+    grep -Fqx -- "$real" "$marker" && return 0
+  done
+  return 1
+}
 case "$*" in
+  *"send-keys"*" exit Enter"*)
+    # Leaving the treehouse subshell puts the pane back in the project checkout,
+    # which is exactly what spawn polls for before asking for another slot.
+    printf 'exit\n' >> "${FM_FAKE_EXIT_SENDS:?}"
+    printf '%s\n' "${FM_FAKE_PROJECT_DIR:?}" > "$selected_file"
+    exit 0
+    ;;
+  *"send-keys"*"cd "*)
+    while IFS= read -r slot; do
+      [ -n "$slot" ] || continue
+      case "$*" in
+        *"$slot"*) printf '%s\n' "$slot" > "$selected_file"; break ;;
+      esac
+    done < "${FM_FAKE_SLOTS_FILE:?}"
+    exit 0
+    ;;
   *"send-keys"*"treehouse get"*)
     n=0
     [ -f "$countfile" ] && n=$(cat "$countfile")
-    printf '%s\n' "$((n + 1))" > "$countfile"
+    n=$((n + 1))
+    printf '%s\n' "$n" > "$countfile"
+    selected=""
+    # FM_FAKE_IGNORE_GUARDS models a treehouse that allocates from its own free
+    # list instead of process cwd, so live guards do not stop it handing out a
+    # recorded slot. That is not a protection violation - it is the case the
+    # metadata occupancy check and the retry ladder exist to catch.
+    if [ -n "${FM_FAKE_IGNORE_GUARDS:-}" ]; then
+      selected=$(sed -n "${n}p" "${FM_FAKE_SLOTS_FILE:?}")
+    else
+      while IFS= read -r slot; do
+        [ -n "$slot" ] || continue
+        if slot_guarded "$slot"; then
+          continue
+        fi
+        selected=$slot
+        break
+      done < "${FM_FAKE_SLOTS_FILE:?}"
+      if [ -n "$selected" ] && slot_claimed "$selected"; then
+        printf '%s\n' "$selected" >> "${FM_FAKE_CLAIM_VIOLATIONS:?}"
+      fi
+    fi
+    if [ -n "$selected" ]; then
+      printf '%s\n' "$selected" > "$selected_file"
+    else
+      printf '%s\n' "${FM_FAKE_PROJECT_DIR:?}" > "$selected_file"
+    fi
     exit 0
     ;;
   *"#{pane_current_path}"*)
-    n=1
-    [ -f "$countfile" ] && n=$(cat "$countfile")
-    [ "$n" -ge 1 ] || n=1
-    total=$(grep -c . "${FM_FAKE_SLOTS_FILE:?}")
-    [ "$n" -le "$total" ] || n=$total
-    sed -n "${n}p" "$FM_FAKE_SLOTS_FILE"
+    if [ -f "$selected_file" ]; then
+      cat "$selected_file"
+    else
+      printf '%s\n' "${FM_FAKE_PROJECT_DIR:?}"
+    fi
     exit 0
     ;;
   *"#{pane_current_command}"*)
@@ -97,6 +158,9 @@ make_claim_case() {
   SLOT_B="$CASE_DIR/slot-b"
   SLOTS_FILE="$CASE_DIR/slots"
   COUNTFILE="$CASE_DIR/get-count"
+  SELECTED_FILE="$CASE_DIR/selected-path"
+  VIOLATION_FILE="$CASE_DIR/claimed-get-violations"
+  EXIT_SENDS_FILE="$CASE_DIR/exit-sends"
   case_dir=$CASE_DIR
   FAKEBIN_DIR=$(make_claim_fakebin "$case_dir/fake")
   mkdir -p "$HOME_DIR/data" "$HOME_DIR/projects" "$HOME_DIR/state" "$HOME_DIR/config"
@@ -130,6 +194,9 @@ claim_slot() {
     "kind=ship" \
     "mode=no-mistakes" \
     "yolo=off" \
+    "tasktmp=/tmp/fm-$1" \
+    "model=default" \
+    "effort=default" \
     ${extra+"${extra[@]}"}
 }
 
@@ -141,6 +208,9 @@ run_claim_spawn() {  # <id> [windows] [command]
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_SPAWN_WORKTREE_POLLS=3 FM_SPAWN_WORKTREE_POLL_INTERVAL=0.05 \
     FM_FAKE_SLOTS_FILE="$SLOTS_FILE" FM_FAKE_GET_COUNTFILE="$COUNTFILE" \
+    FM_FAKE_SELECTED_FILE="$SELECTED_FILE" \
+    FM_FAKE_CLAIM_VIOLATIONS="$VIOLATION_FILE" FM_FAKE_PROJECT_DIR="$PROJ_DIR" \
+    FM_FAKE_EXIT_SENDS="$EXIT_SENDS_FILE" \
     FM_FAKE_WINDOWS="$windows" FM_FAKE_COMMAND="$command" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" 2>&1
@@ -164,13 +234,14 @@ test_live_claim_is_refused() {
   assert_contains "$out" "claimed by occupant-live" "refusal did not name the claiming task"
   assert_contains "$out" "live worker" "refusal did not report the claimant as live"
   assert_contains "$out" "$SLOT_A" "refusal did not name the claimed worktree"
+  assert_absent "$VIOLATION_FILE" "treehouse get was allowed to select the claimed slot before protection"
   assert_absent "$HOME_DIR/state/$id.meta" "a refused spawn must not record metadata"
-  pass "a slot recorded by a live task is refused, naming the claimant"
+  pass "a slot recorded by a live task is protected before get and refused, naming the claimant"
 }
 
-# Incident shape 2: the first offered slot is claimed, the next one is clean.
-# The re-acquire lands on the clean slot and the spawn proceeds normally,
-# leaving the claimant's record untouched.
+# Incident shape 2: one pooled slot is claimed, the next one is clean. The live
+# guards keep treehouse off the claimed slot entirely, so the spawn lands on the
+# clean one on its first get, leaving the claimant's record untouched.
 test_retry_lands_on_clean_slot() {
   local id out status
   id=claim-retry-z2
@@ -182,15 +253,16 @@ test_retry_lands_on_clean_slot() {
   status=$?
   expect_code 0 "$status" "spawn should succeed once a clean slot is offered"
   assert_contains "$out" "spawned $id" "spawn did not report success"
-  assert_contains "$out" "already recorded as another task's worktree" \
-    "the refused first slot was not reported"
+  assert_not_contains "$out" "already recorded as another task's worktree" \
+    "a pre-protected claimed slot should not be entered and refused after allocation"
+  assert_absent "$VIOLATION_FILE" "treehouse get was allowed to select the claimed slot before protection"
   assert_grep "worktree=$SLOT_B" "$HOME_DIR/state/$id.meta" \
     "meta did not record the clean slot"
   assert_no_grep "worktree=$SLOT_A" "$HOME_DIR/state/$id.meta" \
     "meta wrongly recorded the claimed slot"
   assert_grep "worktree=$SLOT_A" "$HOME_DIR/state/occupant-retry.meta" \
     "the claimant's own record was modified"
-  pass "a claimed slot is re-requested and the spawn takes the next clean one"
+  pass "a claimed slot is never offered while guarded and the spawn takes the clean one"
 }
 
 # Incident shape 3: the claiming task is genuinely gone (its endpoint is
@@ -211,6 +283,7 @@ test_ghost_claim_is_named_not_discarded() {
   status=$?
   expect_code 1 "$status" "spawn should refuse a slot claimed by an unreconciled record"
   assert_contains "$out" "claimed by occupant-ghost" "refusal did not name the ghost record"
+  assert_absent "$VIOLATION_FILE" "treehouse get was allowed to select the ghost-claimed slot before protection"
   assert_contains "$out" "no live worker (missing)" \
     "refusal did not report the ghost record as having no live worker"
   assert_contains "$out" "unreconciled record" \
@@ -239,6 +312,7 @@ test_unclaimed_slot_spawns_unchanged() {
   assert_contains "$out" "spawned $id" "spawn did not report success"
   assert_not_contains "$out" "already recorded as another task's worktree" \
     "an unclaimed slot must not report a refusal"
+  assert_absent "$VIOLATION_FILE" "treehouse get was allowed to select a claimed slot before the clean slot"
   assert_grep "worktree=$SLOT_B" "$HOME_DIR/state/$id.meta" \
     "meta did not record the unclaimed slot"
   [ "$(cat "$COUNTFILE")" = 1 ] || fail "an unclaimed slot took more than one treehouse get"
@@ -249,19 +323,119 @@ test_unclaimed_slot_spawns_unchanged() {
 # check must refuse other tasks' records, never the task's own, or recovery
 # could never put a crewmate back in its own checkout.
 test_own_record_is_not_a_collision() {
-  local id out status
+  local id out status before after
   id=claim-self-z5
   make_claim_case claim-self "$id"
   offer_slots "$SLOT_A"
   claim_slot "$id" "$SLOT_A"
+  before=$(cat "$HOME_DIR/state/$id.meta")
 
   out=$(run_claim_spawn "$id" "" zsh)
   status=$?
-  expect_code 0 "$status" "a respawn should accept the worktree its own record names"
+  expect_code 0 "$status" "a same-id relaunch should reuse the worktree its own record names"
   assert_contains "$out" "spawned $id" "spawn did not report success"
   assert_grep "worktree=$SLOT_A" "$HOME_DIR/state/$id.meta" \
     "meta did not record the task's own worktree"
-  pass "a task's own record is not treated as a collision"
+  [ ! -f "$COUNTFILE" ] || [ "$(cat "$COUNTFILE")" = 0 ] \
+    || fail "same-id relaunch called treehouse get instead of reusing the recorded worktree"
+  after=$(cat "$HOME_DIR/state/$id.meta")
+  [ "$after" = "$before" ] \
+    || fail "same-id relaunch rewrote metadata unexpectedly"$'\n'"before:"$'\n'"$before"$'\n'"after:"$'\n'"$after"
+  pass "a same-id relaunch reuses its recorded worktree without treehouse get or metadata churn"
+}
+
+test_same_id_relaunch_refuses_missing_recorded_worktree_without_get() {
+  local id out status missing
+  id=claim-self-missing-z6
+  make_claim_case claim-self-missing "$id"
+  offer_slots "$SLOT_B"
+  missing="$CASE_DIR/missing-slot"
+  claim_slot "$id" "$missing"
+
+  out=$(run_claim_spawn "$id" "" zsh)
+  status=$?
+  expect_code 1 "$status" "same-id relaunch should refuse a missing recorded worktree"
+  assert_contains "$out" "records missing worktree=$missing" \
+    "refusal did not name the missing recorded worktree"
+  [ ! -f "$COUNTFILE" ] || [ "$(cat "$COUNTFILE")" = 0 ] \
+    || fail "same-id relaunch with a missing recorded worktree called treehouse get"
+  assert_absent "$HOME_DIR/state/$id.meta.tmp" "refused relaunch left temporary metadata"
+  pass "a same-id relaunch refuses a missing recorded worktree without treehouse get"
+}
+
+# If two records name the same worktree, the same-id relaunch must stop for
+# supervisor reconciliation rather than allocating a third copy.
+test_same_id_relaunch_refuses_conflicting_record_claim_without_get() {
+  local id out status
+  id=claim-self-conflict-z7
+  make_claim_case claim-self-conflict "$id"
+  offer_slots "$SLOT_B"
+  claim_slot "$id" "$SLOT_A"
+  claim_slot occupant-conflict "$SLOT_A"
+
+  out=$(run_claim_spawn "$id" "" zsh)
+  status=$?
+  expect_code 1 "$status" "same-id relaunch should refuse a worktree claimed by another record"
+  assert_contains "$out" "another task record claims that same path" \
+    "refusal did not explain the conflicting worktree claim"
+  assert_contains "$out" "claimed by occupant-conflict" \
+    "refusal did not name the conflicting record"
+  [ ! -f "$COUNTFILE" ] || [ "$(cat "$COUNTFILE")" = 0 ] \
+    || fail "same-id relaunch with a conflicting record called treehouse get"
+  pass "a same-id relaunch refuses a conflicting recorded worktree without treehouse get"
+}
+
+# The guards are the only thing standing between `treehouse get` and an
+# irreversible reset of a recorded worktree, so a guard that cannot prove it
+# reached its worktree must stop the spawn BEFORE any get - the reset it would
+# otherwise allow cannot be undone by a later refusal. Squatting the marker path
+# with a directory is the cheapest way to make every guard fail to report in.
+test_unproven_guards_refuse_before_get() {
+  local id out status
+  id=claim-guardless-z9
+  make_claim_case claim-guardless "$id"
+  offer_slots "$SLOT_A" "$SLOT_B"
+  claim_slot occupant-guardless "$SLOT_A"
+  mkdir -p "$HOME_DIR/state/$id.wtguard"
+
+  out=$(FM_SPAWN_WORKTREE_GUARD_POLLS=3 FM_SPAWN_WORKTREE_GUARD_POLL_INTERVAL=0.05 \
+    run_claim_spawn "$id" "fm-occupant-guardless" claude)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse when the recorded-worktree guards cannot be proven live"
+  assert_contains "$out" "could not be proven live" \
+    "refusal did not explain that the guards were never proven"
+  assert_contains "$out" "$SLOT_A" "refusal did not name the unguarded recorded worktree"
+  [ ! -f "$COUNTFILE" ] || [ "$(cat "$COUNTFILE")" = 0 ] \
+    || fail "spawn ran treehouse get without proven recorded-worktree guards"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused spawn must not record metadata"
+  pass "unproven recorded-worktree guards refuse the spawn before any treehouse get"
+}
+
+# Guards are protection, not proof. A treehouse that allocates from its own free
+# list can still hand out a recorded slot, so the metadata occupancy check stays
+# the backstop: refuse the slot, leave the refused subshell, and re-ask.
+test_guard_ignoring_treehouse_is_refused_and_retried() {
+  local id out status
+  id=claim-ignored-za
+  make_claim_case claim-ignored "$id"
+  offer_slots "$SLOT_A" "$SLOT_B"
+  claim_slot occupant-ignored "$SLOT_A"
+
+  out=$(FM_FAKE_IGNORE_GUARDS=1 run_claim_spawn "$id" "fm-occupant-ignored" claude)
+  status=$?
+  expect_code 0 "$status" "spawn should re-acquire when treehouse hands out a claimed slot anyway"
+  assert_contains "$out" "already recorded as another task's worktree" \
+    "the refused first slot was not reported"
+  assert_grep "worktree=$SLOT_B" "$HOME_DIR/state/$id.meta" \
+    "meta did not record the clean slot the retry landed on"
+  assert_grep "worktree=$SLOT_A" "$HOME_DIR/state/occupant-ignored.meta" \
+    "the claimant's own record was modified"
+  [ "$(cat "$COUNTFILE")" = 2 ] || fail "the refused slot was not re-requested exactly once"
+  [ -f "$EXIT_SENDS_FILE" ] && [ "$(grep -c . "$EXIT_SENDS_FILE")" = 1 ] \
+    || fail "the refused treehouse subshell was not exited before the retry"
+  assert_contains "$out" "asking for a different slot (attempt 1 of 3)" \
+    "the retry only ran after the pane settled back in the project checkout"
+  pass "a claimed slot handed out despite the guards is refused, exited, and re-asked"
 }
 
 # A record whose runtime has no recovery-grade liveness classifier cannot prove
@@ -269,7 +443,7 @@ test_own_record_is_not_a_collision() {
 # record, never from a liveness read that came back inconclusive.
 test_unclassifiable_claim_is_still_refused() {
   local id out status
-  id=claim-unverified-z6
+  id=claim-unverified-z8
   make_claim_case claim-unverified "$id"
   offer_slots "$SLOT_A"
   claim_slot occupant-unverified "$SLOT_A" zellij
@@ -288,6 +462,10 @@ test_retry_lands_on_clean_slot
 test_ghost_claim_is_named_not_discarded
 test_unclaimed_slot_spawns_unchanged
 test_own_record_is_not_a_collision
+test_same_id_relaunch_refuses_missing_recorded_worktree_without_get
+test_same_id_relaunch_refuses_conflicting_record_claim_without_get
+test_unproven_guards_refuse_before_get
+test_guard_ignoring_treehouse_is_refused_and_retried
 test_unclassifiable_claim_is_still_refused
 
 echo "# all fm-spawn-worktree-claim tests passed"

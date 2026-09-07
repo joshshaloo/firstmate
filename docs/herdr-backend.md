@@ -125,7 +125,7 @@ A malformed or missing title or token, duplicate token, zero or multiple journal
 
 Operational compromises:
 
-- Grouping is best-effort; only an exact same-identity version 2 binding survives a Herdr restart in place.
+- Grouping is best-effort and no projected task survives a Herdr restart in place; the exact version 2 binding only correlates a restored projection for duplicate refusal and for the session-start cleanup above.
 - Existing layouts are not force-renamed or rearranged.
 - Missing or ambiguous restart bindings fall back to the ordinary home workspace while the old projection remains untouched.
 - Crashes, lost responses, failed exact-pane cleanup, or human renames can leave quarantined spaces; session start removes only the exact home-local, uniquely journal-correlated, childless idle-shell shape above.

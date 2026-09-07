@@ -1215,9 +1215,10 @@ grep -F "refusing duplicate launch until that endpoint is reconciled" "$TMP_ROOT
 [ "$(grep '^herdr_pane_id=' "$PRIMARY_WAVE_META" | cut -d= -f2-)" = "$PRIMARY_WAVE_OLD_PANE" ] \
   && [ "$(grep '^herdr_pane_id=' "$BRAVO_WAVE_META" | cut -d= -f2-)" = "$BRAVO_WAVE_OLD_PANE" ] \
   || fail "a refused concurrent relaunch rewrote a recorded pane"
-lab pane get "$PRIMARY_WAVE_OLD_PANE" >/dev/null 2>&1 \
-  && lab pane get "$BRAVO_WAVE_OLD_PANE" >/dev/null 2>&1 \
-  || fail "a refused concurrent relaunch closed a husk pane it must leave for reconciliation"
+if ! lab pane get "$PRIMARY_WAVE_OLD_PANE" >/dev/null 2>&1 \
+  || ! lab pane get "$BRAVO_WAVE_OLD_PANE" >/dev/null 2>&1; then
+  fail "a refused concurrent relaunch closed a husk pane it must leave for reconciliation"
+fi
 assert_focus_is "$CONCURRENT_RECOVERY_FOCUS" "concurrent cross-home refused relaunches"
 teardown_task "$PRIMARY_WAVE_ID" "$HOME_DIR" > "$TMP_ROOT/primary-wave-teardown.out" 2> "$TMP_ROOT/primary-wave-teardown.err" \
   || fail "concurrent primary teardown after the refused relaunch failed"

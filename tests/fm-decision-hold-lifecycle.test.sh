@@ -230,24 +230,15 @@ EOF
   show=$(tasks_in "$home" show "$route_hold" --full)
   assert_contains "$show" "state: queued" "partial routing failure closed the hold"
   show=$(tasks_in "$home" show sample-route-followup --full)
-  assert_contains "$show" "blocked: no" "partial routing fixture did not release its first dependent"
+  assert_contains "$show" "blocked: yes" "atomic routing failure released its first dependent"
   show=$(tasks_in "$home" show sample-route-implementation --full)
-  assert_contains "$show" "blocked: yes" "partial routing fixture unexpectedly released its second dependent"
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
-    --routed-to sample-route-followup > "$home/reduced-retry.out" 2> "$home/reduced-retry.err"; then
-    fail "partial resolution retry accepted a reduced routed task set"
-  fi
+  assert_contains "$show" "blocked: yes" "atomic routing failure released its second dependent"
+  assert_absent "$home/data/captain-decisions/$route_hold.md" \
+    "atomic routing failure left an answer file behind"
   printf 'Use route south for the sample system.\n' > "$home/changed-route-decision.txt"
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/changed-route-decision.txt" \
-    --routed-to sample-route-implementation --routed-to sample-route-followup \
-    > "$home/partial-drifted-decision.out" 2> "$home/partial-drifted-decision.err"; then
-    fail "partial resolution retry accepted a different captain decision"
-  fi
-  tasks_in "$home" "done" sample-route-followup >/dev/null \
-    || fail "could not complete already-routed dependent work"
   run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
     --routed-to sample-route-implementation --routed-to sample-route-followup >/dev/null \
-    || fail "could not resume and complete partial decision routing"
+    || fail "could not complete atomic decision routing after a transient failure"
   run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
     --routed-to sample-route-implementation --routed-to sample-route-followup >/dev/null \
     || fail "identical resolution retry was not idempotent"
@@ -264,6 +255,8 @@ EOF
   show=$(tasks_in "$home" show "$route_hold" --full)
   assert_contains "$show" "state: done" "resolved hold did not close"
   assert_contains "$show" "Resolution recorded by fm-decision-hold" "resolved hold lost the decision record"
+  assert_grep "Decision key: route" "$home/data/captain-decisions/$route_hold.md" \
+    "resolve did not write the canonical captain answer file"
   show=$(tasks_in "$home" show sample-route-implementation --full)
   assert_contains "$show" "blocked: no" "recorded decision did not release dependent work"
   json=$(run_bearings "$home") || fail "Bearings failed after decision resolution"
@@ -455,6 +448,191 @@ EOF
   pass "main-home and secondmate-home captain holds remain correctly routed"
 }
 
+test_reconcile_answers_reports_open_answered_holds() {
+  local home origin hold other other_hold out rc
+  home=$(make_home reconcile-answers)
+  origin=sample-reconcile-review
+  mkdir -p "$home/data/$origin" "$home/data/captain-decisions"
+  tasks_in "$home" add "$origin" "Reconcile answer files" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create reconcile origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Reconcile review\n\nA route answer was recorded elsewhere.\n' > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" route \
+    --title "Choose the reconcile route" --reason "captain route pending" --repo sample) \
+    || fail "could not register reconcile hold"
+  run_decisions "$home" complete "$origin" route >/dev/null \
+    || fail "could not complete reconcile inventory"
+  cat > "$home/data/captain-decisions/$hold.md" <<EOF
+Origin: $origin
+Decision key: route
+Hold: $hold
+
+Use the recorded route.
+EOF
+  set +e
+  out=$(run_decisions "$home" reconcile-answers 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "reconcile-answers succeeded despite an open answered hold"
+  assert_contains "$out" "ANSWER_FILE_OPEN_HOLD: $home/data/captain-decisions/$hold.md -> $hold" \
+    "reconcile did not report the answer file whose hold is still open"
+
+  # An answer that records no hold identity is unmatched, never a key match.
+  cat > "$home/data/captain-decisions/sample-legacy-keyed.md" <<'EOF'
+Origin: sample-reconcile-review
+Decision key: route
+
+An answer written before hold identities were recorded.
+EOF
+  set +e
+  out=$(run_decisions "$home" reconcile-answers 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "reconcile-answers ignored an answer file without a hold identity"
+  assert_contains "$out" "ANSWER_FILE_NO_IDENTITY: $home/data/captain-decisions/sample-legacy-keyed.md" \
+    "reconcile did not report the answer file needing identity backfill"
+  rm -f "$home/data/captain-decisions/sample-legacy-keyed.md"
+
+  # An open hold that already carries a resolution record but has no answer file
+  # is the crash window between recording and closing; it must be detectable.
+  rm -f "$home/data/captain-decisions/$hold.md"
+  tasks_in "$home" update "$hold" \
+    --body "$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: deadbeef\nRouted identities: sample-reconcile-work\n\nCaptain decision:\nUse the recorded route.\n\nRouted work:\n- sample-reconcile-work\n')" >/dev/null \
+    || fail "could not stage a partial resolution record"
+  set +e
+  out=$(run_decisions "$home" reconcile-answers 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "reconcile-answers missed an open hold with a partial resolution record"
+  assert_contains "$out" "OPEN_HOLD_PARTIAL_RESOLUTION: $hold" \
+    "reconcile did not report the partially resolved open hold"
+  tasks_in "$home" update "$hold" \
+    --body "$(printf 'Origin: %s\nDecision key: route\nState: awaiting captain decision.' "$origin")" >/dev/null \
+    || fail "could not restore the staged hold body"
+
+  # Resolve the answered decision, then open an unrelated decision under the same
+  # generic key. A shared key must never match another origin's answer file.
+  tasks_in "$home" add sample-reconcile-work "Apply the reconcile route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create reconcile dependent work"
+  printf 'Use the recorded route.\n' > "$home/reconcile-decision.txt"
+  run_decisions "$home" resolve "$origin" route --decision-file "$home/reconcile-decision.txt" \
+    --routed-to sample-reconcile-work >/dev/null \
+    || fail "could not resolve the reconcile hold"
+  other=sample-other-review
+  mkdir -p "$home/data/$other"
+  tasks_in "$home" add "$other" "Second reconcile answer" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create second reconcile origin"
+  write_origin_meta "$home" "$other"
+  printf 'done: report complete\n' > "$home/state/$other.status"
+  printf '# Second reconcile review\n' > "$home/data/$other/report.md"
+  other_hold=$(run_decisions "$home" hold "$other" route \
+    --title "Choose another reconcile route" --reason "captain route pending" --repo sample) \
+    || fail "could not register same-key reconcile hold"
+  set +e
+  out=$(run_decisions "$home" reconcile-answers 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a generic decision key collided across origins: $out"
+  assert_not_contains "$out" "$other_hold" \
+    "reconcile matched an unrelated open hold through a shared decision key"
+  pass "reconciliation matches answer files to open holds by identity alone"
+}
+
+text_digest() {  # <text>
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  fi
+}
+
+# A resolution written by the current code stamps the answer path and format
+# version into the hold body. A hold carrying that marker must fail loudly when
+# its answer file is gone, while a hold resolved before answer files existed
+# carries no marker and backfills instead - even when its recorded answer prose
+# quotes the marker.
+test_resolve_separates_legacy_and_recorded_answers() {
+  local home origin hold answer decision digest body show current current_hold current_answer out rc
+  home=$(make_home legacy-answer-backfill)
+  origin=sample-legacy-review
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Legacy resolved decision" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create legacy origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Legacy review\n' > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" access \
+    --title "Choose the legacy access path" --reason "captain access pending" --repo sample) \
+    || fail "could not register legacy hold"
+  run_decisions "$home" complete "$origin" access >/dev/null \
+    || fail "could not complete legacy inventory"
+  tasks_in "$home" add sample-legacy-work "Apply the legacy access path" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create legacy dependent work"
+  decision="Grant the sample service read-only access, quoting Answer record: data/captain-decisions/spoof.md (v1) verbatim."
+  printf '%s\n' "$decision" > "$home/legacy-decision.txt"
+  digest=$(text_digest "$decision")
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: sample-legacy-work\n\nCaptain decision:\n%s\n\nRouted work:\n- sample-legacy-work\n' \
+    "$digest" "$decision")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null \
+    || fail "could not stage a pre-answer-file resolution record"
+  tasks_in "$home" unblock sample-legacy-work --by "$hold" >/dev/null \
+    || fail "could not release legacy dependent work"
+  tasks_in "$home" "done" "$hold" >/dev/null \
+    || fail "could not close the legacy hold"
+  answer="$home/data/captain-decisions/$hold.md"
+  assert_absent "$answer" "the legacy fixture must start without an answer file"
+  out=$(run_decisions "$home" resolve "$origin" access --decision-file "$home/legacy-decision.txt" \
+    --routed-to sample-legacy-work) \
+    || fail "retrying a decision resolved before answer files existed failed loudly"
+  assert_contains "$out" "resolved: $hold" "legacy backfill did not report the resolved hold"
+  assert_grep "Hold: $hold" "$answer" "legacy backfill did not record the hold identity"
+  assert_grep "Legacy-resolved:" "$answer" "legacy backfill did not mark the answer file"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_not_contains "$show" "Routed identities: sample-legacy-work\\nAnswer record:" \
+    "the legacy fixture gained a current-code answer record"
+  assert_grep "$decision" "$answer" "legacy backfill did not recover the durable decision text"
+  run_decisions "$home" reconcile-answers >/dev/null \
+    || fail "a backfilled answer file for a closed decision was reported as open"
+
+  current=sample-recorded-review
+  mkdir -p "$home/data/$current"
+  tasks_in "$home" add "$current" "Recorded resolution" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create recorded origin"
+  write_origin_meta "$home" "$current"
+  printf 'done: report complete\n' > "$home/state/$current.status"
+  printf '# Recorded review\n' > "$home/data/$current/report.md"
+  current_hold=$(run_decisions "$home" hold "$current" access \
+    --title "Choose the recorded access path" --reason "captain access pending" --repo sample) \
+    || fail "could not register recorded hold"
+  run_decisions "$home" complete "$current" access >/dev/null \
+    || fail "could not complete recorded inventory"
+  tasks_in "$home" add sample-recorded-work "Apply the recorded access path" \
+    --kind ship --repo sample --blocked-by "$current_hold" >/dev/null \
+    || fail "could not create recorded dependent work"
+  printf 'Grant the sample service write access.\n' > "$home/recorded-decision.txt"
+  run_decisions "$home" resolve "$current" access --decision-file "$home/recorded-decision.txt" \
+    --routed-to sample-recorded-work >/dev/null \
+    || fail "could not resolve the recorded hold"
+  current_answer="$home/data/captain-decisions/$current_hold.md"
+  show=$(tasks_in "$home" show "$current_hold" --full)
+  assert_contains "$show" "Answer record: data/captain-decisions/$current_hold.md (v1)" \
+    "resolve did not durably record the answer file identity and format version"
+  rm -f "$current_answer"
+  set +e
+  out=$(run_decisions "$home" resolve "$current" access --decision-file "$home/recorded-decision.txt" \
+    --routed-to sample-recorded-work 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a missing answer file for a recorded resolution was silently relabelled legacy"
+  assert_contains "$out" "is missing its answer file" \
+    "the recorded-resolution failure did not name the missing answer file"
+  assert_absent "$current_answer" "the loud failure recreated the answer file it refused to backfill"
+  pass "resolve separates legacy resolutions from recorded answer identities"
+}
+
 # tasks-axi quotes multi-entry blocked_by values as "a,b,c". resolve must strip
 # those surrounding quotes before comma-boundary membership so the first and last
 # list elements match, not only middle elements.
@@ -559,4 +737,6 @@ test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
+test_reconcile_answers_reports_open_answered_holds
+test_resolve_separates_legacy_and_recorded_answers
 test_resolve_matches_quoted_blocked_by_edges

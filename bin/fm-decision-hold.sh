@@ -24,6 +24,7 @@
 #   fm-decision-hold.sh verify <origin-id>
 #   fm-decision-hold.sh resolve <origin-id> <decision-key> \
 #     --decision-file <path> --routed-to <task-id> [--routed-to <task-id>...]
+#   fm-decision-hold.sh reconcile-answers
 #
 # `complete` is the shared investigation and visual-review completion gate.
 # `--none` is an explicit semantic attestation that the just-reviewed surface has
@@ -34,9 +35,25 @@
 # source before this gate has succeeded.
 #
 # `resolve` requires every --routed-to task to exist and to be blocked by the hold.
-# It writes the captain decision and routed identities into the hold body, clears
-# those dependency edges, and only then marks the hold Done. A failure before the
-# final step leaves the captain hold open.
+# It is the only command that writes data/captain-decisions answer files: it
+# copies the provided decision text into that hold identity's canonical answer
+# file, data/captain-decisions/<hold-id>.md, writes the same decision and routed
+# identities into the hold body, clears those dependency edges, and marks the
+# hold Done as one rollback-protected action. Any failure restores the prior
+# backlog and answer-file state.
+# An answer belongs to exactly one hold identity, never to a bare decision key.
+# A resolution written by the current code records `Answer record: <home-relative
+# answer path> (v<answer-format-version>)` in the hold body. That marker is what
+# tells the two eras apart on a retry: a marked hold whose answer file is missing
+# fails loudly, while an unmarked hold - resolved before answer files existed -
+# backfills its answer file from the durable hold record and marks that file
+# `Legacy-resolved: <date>`.
+# `reconcile-answers` is detect-only and matches on hold identity alone. It
+# reports every canonical answer file whose recorded hold is still open
+# (ANSWER_FILE_OPEN_HOLD), every answer file that records no hold identity and so
+# needs identity backfill (ANSWER_FILE_NO_IDENTITY), and every open hold that
+# already carries a resolution record without an answer file
+# (OPEN_HOLD_PARTIAL_RESOLUTION). Each hold identity is reported at most once.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -184,6 +201,16 @@ verify_hold_resolved() {  # <hold-id>
   return 1
 }
 
+hold_has_resolution_record() {  # <hold-id>
+  local show body
+  show=$(task_show "$1") || return 1
+  body=$(show_field "$show" body)
+  case "$body" in
+    *"Resolution recorded by fm-decision-hold."*) return 0 ;;
+  esac
+  return 1
+}
+
 verify_hold_durable() {  # <hold-id>
   local id=$1 show state held kind hold_kind body
   show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
@@ -221,6 +248,181 @@ verify_resolution_identity() {
     || fail "captain hold $id records a different captain decision"
   [ "$recorded_routes" = "$routed_csv" ] \
     || fail "captain hold $id records different routed work"
+}
+
+answer_dir() {
+  printf '%s/captain-decisions\n' "$DATA"
+}
+
+answer_path() {  # <hold-id>
+  printf '%s/%s.md\n' "$(answer_dir)" "$1"
+}
+
+ANSWER_RECORD_VERSION=1
+
+answer_relative_path() {  # <hold-id>
+  local path
+  path=$(answer_path "$1")
+  case "$path" in
+    "$FM_HOME"/*) printf '%s\n' "${path#"$FM_HOME"/}" ;;
+    *) printf '%s\n' "$path" ;;
+  esac
+}
+
+answer_record_line() {  # <hold-id>
+  printf 'Answer record: %s (v%s)' "$(answer_relative_path "$1")" "$ANSWER_RECORD_VERSION"
+}
+
+body_has_answer_record() {  # <hold-body>
+  local header=$1
+  case "$header" in
+    *'\n\nCaptain decision:'*) header=${header%%'\n\nCaptain decision:'*} ;;
+  esac
+  case "$header" in
+    *'\nAnswer record: '*) return 0 ;;
+  esac
+  return 1
+}
+
+render_answer_file() {  # <origin-id> <decision-key> <hold-id> <decision>
+  printf 'Origin: %s\nDecision key: %s\nHold: %s\n\n%s\n' "$1" "$2" "$3" "$4"
+}
+
+render_legacy_answer_file() {  # <origin-id> <decision-key> <hold-id> <resolved-date> <decision-or-empty>
+  if [ -n "$5" ]; then
+    printf 'Origin: %s\nDecision key: %s\nHold: %s\nLegacy-resolved: %s\n\n%s\n' "$1" "$2" "$3" "$4" "$5"
+  else
+    printf 'Origin: %s\nDecision key: %s\nHold: %s\nLegacy-resolved: %s\n' "$1" "$2" "$3" "$4"
+  fi
+}
+
+record_decision_text() {  # <hold-body> <decision-digest>
+  local body=$1 digest=$2 text
+  case "$body" in
+    *'\n\nCaptain decision:\n'*) text=${body#*'\n\nCaptain decision:\n'} ;;
+    *) return 1 ;;
+  esac
+  case "$text" in
+    *'\n\nRouted work:'*) text=${text%%'\n\nRouted work:'*} ;;
+    *) return 1 ;;
+  esac
+  [ -n "$text" ] || return 1
+  text=$(printf '%b\n' "$text")
+  [ "$(sha256_text "$text")" = "$digest" ] || return 1
+  printf '%s\n' "$text"
+}
+
+record_resolved_date() {  # <show-output>
+  local closed
+  closed=$(show_field "$1" closed)
+  closed=${closed#\"}
+  closed=${closed%\"}
+  case "$closed" in
+    ''|'-') printf 'unknown\n' ;;
+    *) printf '%s\n' "$closed" ;;
+  esac
+}
+
+backfill_answer_file() {  # <origin-id> <decision-key> <hold-id> <show-output> <hold-body> <decision-digest>
+  local origin=$1 key=$2 id=$3 show=$4 hold_body=$5 digest=$6 answer text='' staged
+  answer=$(answer_path "$id")
+  text=$(record_decision_text "$hold_body" "$digest") || text=''
+  mkdir -p "$(answer_dir)" || fail "could not create captain decision answer directory"
+  staged=$(mktemp "${TMPDIR:-/tmp}/fm-decision-backfill.XXXXXX") \
+    || fail "could not stage the backfilled captain decision answer"
+  render_legacy_answer_file "$origin" "$key" "$id" "$(record_resolved_date "$show")" "$text" > "$staged" \
+    || { rm -f "$staged"; fail "could not render the backfilled captain decision answer"; }
+  mv "$staged" "$answer" \
+    || { rm -f "$staged"; fail "could not write the backfilled captain decision answer file: $answer"; }
+}
+
+answer_file_key() {  # <path>
+  sed -n 's/^Decision key: //p' "$1" | head -1
+}
+
+answer_file_hold() {  # <path>
+  sed -n 's/^Hold: //p' "$1" | head -1
+}
+
+open_captain_hold_ids() {
+  local line id
+  tasks_axi list --state queued --kind captain --fields held,hold_kind 2>/dev/null | while IFS= read -r line; do
+    case "$line" in
+      '  '*,queued,captain,*)
+        id=${line#  }
+        id=${id%%,*}
+        [ -n "$id" ] || continue
+        printf '%s\n' "$id"
+        ;;
+      '- [ ] '*|'  - [ ] '*)
+        id=${line#*- [ ] }
+        id=${id%% - *}
+        [ -n "$id" ] || continue
+        printf '%s\n' "$id"
+        ;;
+    esac
+  done
+}
+
+# tasks-axi reads .tasks.toml from its own working directory only - a config in
+# a parent directory is ignored - and tasks_axi() always runs in $FM_HOME, so the
+# active home's own config is the single source for both markdown backend paths.
+markdown_backend_path() {  # <toml-key> <default-relative-path>
+  local key=$1 fallback=$2 config="$FM_HOME/.tasks.toml" value=''
+  if [ -f "$config" ]; then
+    value=$(awk -v key="$key" '
+      /^[[:space:]]*\[/ {
+        section = $0
+        gsub(/[[:space:]]/, "", section)
+        next
+      }
+      section == "[markdown]" {
+        if (match($0, "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*\"")) {
+          rest = substr($0, RLENGTH + 1)
+          quote = index(rest, "\"")
+          if (quote > 0) {
+            print substr(rest, 1, quote - 1)
+            exit
+          }
+        }
+      }
+    ' "$config")
+  fi
+  [ -n "$value" ] || value=$fallback
+  case "$value" in
+    /*) printf '%s\n' "$value" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$value" ;;
+  esac
+}
+
+backlog_path() {
+  markdown_backend_path path backlog.md
+}
+
+backlog_archive_path() {
+  markdown_backend_path archive done-archive.md
+}
+
+rollback_resolve() {  # <tmpdir> <backlog> <archive> <archive-existed> <answer> <answer-existed>
+  local tmpdir=$1 backlog=$2 archive=$3 archive_existed=$4 answer=$5 answer_existed=$6
+  if [ -f "$tmpdir/backlog.md" ]; then
+    cp "$tmpdir/backlog.md" "$backlog" || true
+  fi
+  if [ "$archive_existed" = 1 ]; then
+    if [ -f "$tmpdir/done-archive.md" ]; then
+      cp "$tmpdir/done-archive.md" "$archive" || true
+    fi
+  else
+    rm -f "$archive"
+  fi
+  if [ "$answer_existed" = 1 ]; then
+    if [ -f "$tmpdir/answer.md" ]; then
+      cp "$tmpdir/answer.md" "$answer" || true
+    fi
+  else
+    rm -f "$answer"
+  fi
+  return 0
 }
 
 command_id() {
@@ -368,7 +570,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' answer='' answer_body='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body tmpdir='' backlog archive archive_existed=0 answer_existed=0 rollback=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -393,47 +595,75 @@ command_resolve() {
   decision_digest=$(sha256_text "$decision")
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
+  answer=$(answer_path "$id")
   if verify_hold_resolved "$id"; then
     hold_show=$(task_show "$id")
     hold_body=$(show_field "$hold_show" body)
     verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
+    if [ ! -f "$answer" ]; then
+      if body_has_answer_record "$hold_body"; then
+        fail "resolved captain hold $id is missing its answer file: $answer"
+      fi
+      backfill_answer_file "$origin" "$key" "$id" "$hold_show" "$hold_body" "$decision_digest"
+    fi
     printf 'resolved: %s\n' "$id"
     return 0
   fi
   verify_hold_active "$id"
+  if [ -f "$answer" ]; then
+    [ "$(answer_file_key "$answer")" = "$key" ] \
+      || fail "answer file $answer names a different decision key"
+    [ "$(answer_file_hold "$answer")" = "$id" ] \
+      || fail "answer file $answer names a different captain hold"
+  fi
   hold_show=$(task_show "$id")
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
-      verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
-      resolution_recorded=1
+      fail "captain hold $id has a partial resolution record; run reconcile-answers before retrying"
       ;;
   esac
 
   for dep in $routed; do
     show=$(task_show "$dep") || fail "routed task $dep does not exist in the active home"
     state=$(show_field "$show" state)
-    [ "$state" != "done" ] || [ "$resolution_recorded" = 1 ] \
-      || fail "routed task $dep is already done"
+    [ "$state" != "done" ] || fail "routed task $dep is already done"
     # tasks-axi quotes multi-entry blocked_by as "a,b,c"; strip so edge ids match.
     blocked=$(show_field "$show" blocked_by | tr -d '[:space:]')
     blocked=${blocked#\"}
     blocked=${blocked%\"}
     case ",$blocked," in
       *",$id,"*) : ;;
-      *)
-        case "$hold_body" in
-          *"Resolution recorded by fm-decision-hold."*"- $dep"*) : ;;
-          *) fail "routed task $dep is not durably blocked by $id" ;;
-        esac
-        ;;
+      *) fail "routed task $dep is not durably blocked by $id" ;;
     esac
   done
 
-  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:\n' "$decision_digest" "$routed_csv" "$decision")
+  answer_body=$(render_answer_file "$origin" "$key" "$id" "$decision")
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n%s\n\nCaptain decision:\n%s\n\nRouted work:\n' "$decision_digest" "$routed_csv" "$(answer_record_line "$id")" "$decision")
   for dep in $routed; do
     body="${body}- ${dep}"$'\n'
   done
+
+  backlog=$(backlog_path)
+  [ -f "$backlog" ] || fail "backlog file is absent: $backlog"
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-decision-resolve.XXXXXX") \
+    || fail "could not create rollback directory"
+  cp "$backlog" "$tmpdir/backlog.md" || fail "could not snapshot backlog before resolving $id"
+  archive=$(backlog_archive_path)
+  if [ -f "$archive" ]; then
+    archive_existed=1
+    cp "$archive" "$tmpdir/done-archive.md" || fail "could not snapshot the done archive before resolving $id"
+  fi
+  if [ -f "$answer" ]; then
+    answer_existed=1
+    cp "$answer" "$tmpdir/answer.md" || fail "could not snapshot answer file before resolving $id"
+  fi
+  rollback=1
+  trap 'if [ "${rollback:-0}" = 1 ]; then rollback_resolve "$tmpdir" "$backlog" "$archive" "$archive_existed" "$answer" "$answer_existed"; fi; [ -z "${tmpdir:-}" ] || rm -rf "$tmpdir"' EXIT
+
+  mkdir -p "$(answer_dir)" || fail "could not create captain decision answer directory"
+  printf '%s' "$answer_body" > "$tmpdir/new-answer.md" || fail "could not stage captain decision answer"
+  mv "$tmpdir/new-answer.md" "$answer" || fail "could not write captain decision answer file"
   tasks_axi update "$id" --body "$body" >/dev/null \
     || fail "could not record the captain decision on $id"
   for dep in $routed; do
@@ -446,11 +676,61 @@ command_resolve() {
         tasks_axi unblock "$dep" --by "$id" >/dev/null \
           || fail "could not route the recorded decision to $dep"
         ;;
+      *) fail "routed task $dep lost its dependency on $id before routing" ;;
     esac
   done
   tasks_axi "done" "$id" >/dev/null || fail "could not close resolved captain hold $id"
   verify_hold_resolved "$id" || fail "captain hold $id did not retain its durable resolution record"
+  [ -f "$answer" ] || fail "captain hold $id did not retain its answer file: $answer"
+  rollback=0
+  rm -rf "$tmpdir"
+  trap - EXIT
   printf 'resolved: %s -> %s\n' "$id" "$routed"
+}
+
+command_reconcile_answers() {
+  local dir file hold reported=0 open_tmp answers_tmp answer_hold answer_file open_id
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  require_tasks_axi
+  dir=$(answer_dir)
+  open_tmp=$(mktemp "${TMPDIR:-/tmp}/fm-decision-open.XXXXXX") || fail "could not create reconcile temp file"
+  answers_tmp=$(mktemp "${TMPDIR:-/tmp}/fm-decision-answers.XXXXXX") || fail "could not create reconcile temp file"
+  trap 'rm -f "$open_tmp" "$answers_tmp"' EXIT
+
+  open_captain_hold_ids > "$open_tmp"
+
+  if [ -d "$dir" ]; then
+    for file in "$dir"/*.md; do
+      [ -f "$file" ] || continue
+      hold=$(answer_file_hold "$file")
+      if [ -z "$hold" ]; then
+        printf 'ANSWER_FILE_NO_IDENTITY: %s\n' "$file"
+        reported=1
+        continue
+      fi
+      printf '%s\t%s\n' "$hold" "$file" >> "$answers_tmp"
+    done
+  fi
+
+  while IFS=$'\t' read -r answer_hold answer_file; do
+    [ -n "$answer_hold" ] || continue
+    grep -F -x -- "$answer_hold" "$open_tmp" >/dev/null 2>&1 || continue
+    printf 'ANSWER_FILE_OPEN_HOLD: %s -> %s\n' "$answer_file" "$answer_hold"
+    reported=1
+  done < "$answers_tmp"
+
+  while IFS= read -r open_id; do
+    [ -n "$open_id" ] || continue
+    awk -F'\t' -v hold="$open_id" '$1 == hold { found = 1 } END { exit found ? 0 : 1 }' "$answers_tmp" \
+      && continue
+    hold_has_resolution_record "$open_id" || continue
+    printf 'OPEN_HOLD_PARTIAL_RESOLUTION: %s\n' "$open_id"
+    reported=1
+  done < "$open_tmp"
+
+  rm -f "$open_tmp" "$answers_tmp"
+  trap - EXIT
+  [ "$reported" = 0 ] || return 1
 }
 
 case "${1:-}" in
@@ -459,6 +739,7 @@ case "${1:-}" in
   complete) shift; command_complete "$@" ;;
   verify) shift; command_verify "$@" ;;
   resolve) shift; command_resolve "$@" ;;
+  reconcile-answers) shift; command_reconcile_answers "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

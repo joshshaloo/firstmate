@@ -34,6 +34,11 @@
 #     final identity-matched fresh-beacon check proves a watcher is already live
 #     for this home. A clean close with no actionable reason and no remaining
 #     need exits 0 silently.
+#   - Continuity: a suppressed typed failure never ends the hook while a live
+#     watcher has no translator. The owner re-arms exactly once so this hook
+#     attaches to the surviving watcher and keeps translating its wakes, and the
+#     close of THAT cycle is what the rules above classify. If the re-arm cannot
+#     prove it started or attached to a watcher, the failure alarm path runs.
 #
 # The epoch ledger state/.claude-autoarm-epoch records the latest claim and
 # outcome so the synchronous Stop guard (bin/fm-turnend-guard.sh --claude) can
@@ -138,45 +143,80 @@ write_epoch arming
 # NO shell &: this hook process tree is the harness-owned lifecycle. The arm
 # forks the watcher as its own tracked child exactly as it does for the
 # model-driven background-task path, and propagates the wake reason on close.
-OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
-if [ -n "$OUT" ]; then
-  "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1
-  RC=$?
-else
-  "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1
-  RC=$?
-fi
-
-# --- classify and translate ---------------------------------------------------
-# AFK may have appeared mid-cycle: the daemon owns triage now, so suppress the
-# rewake even for an actionable close.
-if [ -e "$STATE/.afk" ]; then
-  write_epoch afk
+OUT=
+RC=0
+run_arm() {
   [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  exit 0
-fi
+  OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
+  if [ -n "$OUT" ]; then
+    "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1
+    RC=$?
+  else
+    "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1
+    RC=$?
+  fi
+  return 0
+}
 
 ACTIONABLE=0
 FAILED=0
 TYPED_FAILED=0
-if [ -n "$OUT" ]; then
-  grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" 2>/dev/null && ACTIONABLE=1
-  grep -q '^watcher: FAILED' "$OUT" 2>/dev/null && TYPED_FAILED=1
-fi
-[ "$TYPED_FAILED" -eq 0 ] || FAILED=1
-[ "$RC" -ne 0 ] && FAILED=1
+ATTACHED=0
+classify_arm_close() {
+  ACTIONABLE=0
+  FAILED=0
+  TYPED_FAILED=0
+  ATTACHED=0
+  if [ -n "$OUT" ]; then
+    grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" 2>/dev/null && ACTIONABLE=1
+    grep -q '^watcher: FAILED' "$OUT" 2>/dev/null && TYPED_FAILED=1
+    grep -Eq '^watcher: (started|attached) pid=' "$OUT" 2>/dev/null && ATTACHED=1
+  fi
+  [ "$TYPED_FAILED" -eq 0 ] || FAILED=1
+  [ "$RC" -ne 0 ] && FAILED=1
+  return 0
+}
 
-if [ "$ACTIONABLE" -eq 0 ]; then
-  if [ "$TYPED_FAILED" -eq 1 ] && fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME"; then
-    write_epoch clean
+# --- classify and translate ---------------------------------------------------
+# An absorbed-wake race can print the typed empty-cycle failure while this home
+# still holds an identity-matched watcher with a fresh beacon: that cycle
+# started, beat, and had its wake absorbed, so it is healthy, never FAILED. A
+# healthy verdict must not leave that watcher without a wake translator, so the
+# owner re-arms exactly once (the arm reports attached and follows the surviving
+# watcher) and classifies the close of that cycle instead.
+REARMED=0
+while :; do
+  run_arm
+
+  # AFK may have appeared mid-cycle: the daemon owns triage now, so suppress the
+  # rewake even for an actionable close.
+  if [ -e "$STATE/.afk" ]; then
+    write_epoch afk
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 0
   fi
-  if [ "$FAILED" -eq 0 ]; then
-    write_epoch clean
-    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-    exit 0
-  fi
+
+  classify_arm_close
+
+  [ "$ACTIONABLE" -eq 0 ] || break
+  [ "$TYPED_FAILED" -eq 1 ] || break
+  [ "$REARMED" -eq 0 ] || break
+  fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME" || break
+  REARMED=1
+  write_epoch arming
+done
+
+# Default closed: the suppression only holds when the re-arm proved it owns a
+# watcher, by reporting the one it started or attached to, or by returning an
+# actionable wake it translated. An unproven re-attach takes the alarm path.
+if [ "$REARMED" -eq 1 ] && [ "$ACTIONABLE" -eq 0 ] && [ "$ATTACHED" -eq 0 ]; then
+  FAILED=1
+fi
+
+if [ "$ACTIONABLE" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
+  write_epoch clean
+  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+  exit 0
 fi
 
 # The need may have vanished mid-cycle (fleet torn down, X opted out): nothing

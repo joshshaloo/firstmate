@@ -77,7 +77,41 @@ run_autoarm() {
   return "$rc"
 }
 
+# Fixture prelude for the variants that must leave a watcher this home's health
+# predicate accepts. The fake watcher records its OWN identity after the fork and
+# never execs, so no pre-exec cmdline can be captured and the recorded identity
+# stays valid for every later recheck. publish_fake_watcher returns only once the
+# lock is complete, so the arm's status line can never race the recheck.
+FAKE_WATCHER_PRELUDE='
+publish_fake_watcher() {
+  local lock="$FM_HOME/state/.watch.lock" ready="$FM_HOME/state/.fake-watcher-ready" i=0
+  rm -f "$ready"
+  mkdir -p "$lock"
+  (
+    . "$FM_HOME/bin/fm-wake-lib.sh"
+    printf "%s\n" "$BASHPID" > "$lock/pid"
+    printf "%s\n" "$FM_HOME" > "$lock/fm-home"
+    printf "%s/bin/fm-watch.sh\n" "$FM_HOME" > "$lock/watcher-path"
+    fm_pid_identity "$BASHPID" > "$lock/pid-identity"
+    touch "$FM_HOME/state/.last-watcher-beat"
+    printf "%s\n" "$BASHPID" > "$FM_HOME/state/healthy-watcher-pid"
+    : > "$ready"
+    while :; do sleep 0.5; done
+  ) &
+  while [ ! -e "$ready" ] && [ "$i" -lt 200 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+}
+
+arm_run_count() {
+  wc -l < "$FM_HOME/state/arm-ran" | tr -d "[:space:]"
+}
+'
+
 # Arm fixture variants, installed per test as <dir>/bin/fm-watch-arm.sh.
+# Variants whose body calls publish_fake_watcher/arm_run_count are assembled from
+# the shared prelude above plus their own quoted body.
 write_arm_fixture() {
   local dir=$1 kind=$2
   case "$kind" in
@@ -99,43 +133,50 @@ exit 1
 SH
       ;;
     absorbed-healthy-race)
-      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
-#!/usr/bin/env bash
+      { printf '#!/usr/bin/env bash\n%s\n' "$FAKE_WATCHER_PRELUDE"
+        cat <<'SH'
 echo "$$" >> "$FM_HOME/state/arm-ran"
-sleep 60 &
-watcher=$!
-printf '%s\n' "$watcher" > "$FM_HOME/state/healthy-watcher-pid"
-mkdir -p "$FM_HOME/state/.watch.lock"
-printf '%s\n' "$watcher" > "$FM_HOME/state/.watch.lock/pid"
-printf '%s\n' "$FM_HOME" > "$FM_HOME/state/.watch.lock/fm-home"
-printf '%s/bin/fm-watch.sh\n' "$FM_HOME" > "$FM_HOME/state/.watch.lock/watcher-path"
-# shellcheck source=/dev/null
+if [ "$(arm_run_count)" -le 1 ]; then
+  publish_fake_watcher
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$(cat "$FM_HOME/state/healthy-watcher-pid")"
+  printf 'watcher: FAILED - cycle ended without an actionable reason\n'
+  exit 1
+fi
 . "$FM_HOME/bin/fm-wake-lib.sh"
-fm_pid_identity "$watcher" > "$FM_HOME/state/.watch.lock/pid-identity"
-touch "$FM_HOME/state/.last-watcher-beat"
-printf 'watcher: started pid=%s (beacon fresh)\n' "$watcher"
-printf 'watcher: FAILED - cycle ended without an actionable reason\n'
+if fm_watcher_healthy "$FM_HOME/state" "$FM_HOME/bin/fm-watch.sh" 300 "$FM_HOME"; then
+  printf '%s\n' "$FM_WATCHER_HEALTHY_PID" > "$FM_HOME/state/arm-attached"
+  printf 'watcher: attached pid=%s (beacon 0s)\n' "$FM_WATCHER_HEALTHY_PID"
+  printf 'signal: task.status done: attached cycle wake\n'
+  exit 0
+fi
+printf 'watcher: FAILED - no live watcher with a fresh beacon\n'
 exit 1
 SH
+      } > "$dir/bin/fm-watch-arm.sh"
+      ;;
+    absorbed-healthy-reattach-unconfirmed)
+      { printf '#!/usr/bin/env bash\n%s\n' "$FAKE_WATCHER_PRELUDE"
+        cat <<'SH'
+echo "$$" >> "$FM_HOME/state/arm-ran"
+if [ "$(arm_run_count)" -le 1 ]; then
+  publish_fake_watcher
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$(cat "$FM_HOME/state/healthy-watcher-pid")"
+  printf 'watcher: FAILED - cycle ended without an actionable reason\n'
+  exit 1
+fi
+exit 0
+SH
+      } > "$dir/bin/fm-watch-arm.sh"
       ;;
     unknown-nonzero-healthy)
-      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
-#!/usr/bin/env bash
+      { printf '#!/usr/bin/env bash\n%s\n' "$FAKE_WATCHER_PRELUDE"
+        cat <<'SH'
 echo "$$" >> "$FM_HOME/state/arm-ran"
-sleep 60 &
-watcher=$!
-printf '%s\n' "$watcher" > "$FM_HOME/state/healthy-watcher-pid"
-mkdir -p "$FM_HOME/state/.watch.lock"
-printf '%s\n' "$watcher" > "$FM_HOME/state/.watch.lock/pid"
-printf '%s\n' "$FM_HOME" > "$FM_HOME/state/.watch.lock/fm-home"
-printf '%s/bin/fm-watch.sh\n' "$FM_HOME" > "$FM_HOME/state/.watch.lock/watcher-path"
-# shellcheck source=/dev/null
-. "$FM_HOME/bin/fm-wake-lib.sh"
-fm_pid_identity "$watcher" > "$FM_HOME/state/.watch.lock/pid-identity"
-touch "$FM_HOME/state/.last-watcher-beat"
-printf 'watcher: started pid=%s (beacon fresh)\n' "$watcher"
+publish_fake_watcher
+printf 'watcher: started pid=%s (beacon fresh)\n' "$(cat "$FM_HOME/state/healthy-watcher-pid")"
 exit 1
 SH
+      } > "$dir/bin/fm-watch-arm.sh"
       ;;
     clean)
       cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
@@ -366,28 +407,57 @@ test_failed_close_rewakes_with_failure_banner() {
   pass "auto-arm: watcher: FAILED translates to an exit-2 alarm rewake"
 }
 
-test_failed_close_with_live_absorbing_watcher_exits_silently() {
+kill_fake_watcher() {
+  local watcher
+  watcher=$(cat "$1/state/healthy-watcher-pid" 2>/dev/null || true)
+  [ -z "$watcher" ] || kill "$watcher" 2>/dev/null || true
+}
+
+arm_runs() {
+  wc -l < "$1/state/arm-ran" 2>/dev/null | tr -d '[:space:]'
+}
+
+test_absorbed_wake_reattaches_to_surviving_watcher() {
   local dir out status watcher
   dir=$(make_primary_dir "$TMP_ROOT/absorbed-healthy")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" absorbed-healthy-race
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   watcher=$(cat "$dir/state/healthy-watcher-pid" 2>/dev/null || true)
-  [ -z "$watcher" ] || kill "$watcher" 2>/dev/null || true
-  expect_code 0 "$status" "a typed empty-cycle failure must be suppressed when the watcher is now live and beating"
-  [ -z "$out" ] || fail "healthy absorbed cycle produced a failure rewake: $out"
-  [ "$(epoch_outcome "$dir")" = clean ] || fail "epoch must record outcome=clean, got: $(epoch_outcome "$dir")"
-  pass "auto-arm: typed empty-cycle failure is clean when a verified watcher is live and beating"
+  kill_fake_watcher "$dir"
+  [ -n "$watcher" ] || fail "fixture published no surviving watcher"
+  [ "$(arm_runs "$dir")" = 2 ] || fail "a healthy verdict must re-arm exactly once, arm ran $(arm_runs "$dir") time(s)"
+  [ "$(cat "$dir/state/arm-attached" 2>/dev/null || true)" = "$watcher" ] \
+    || fail "the re-arm did not attach to surviving watcher $watcher"
+  assert_not_contains "$out" "watcher cycle FAILED" "an absorbed-wake cycle must not raise the supervision-down alarm"
+  expect_code 2 "$status" "the re-attached cycle's actionable close must still be translated"
+  assert_contains "$out" "firstmate watcher wake" "the re-attached cycle's wake must reach the model"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
+  pass "auto-arm: a healthy absorbed-wake verdict re-attaches and keeps owning wake translation"
+}
+
+test_healthy_verdict_alarms_when_reattach_is_unconfirmed() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/absorbed-unconfirmed")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" absorbed-healthy-reattach-unconfirmed
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill_fake_watcher "$dir"
+  [ "$(arm_runs "$dir")" = 2 ] || fail "a healthy verdict must re-arm exactly once, arm ran $(arm_runs "$dir") time(s)"
+  expect_code 2 "$status" "a re-arm that proves no watcher must fall back to the failure alarm"
+  assert_contains "$out" "watcher cycle FAILED" "an unconfirmed re-attach must carry the failure banner"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
+  pass "auto-arm: a healthy verdict with an unconfirmed re-attach defaults closed to the alarm"
 }
 
 test_unknown_nonzero_with_live_watcher_still_rewakes() {
-  local dir out status watcher
+  local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/unknown-healthy")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" unknown-nonzero-healthy
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  watcher=$(cat "$dir/state/healthy-watcher-pid" 2>/dev/null || true)
-  [ -z "$watcher" ] || kill "$watcher" 2>/dev/null || true
+  kill_fake_watcher "$dir"
+  [ "$(arm_runs "$dir")" = 1 ] || fail "an untyped nonzero close must not re-arm, arm ran $(arm_runs "$dir") time(s)"
   expect_code 2 "$status" "an untyped nonzero close must remain a failure even if a watcher later appears healthy"
   assert_contains "$out" "watcher cycle FAILED" "unknown nonzero close must still carry the failure banner"
   [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
@@ -493,7 +563,8 @@ test_resolves_outermost_claude_pid_in_nested_bgspare_chain
 test_inert_when_fleet_idle
 test_actionable_close_rewakes_with_reason
 test_failed_close_rewakes_with_failure_banner
-test_failed_close_with_live_absorbing_watcher_exits_silently
+test_absorbed_wake_reattaches_to_surviving_watcher
+test_healthy_verdict_alarms_when_reattach_is_unconfirmed
 test_unknown_nonzero_with_live_watcher_still_rewakes
 test_clean_close_exits_silently
 test_arms_for_x_mode_poll_need_without_inflight

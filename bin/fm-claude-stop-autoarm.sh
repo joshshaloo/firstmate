@@ -28,10 +28,12 @@
 #     this hook-owned process tree (never shell &); Claude owns the process
 #     group, so its timeout/session teardown kills arm and watcher together.
 #   - Translation: while supervision is still needed and AFK remains inactive,
-#     an actionable arm close (signal:/stale:/check:/heartbeat) or a typed
-#     watcher: FAILED prints one rewake banner to stderr and exits 2, which
-#     wakes Claude even while idle ("Stop hook feedback"). A clean close with
-#     no actionable reason and no remaining need exits 0 silently.
+#     an actionable arm close (signal:/stale:/check:/heartbeat) prints one
+#     rewake banner to stderr and exits 2, which wakes Claude even while idle
+#     ("Stop hook feedback"). A typed watcher: FAILED is also rewoken unless a
+#     final identity-matched fresh-beacon check proves a watcher is already live
+#     for this home. A clean close with no actionable reason and no remaining
+#     need exits 0 silently.
 #
 # The epoch ledger state/.claude-autoarm-epoch records the latest claim and
 # outcome so the synchronous Stop guard (bin/fm-turnend-guard.sh --claude) can
@@ -156,16 +158,25 @@ fi
 
 ACTIONABLE=0
 FAILED=0
+TYPED_FAILED=0
 if [ -n "$OUT" ]; then
   grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" 2>/dev/null && ACTIONABLE=1
-  grep -q '^watcher: FAILED' "$OUT" 2>/dev/null && FAILED=1
+  grep -q '^watcher: FAILED' "$OUT" 2>/dev/null && TYPED_FAILED=1
 fi
+[ "$TYPED_FAILED" -eq 0 ] || FAILED=1
 [ "$RC" -ne 0 ] && FAILED=1
 
-if [ "$ACTIONABLE" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
-  write_epoch clean
-  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  exit 0
+if [ "$ACTIONABLE" -eq 0 ]; then
+  if [ "$TYPED_FAILED" -eq 1 ] && fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME"; then
+    write_epoch clean
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  fi
+  if [ "$FAILED" -eq 0 ]; then
+    write_epoch clean
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  fi
 fi
 
 # The need may have vanished mid-cycle (fleet torn down, X opted out): nothing

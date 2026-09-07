@@ -52,6 +52,7 @@ In the default Codex mode, a true value lets the second stop finish after one fo
 Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
 Claude Code sets `stop_hook_active=true` on every stop after any stop-hook continuation, including `asyncRewake` rewakes, which re-opened the 2026-07-21 blind window under the default one-shot behavior.
 The Claude mode waits up to `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` (default 800 milliseconds) and allows the stop when the watcher is healthy, `state/.claude-autoarm.lock` has a live owner, or `state/.claude-autoarm-epoch` contains a fresh rewake outcome.
+The Stop auto-arm also rechecks the same identity-matched fresh-beacon predicate before translating a typed empty-cycle failure, so a cycle that started, beat, and left a live watcher after an absorbed wake closes silently instead of reporting supervision down.
 When none of those proofs appears, it re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override), then allows degraded with a visible `systemMessage`.
 Any allow resets the budget.
 

@@ -1047,13 +1047,22 @@ prepare_recorded_worktree_relaunch() {
       if [ "$old_backend" = tmux ] && [ "$BACKEND" = tmux ]; then
         REUSE_RECORDED_ENDPOINT=1
       elif [ "$old_backend" = herdr ] && [ "$BACKEND" = herdr ]; then
+        fm_backend_herdr_parse_target "$old_target" || {
+          echo "error: existing herdr endpoint for $ID is malformed; refusing same-id relaunch" >&2
+          return 1
+        }
+        spawn_herdr_presentation_order_lock_acquire "$FM_BACKEND_HERDR_SESSION" || {
+          echo "error: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close and the same-id relaunch for $ID" >&2
+          return 1
+        }
         fm_backend_herdr_reconcile_dead_endpoint "$old_target"
         reconcile_status=$?
+        spawn_herdr_presentation_order_lock_release
         if [ "$reconcile_status" -eq 2 ]; then
           echo "error: existing herdr endpoint for $ID was closed during reconciliation but its disappearance could not be confirmed; refusing duplicate launch until that endpoint is verified by hand" >&2
           return 1
         elif [ "$reconcile_status" -ne 0 ]; then
-          echo "error: existing herdr endpoint for $ID is still present without a live agent and was left untouched, because it is not a provably idle childless shell that this relaunch may close; refusing duplicate launch" >&2
+          echo "error: existing herdr endpoint for $ID is still present without a live agent and was left untouched; refusing duplicate launch" >&2
           return 1
         fi
       else

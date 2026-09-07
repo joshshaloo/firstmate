@@ -281,6 +281,9 @@ case "${1:-} ${2:-}" in
   "status --json")
     printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
     ;;
+  "session list")
+    printf '{"sessions":[{"name":"default","running":true,"socket_path":"%s/herdr.sock"}]}\n' "$STATE"
+    ;;
   "workspace list")
     printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate","focused":true,"active_tab_id":"%s"}]}}\n' \
       "$(focused_tab)"
@@ -357,6 +360,10 @@ case "${1:-} ${2:-}" in
     if [ "${3:-}" = "$OLD_PANE" ]; then
       : > "$STATE/old-closed"
       printf '%s' "$NEIGHBOR_TAB" > "$FOCUS_FILE"
+      # MODE=closeraces: the husk vanished between the close-boundary recheck
+      # and the close itself, so herdr answers the close with a not-found
+      # error even though the pane is genuinely gone.
+      [ "$MODE" != closeraces ] || { json_not_found pane_not_found >&2; exit 1; }
     fi
     ;;
   "pane run")
@@ -408,6 +415,22 @@ claim_herdr_slot() {  # <task-id> <worktree> [backend]
 
 herdr_relaunch_focused_tab() {
   cat "$CASE_DIR/herdr-fake/herdr-state/focused-tab" 2>/dev/null
+}
+
+# The named-session presentation lock this case's fake session resolves to. The
+# per-case socket path keeps every case on its own lock even though the
+# namespace itself is machine-shared, exactly as in production.
+herdr_relaunch_lock_path() {
+  local fake_dir="$CASE_DIR/herdr-fake" herdr_fakebin_dir
+  herdr_fakebin_dir=$(make_herdr_relaunch_fakebin "$fake_dir")
+  mkdir -p "$fake_dir/herdr-state"
+  FM_FAKE_HERDR_RELAUNCH_LOG=/dev/null \
+    FM_FAKE_HERDR_RELAUNCH_STATE="$fake_dir/herdr-state" \
+    FM_FAKE_HERDR_RELAUNCH_ID=lockpath FM_FAKE_HERDR_RELAUNCH_WT="$SLOT_A" \
+    FM_FAKE_PROJECT_DIR="$PROJ_DIR" FM_FAKE_HERDR_RELAUNCH_MODE=dead \
+    HERDR_SESSION=default PATH="$herdr_fakebin_dir:$PATH" \
+    bash -c '. "$1/bin/backends/herdr.sh"; fm_backend_herdr_presentation_session_lock_path default' \
+      _ "$ROOT"
 }
 
 run_herdr_relaunch_spawn() {  # <id> <mode> [target-backend]
@@ -675,7 +698,7 @@ test_unclassifiable_claim_is_still_refused() {
 }
 
 test_same_id_herdr_dead_pane_reconciles_and_reuses_worktree() {
-  local id out status log
+  local id out status log lock
   id=claim-herdr-dead-zb
   make_claim_case claim-herdr-dead "$id"
   claim_herdr_slot "$id" "$SLOT_A"
@@ -701,7 +724,50 @@ test_same_id_herdr_dead_pane_reconciles_and_reuses_worktree() {
     "Herdr relaunch did not restore the captain's exact pre-close tab"
   [ "$(herdr_relaunch_focused_tab)" = w1:t-captain ] \
     || fail "Herdr relaunch left the captain focused somewhere other than its pre-close tab"
+  lock=$(herdr_relaunch_lock_path) || fail "could not resolve the session presentation lock"
+  [ ! -e "$lock" ] && [ ! -L "$lock" ] \
+    || fail "Herdr relaunch did not release the session presentation lock after reconciling"
   pass "a same-id Herdr relaunch closes a proven dead pane and reuses the recorded worktree"
+}
+
+# The focus-preserving close owner is only safe when one operation at a time
+# snapshots, closes, and restores. A concurrent teardown or session cleanup
+# holding the named-session presentation lock must make the relaunch refuse
+# outright rather than snapshot a neighbor's transient focus.
+test_same_id_herdr_reconcile_refuses_while_presentation_lock_is_held() {
+  local id out status log lock ready release owner_pid
+  id=claim-herdr-lock-zi
+  make_claim_case claim-herdr-lock "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  lock=$(herdr_relaunch_lock_path) || fail "could not resolve the session presentation lock"
+  ready="$CASE_DIR/lock-ready"
+  release="$CASE_DIR/lock-release"
+  ROOT="$ROOT" READY="$ready" RELEASE="$release" LOCK="$lock" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$LOCK" || exit 1
+    : > "$READY"
+    while [ ! -e "$RELEASE" ]; do sleep 0.05; done
+    fm_lock_release "$LOCK"
+  ' &
+  owner_pid=$!
+  while [ ! -e "$ready" ] && kill -0 "$owner_pid" 2>/dev/null; do sleep 0.01; done
+  [ -e "$ready" ] || fail "could not hold the session presentation lock"
+
+  out=$(run_herdr_relaunch_spawn "$id" dead)
+  status=$?
+  : > "$release"
+  wait "$owner_pid" || fail "the presentation lock owner failed"
+
+  expect_code 1 "$status" "a contended presentation lock should refuse the same-id relaunch"
+  assert_contains "$out" "presentation focus lock unavailable" \
+    "the lock-contention refusal did not name the focus lock"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_not_contains "$log" $'pane\x1fclose\x1fw1:p-old' \
+    "a contended presentation lock still closed the recorded pane"
+  assert_not_contains "$log" $'tab\x1fcreate\x1f--workspace\x1fw1' \
+    "a contended presentation lock still created a duplicate endpoint"
+  pass "a same-id Herdr relaunch refuses a concurrent focus-unsafe close under lock contention"
 }
 
 # The husk is the captain's own active tab, so no exact-tab restore can survive
@@ -755,6 +821,28 @@ test_same_id_herdr_split_tab_refuses_without_closing() {
 # Reconciliation is symmetric with tmux adoption: it only runs when the recorded
 # AND the target backend are both herdr. A relaunch onto a different backend
 # still refuses and asks for explicit reconciliation instead of mutating Herdr.
+# A close that herdr answers with a not-found error still destroyed the pane.
+# The reconcile's verdict comes from the post-close state read, so the relaunch
+# proceeds instead of reporting an endpoint it just closed as left untouched.
+test_same_id_herdr_close_race_is_reported_as_gone_not_untouched() {
+  local id out status log
+  id=claim-herdr-closerace-zj
+  make_claim_case claim-herdr-closerace "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" closeraces)
+  status=$?
+  expect_code 0 "$status" "a close the husk lost a race to should still let the relaunch proceed"
+  assert_not_contains "$out" "was left untouched" \
+    "a destroyed endpoint was reported as left untouched"
+  assert_grep "window=default:w1:p-new" "$HOME_DIR/state/$id.meta" \
+    "the relaunch did not record the replacement pane after the close race"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_contains "$log" $'tab\x1fcreate\x1f--workspace\x1fw1' \
+    "the relaunch did not create a replacement endpoint after the close race"
+  pass "a failed close whose pane is gone reconciles instead of refusing as untouched"
+}
+
 test_same_id_herdr_cross_backend_relaunch_refuses_without_closing() {
   local id out status log
   id=claim-herdr-cross-zh
@@ -819,8 +907,8 @@ test_same_id_herdr_foreground_job_refuses_without_closing() {
   out=$(run_herdr_relaunch_spawn "$id" fgjob)
   status=$?
   expect_code 1 "$status" "same-id relaunch should refuse when Herdr process proof fails"
-  assert_contains "$out" "not a provably idle childless shell" \
-    "Herdr process-proof refusal did not explain the safety reason"
+  assert_contains "$out" "herdr pane w1:p-old is not a provably idle childless shell" \
+    "Herdr process-proof refusal did not name the exact pane and the safety reason"
   log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
   assert_contains "$log" $'pane\x1fprocess-info\x1f--pane\x1fw1:p-old' \
     "Herdr process-proof case did not inspect process info"
@@ -845,8 +933,10 @@ test_same_id_herdr_dead_pane_reconciles_and_reuses_worktree
 test_same_id_herdr_alive_refuses_without_closing
 test_same_id_unverified_endpoint_refuses_without_get
 test_same_id_herdr_foreground_job_refuses_without_closing
+test_same_id_herdr_reconcile_refuses_while_presentation_lock_is_held
 test_same_id_herdr_active_tab_husk_refuses
 test_same_id_herdr_split_tab_refuses_without_closing
+test_same_id_herdr_close_race_is_reported_as_gone_not_untouched
 test_same_id_herdr_cross_backend_relaunch_refuses_without_closing
 
 echo "# all fm-spawn-worktree-claim tests passed"

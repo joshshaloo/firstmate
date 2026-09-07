@@ -103,7 +103,7 @@ If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and
 
 Recovery is deliberately conservative and presentation-only.
 An existing journal suppresses another projected create.
-Before any recovery decision, Firstmate holds the task spawn lock and, when presentation inspection is needed, the named-session presentation lock.
+Before any recovery decision, Firstmate holds the task spawn lock and, when presentation inspection or a focus-preserving pane close is needed, the named-session presentation lock.
 A same-identity version 2 binding no longer replaces a restored task tab in place.
 If the recorded Herdr endpoint is present without a registered agent, same-id relaunch asks the Herdr backend to close only that exact pane - through the same focus-preserving close owner every other Herdr close uses, and only after the idle-shell process proof succeeds and that pane is proven to be its own tab's last pane - then creates a new endpoint in the ordinary flat workspace using the recorded worktree.
 Version 1 journals, missing panes, duplicate or absent tokens, renamed or detached spaces, cross-home mismatches, inconsistent endpoint bindings, active target tabs, and ambiguous identity or focus fall back flat without mutating the old projection when duplicate-agent risk is positively absent.
@@ -136,7 +136,7 @@ Operational compromises:
 - The visible token is only a restart-stable correlator and never substitutes for the exact binding.
 
 `tests/fm-backend-herdr-presentation-e2e.test.sh` covers multi-home ordering, concurrency, lock contention, legacy coexistence, focus preservation, ambiguous bindings and tokens, and exact-pane cleanup through the guarded lab path.
-`tests/fm-spawn-worktree-claim.test.sh` covers same-id Herdr relaunch across dead-pane reconciliation with focus restoration, live refusal, unverified refusal, process-proof refusal, active-tab refusal, shared-tab refusal, and cross-backend refusal.
+`tests/fm-spawn-worktree-claim.test.sh` covers same-id Herdr relaunch across dead-pane reconciliation with focus restoration and lock release, live refusal, unverified refusal, process-proof refusal, active-tab refusal, shared-tab refusal, presentation-lock contention refusal, cross-backend refusal, and the close-race verdict.
 `tests/fm-herdr-session-cleanup.test.sh` covers every discovery, ownership, topology, process, locking, revalidation, focus, retirement, and continue-on-error boundary.
 `tests/fm-herdr-session-cleanup-e2e.test.sh` covers the restored-shell cleanup in a guarded non-default named lab; [`verification/runtime-backends.md`](verification/runtime-backends.md#per-home-and-presentation-topology) owns the active versioned evidence.
 
@@ -221,6 +221,8 @@ Task creation refuses any existing same-labeled tab, including a husk, so relaun
 During same-id relaunch, `fm-spawn.sh` reuses the recorded worktree directly when the recorded Herdr endpoint is structurally gone.
 When the recorded Herdr endpoint is still present with no registered agent, `fm-spawn.sh` closes only that exact pane after the Herdr backend proves it is one recognized idle shell with no foreground job and no child process, and that it is the only pane of its `fm-<id>` tab so the close actually frees the label the create path checks.
 That close goes through the shared focus-preserving close owner, so it restores the captain's exact pre-close workspace and tab and refuses outright when the husk is the active tab.
+It adopts that owner's serialization precondition too: the relaunch holds the shared named-session presentation lock across the focus snapshot, the close, and the restore, on the same bounded retry teardown and session cleanup use, and refuses the relaunch untouched when the lock is unavailable rather than snapshotting a concurrent operation's transient focus.
+The reconcile's verdict comes from a post-close pane read rather than the close status alone, so a husk that vanished under the close is reported gone instead of left untouched, and every refusal names its own reason.
 A live, unreadable, unverified, process-unproven, active-tab, or tab-sharing endpoint refuses instead of closing or allocating a fresh slot, and so does a same-id relaunch whose target backend is not herdr.
 
 The generic Herdr agent-liveness probe reuses the same classifier.

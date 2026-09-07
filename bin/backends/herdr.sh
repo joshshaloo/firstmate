@@ -1340,9 +1340,13 @@ fm_backend_herdr_pane_is_tab_sole_pane() {  # <session> <pane-id>
 # that closing it actually frees the task tab the create path checks.
 # The close goes through the one focus-preserving close owner, so it snapshots
 # and restores the captain's exact workspace and tab and refuses outright when
-# the husk is the active tab.
+# the husk is the active tab. The caller must already hold that owner's
+# serialization precondition, the named-session presentation lock.
+# Every refusal names its own reason, so the caller never has to guess one.
 # Exit codes: 0 the pane is confirmed gone, 1 refused with nothing mutated,
-# 2 the close was issued but its outcome could not be confirmed.
+# 2 the close was issued but its outcome could not be confirmed. The verdict is
+# taken from a post-close state read rather than the close status alone, so a
+# pane that vanished under the close is reported gone, not left-untouched.
 fm_backend_herdr_reconcile_dead_endpoint() {  # <target>
   local target=$1 session pane state close_status
   fm_backend_herdr_parse_target "$target" || return 1
@@ -1352,11 +1356,22 @@ fm_backend_herdr_reconcile_dead_endpoint() {  # <target>
   state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
   [ "$state" = no-agent ] || return 1
   fm_backend_herdr_pane_is_tab_sole_pane "$session" "$pane" || return 1
-  fm_backend_herdr_pane_process_is_idle_shell "$session" "$pane" || return 1
+  fm_backend_herdr_pane_process_is_idle_shell "$session" "$pane" || {
+    echo "error: herdr pane $pane is not a provably idle childless shell (one recognized idle shell, no foreground job, no child process); refusing to close it" >&2
+    return 1
+  }
   fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane" no-agent
   close_status=$?
-  [ "$close_status" -eq 0 ] || return "$close_status"
-  [ "$(fm_backend_herdr_pane_agent_state "$session" "$pane")" = dead ] || return 2
+  case "${FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE:-}" in
+    ''|no-agent) ;;
+    *)
+      echo "error: herdr pane $pane became $FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE at the close boundary; refusing to close it" >&2
+      ;;
+  esac
+  state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
+  [ "$state" != dead ] || return 0
+  [ "$close_status" != 1 ] || return 1
+  return 2
 }
 
 # fm_backend_herdr_agent_state: recovery-grade state for the same session-start

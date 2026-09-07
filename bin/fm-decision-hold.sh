@@ -273,8 +273,12 @@ answer_record_line() {  # <hold-id>
 }
 
 body_has_answer_record() {  # <hold-body>
-  case "$1" in
-    *'Answer record: '*) return 0 ;;
+  local header=$1
+  case "$header" in
+    *'\n\nCaptain decision:'*) header=${header%%'\n\nCaptain decision:'*} ;;
+  esac
+  case "$header" in
+    *'\nAnswer record: '*) return 0 ;;
   esac
   return 1
 }
@@ -359,23 +363,12 @@ open_captain_hold_ids() {
   done
 }
 
-tasks_config_file() {
-  local dir="$FM_HOME"
-  while [ -n "$dir" ] && [ "$dir" != / ]; do
-    if [ -f "$dir/.tasks.toml" ]; then
-      printf '%s\n' "$dir/.tasks.toml"
-      return 0
-    fi
-    dir=$(dirname "$dir")
-  done
-  [ -f /.tasks.toml ] || return 1
-  printf '%s\n' /.tasks.toml
-}
-
+# tasks-axi reads .tasks.toml from its own working directory only - a config in
+# a parent directory is ignored - and tasks_axi() always runs in $FM_HOME, so the
+# active home's own config is the single source for both markdown backend paths.
 markdown_backend_path() {  # <toml-key> <default-relative-path>
-  local key=$1 fallback=$2 config='' base="$FM_HOME" value=''
-  if config=$(tasks_config_file); then
-    base=$(dirname "$config")
+  local key=$1 fallback=$2 config="$FM_HOME/.tasks.toml" value=''
+  if [ -f "$config" ]; then
     value=$(awk -v key="$key" '
       /^[[:space:]]*\[/ {
         section = $0
@@ -397,16 +390,16 @@ markdown_backend_path() {  # <toml-key> <default-relative-path>
   [ -n "$value" ] || value=$fallback
   case "$value" in
     /*) printf '%s\n' "$value" ;;
-    *) printf '%s/%s\n' "$base" "$value" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$value" ;;
   esac
 }
 
 backlog_path() {
-  markdown_backend_path path data/backlog.md
+  markdown_backend_path path backlog.md
 }
 
 backlog_archive_path() {
-  markdown_backend_path archive data/done-archive.md
+  markdown_backend_path archive done-archive.md
 }
 
 rollback_resolve() {  # <tmpdir> <backlog> <archive> <archive-existed> <answer> <answer-existed>

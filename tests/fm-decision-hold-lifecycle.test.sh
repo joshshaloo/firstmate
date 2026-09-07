@@ -551,7 +551,8 @@ text_digest() {  # <text>
 # A resolution written by the current code stamps the answer path and format
 # version into the hold body. A hold carrying that marker must fail loudly when
 # its answer file is gone, while a hold resolved before answer files existed
-# carries no marker and backfills instead.
+# carries no marker and backfills instead - even when its recorded answer prose
+# quotes the marker.
 test_resolve_separates_legacy_and_recorded_answers() {
   local home origin hold answer decision digest body show current current_hold current_answer out rc
   home=$(make_home legacy-answer-backfill)
@@ -570,7 +571,7 @@ test_resolve_separates_legacy_and_recorded_answers() {
   tasks_in "$home" add sample-legacy-work "Apply the legacy access path" \
     --kind ship --repo sample --blocked-by "$hold" >/dev/null \
     || fail "could not create legacy dependent work"
-  decision="Grant the sample service read-only access."
+  decision="Grant the sample service read-only access, quoting Answer record: data/captain-decisions/spoof.md (v1) verbatim."
   printf '%s\n' "$decision" > "$home/legacy-decision.txt"
   digest=$(text_digest "$decision")
   body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: sample-legacy-work\n\nCaptain decision:\n%s\n\nRouted work:\n- sample-legacy-work\n' \
@@ -589,6 +590,9 @@ test_resolve_separates_legacy_and_recorded_answers() {
   assert_contains "$out" "resolved: $hold" "legacy backfill did not report the resolved hold"
   assert_grep "Hold: $hold" "$answer" "legacy backfill did not record the hold identity"
   assert_grep "Legacy-resolved:" "$answer" "legacy backfill did not mark the answer file"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_not_contains "$show" "Routed identities: sample-legacy-work\\nAnswer record:" \
+    "the legacy fixture gained a current-code answer record"
   assert_grep "$decision" "$answer" "legacy backfill did not recover the durable decision text"
   run_decisions "$home" reconcile-answers >/dev/null \
     || fail "a backfilled answer file for a closed decision was reported as open"

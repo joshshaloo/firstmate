@@ -782,8 +782,12 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
 }
 
 test_bootstrap_reports_decision_answer_reconciliation() {
-  local case_dir fakebin real_tasks out hold
+  local case_dir fakebin real_tasks real_node out hold
   real_tasks=$(command -v tasks-axi 2>/dev/null) || { echo "skip: tasks-axi not found"; return 0; }
+  # make_fake_toolchain shadows node with an exit-0 stub, so the real tasks-axi
+  # must be launched through the real interpreter rather than its `env node`
+  # shebang, which would otherwise resolve to that stub and silently do nothing.
+  real_node=$(command -v node 2>/dev/null) || { echo "skip: node not found"; return 0; }
   case_dir="$TMP_ROOT/decision-reconcile-bootstrap"
   mkdir -p "$case_dir/home/data/captain-decisions" "$case_dir/home/state" "$case_dir/home/config" "$case_dir/home/projects"
   cp "$ROOT/.tasks.toml" "$case_dir/home/.tasks.toml"
@@ -815,7 +819,7 @@ if [ "\${1:-}" = hold ] && [ "\${2:-}" = --help ]; then
   printf '%s\n' 'usage: tasks-axi hold <id> --reason <reason> --kind captain'
   exit 0
 fi
-exec '$real_tasks' "\$@"
+exec '$real_node' '$real_tasks' "\$@"
 EOF
   chmod +x "$fakebin/tasks-axi"
   (cd "$case_dir/home" && tasks-axi add sample-origin "Review sample" --kind scout --repo sample --start) >/dev/null \

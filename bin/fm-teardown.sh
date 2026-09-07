@@ -23,13 +23,20 @@
 # by itself causes a false refusal of landed work.
 # A gh lookup error falls back to the landing-branch content check; if that is
 # also inconclusive, teardown refuses rather than risk discarding unlanded work.
-# Commit identity on the landing branch is accepted. When identity fails, the
-# content check compares only the files changed by the work branch against the
-# landing branch and requires zero differing lines; a refusal names those files.
+# Commit identity on the landing branch is accepted. When identity fails, a
+# 3-way merge of the landing branch with HEAD that reproduces the landing
+# branch's own tree is accepted, so a squash landing still proves landed once the
+# landing branch gains later unrelated edits to the same files. Only when that is
+# inconclusive does the content check compare the files changed by the work
+# branch against the landing branch and require zero differing lines; a refusal
+# names those files.
 # Uncommitted changes are never landed.
-# local-only projects additionally accept work merged into the local default
-# branch (firstmate performs that merge after configured approval) as a fallback
-# for the common case where there is no remote at all.
+# local-only projects are deliberately narrower rather than wider: their only
+# landed-work proof is work merged into the local landing branch - the recorded
+# or passed branch when it exists locally, otherwise the local default branch -
+# which firstmate performs after configured approval (bin/fm-merge-local.sh). A
+# merged GitHub PR and content equivalence against a remote ref never authorize a
+# local-only teardown, because a local-only project's work lands locally.
 # Scout tasks (kind=scout in meta) carve out of that check: their worktree is
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
@@ -507,7 +514,9 @@ pr_is_merged() {
   unpushed_patches_are_in_pr_head "$head"
 }
 
-landing_branch_for_content_check() {
+# The branch the work was directed at: the explicit --landing-branch, then the
+# task's recorded landing_branch=, then the project's default branch.
+landing_branch_target() {
   if [ -n "$TEARDOWN_LANDING_BRANCH_ARG" ]; then
     printf '%s\n' "$TEARDOWN_LANDING_BRANCH_ARG"
     return 0
@@ -519,11 +528,14 @@ landing_branch_for_content_check() {
   default_branch
 }
 
+# Resolve the landing branch to the ref teardown may treat as authoritative.
+# A local-only project lands locally, so it resolves local heads only: a remote
+# ref must never authorize a local-only teardown.
 resolve_landing_branch_ref() {
   local branch=$1 ref
   fm_pr_branch_name_valid "$branch" || return 1
-  if [ "$MODE" = local-only ] \
-    && git -C "$WT" rev-parse --quiet --verify "refs/heads/$branch" >/dev/null 2>&1; then
+  if [ "$MODE" = local-only ]; then
+    git -C "$WT" rev-parse --quiet --verify "refs/heads/$branch" >/dev/null 2>&1 || return 1
     ref="refs/heads/$branch"
   elif git -C "$WT" remote get-url origin >/dev/null 2>&1; then
     git -C "$WT" fetch --quiet origin "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 || return 1
@@ -581,24 +593,67 @@ content_in_landing_branch() {
   return "$status"
 }
 
+# Does 3-way merging the landing ref with HEAD produce the landing ref's own
+# tree? When HEAD introduces nothing the landing branch does not already contain
+# (e.g. its change landed via squash) the merged tree equals the landing branch's
+# tree. Because this merges rather than compares endpoints, later unrelated
+# commits the landing branch gained - including edits inside the very files the
+# work branch touched - still prove landing. Returns non-zero when the merge
+# conflicts or the tree is unreadable, so the caller keeps looking rather than
+# guessing.
+merged_tree_equals_landing_tree() {
+  local ref=$1 landing_tree merged_tree
+  landing_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
+  [ -n "$landing_tree" ] || return 1
+  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
+  merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
+  [ "$merged_tree" = "$landing_tree" ]
+}
+
+# The commits a local-only worktree still holds over its local landing branch,
+# so its refusal names the work that has not been merged yet.
+local_only_unmerged_detail() {
+  local ref=$1 branch=$2 unmerged
+  unmerged=$(git -C "$WT" log --oneline HEAD --not "$ref" -- 2>/dev/null | head -5) || return 1
+  [ -n "$unmerged" ] || return 1
+  printf 'commits not yet on %s:\n%s' "$branch" "$unmerged"
+}
+
 # Has the worktree's committed work actually LANDED, though its commits are not
-# reachable from any remote-tracking branch? True when a merged PR proves the
-# current local work is contained in the PR head, OR the current HEAD commit is
-# an ancestor of the landing branch, OR the touched-file content is already in
-# the landing branch. False only for genuinely unlanded work or unreadable proof.
+# reachable from any remote-tracking branch? For a PR-based ship task, true when
+# a merged PR proves the current local work is contained in the PR head, OR the
+# current HEAD commit is an ancestor of the landing branch, OR merging the
+# landing branch with HEAD reproduces the landing branch's tree, OR every file
+# the work branch touched already matches the landing branch. A local-only task
+# lands locally, so only commit reachability into its local landing branch counts
+# there. False only for genuinely unlanded work or unreadable proof.
 work_is_landed() {
   local branch=$1 landing_branch ref
   LANDING_REFUSAL_DETAIL=
-  pr_is_merged "$branch" && return 0
-  landing_branch=$(landing_branch_for_content_check) || {
+  LANDING_BRANCH_NAME=
+  if [ "$MODE" != local-only ]; then
+    pr_is_merged "$branch" && return 0
+  fi
+  landing_branch=$(landing_branch_target) || {
     LANDING_REFUSAL_DETAIL="cannot determine landing branch for $PROJ; expected origin/HEAD, main, or master."
     return 1
   }
+  LANDING_BRANCH_NAME=$landing_branch
   ref=$(resolve_landing_branch_ref "$landing_branch") || {
-    LANDING_REFUSAL_DETAIL="landing branch $landing_branch is unavailable."
+    if [ "$MODE" = local-only ]; then
+      LANDING_REFUSAL_DETAIL="local landing branch $landing_branch does not exist in $PROJ."
+    else
+      LANDING_REFUSAL_DETAIL="landing branch $landing_branch is unavailable."
+    fi
     return 1
   }
   git -C "$WT" merge-base --is-ancestor HEAD "$ref" 2>/dev/null && return 0
+  if [ "$MODE" = local-only ]; then
+    LANDING_REFUSAL_DETAIL=$(local_only_unmerged_detail "$ref" "$landing_branch") \
+      || LANDING_REFUSAL_DETAIL="work is not merged into local $landing_branch."
+    return 1
+  fi
+  merged_tree_equals_landing_tree "$ref" && return 0
   content_in_landing_branch "$landing_branch"
 }
 
@@ -848,7 +903,7 @@ teardown_treehouse_return() {
 }
 
 validate_worktree_teardown_safety() {
-  local dirty_raw dirty unpushed_raw unpushed branch
+  local dirty_raw dirty unpushed_raw unpushed branch landing_target
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
@@ -887,10 +942,20 @@ validate_worktree_teardown_safety() {
       TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
     fi
     if ! work_is_landed "$branch"; then
-      echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
+      landing_target=${LANDING_BRANCH_NAME:-the local default branch}
+      if [ "$MODE" = local-only ]; then
+        echo "REFUSED: local-only worktree $WT has work not yet merged into $landing_target and not on any remote." >&2
+      else
+        echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
+      fi
       printf 'unpushed commits:\n%s\n' "$unpushed" >&2
       [ -z "$LANDING_REFUSAL_DETAIL" ] || printf '%s\n' "$LANDING_REFUSAL_DETAIL" >&2
-      echo "Push the branch, land its PR, record or pass the correct --landing-branch, or get the captain's explicit OK to discard, then --force." >&2
+      if [ "$MODE" = local-only ]; then
+        echo "Merge the branch into local $landing_target first (bin/fm-merge-local.sh after the captain approves), or push it to a fork/remote the captain names." >&2
+        echo "Only with the captain's explicit OK to discard the work, --force." >&2
+      else
+        echo "Push the branch, land its PR, record or pass the correct --landing-branch, or get the captain's explicit OK to discard, then --force." >&2
+      fi
       return 1
     fi
   fi

@@ -80,6 +80,7 @@ A metadata-routed selector returns the recorded backend target (`terminal=` for 
 Only metadata-routed task selectors carry secondmate-marker and Codex-harness context; explicit endpoint escape hatches do not.
 These five sentences are the single owner of the task-selector vocabulary; backend guides and other documents point here instead of restating the resolution order.
 `fm-teardown.sh <id>` takes a task id directly, accepts an optional `--landing-branch <branch>` when the task metadata lacks the directed target, and validates the complete metadata-only endpoint identity before any runtime dispatch or cleanup mutation.
+A `local-only` project resolves that landing branch to a local head only and accepts nothing but work merged into it, since its work lands locally; a merged forge PR or content matching a remote ref never authorizes a `local-only` teardown.
 Missing, empty, duplicate, malformed, backend-inconsistent, or task-mismatched endpoint records are preserved and refused.
 Legacy tmux metadata remains cleanup-compatible when its exact window name is `fm-<id>`; opaque non-tmux endpoints require their recorded `endpoint_task_id=` binding.
 `FM_HOME` determines Herdr's home label: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses `2ndmate-<secondmate-id>`.

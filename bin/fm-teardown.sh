@@ -75,7 +75,8 @@
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--landing-branch <branch>] [--force]
 #   --landing-branch names the branch the work was directed to when metadata does
-#   not already record it; the default branch remains the fallback.
+#   not already record it; the default branch remains the fallback. It also
+#   accepts the --target-branch spelling, and either as --flag=<branch>.
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.

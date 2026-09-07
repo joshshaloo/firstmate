@@ -155,8 +155,11 @@ status_is_paused_or_captain_held() {  # <status-line>
 # format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
 #   needs-decision [key=api-shape]: <summary>
 #   resolved       [key=api-shape]: <how it was decided>
-# A line with no token uses the key "default", preserving the historical
-# one-open-decision-per-task behavior (a bare "resolved:" closes "default").
+# A line with no token, or one whose "[key=" is never closed by a "]", uses the
+# key "default", preserving the historical one-open-decision-per-task behavior (a
+# bare "resolved:" closes "default"). A closed token whose slug is empty or carries
+# a character outside [A-Za-z0-9._-] is malformed, and its line is ignored entirely
+# rather than folded under any key.
 # The three parsers are pure reads of a single line; the verb parser strips any
 # key token before the colon so the leading word is recovered cleanly.
 status_line_verb() {  # <status-line> -> leading verb word
@@ -186,8 +189,15 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
     *) printf 'default' ;;
   esac
 }
-# Single-pass keyed status fold. POSIX awk associative arrays keep this portable
-# on macOS bash 3.2 while avoiding the old per-event shell re-read of the open set.
+# Single-pass keyed status fold shared by the decision and activity folds. POSIX awk
+# associative arrays keep this portable on macOS bash 3.2 while avoiding the old
+# per-event shell re-read of the open set, which cost one full rescan of the open set
+# per event. One awk process must see the whole stream, so the program re-implements
+# the key grammar above instead of calling the three shell parsers; the differential
+# test in tests/fm-watch-triage.test.sh holds the two readings equivalent over keyed,
+# resolved, captain-held, multi-key, malformed, and legacy fixtures.
+# awk is required. Without it the fold fails closed - nonzero and no output - because
+# an empty open set would silently read as "no decision is open".
 _fm_status_fold_stream() {  # <mode: decisions|activities>
   local mode=$1 resolve held pause
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
@@ -271,7 +281,10 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
 # Fold the WHOLE status stream into the set of decisions still open. Prints one
 # TAB-separated "<key>\t<verb>\t<summary>" line per still-open decision, in
 # most-recently-opened-last order; prints nothing when none are open. Pure read of
-# the file, no globals beyond the optional FM_CLASSIFY_RESOLVE_VERB override. This
+# the file, whose only other inputs are the optional FM_CLASSIFY_RESOLVE_VERB and
+# FM_CLASSIFY_CAPTAIN_HELD_VERB overrides. An absent file is an empty open set, but a
+# fold that cannot run returns nonzero with no output, so a caller must propagate
+# that status instead of reading the empty output as "no decision is open". This
 # is the durable open-set the fleet snapshot and any point-in-time consumer must use
 # instead of trusting the last status line.
 status_open_decisions() {  # <status-file>
@@ -289,6 +302,8 @@ status_open_decisions() {  # <status-file>
 # This fold is evidence about whether a parent event was explicitly superseded.
 # It is never authoritative current crew state, and consumers must not let an open
 # phase outrank a structured home snapshot or fm-crew-state result.
+# It shares the decision fold's fail-closed contract: status_open_activities returns
+# the fold's status for both the file and the "-" stream form.
 _fm_status_open_activities_stream() {
   _fm_status_fold_stream activities
 }

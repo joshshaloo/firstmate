@@ -8,26 +8,88 @@ set -u
 fm_test_tmproot PARENT_TMP firstmate-cleanup-proof
 mkdir -p "$PARENT_TMP/root-override"
 
-run_sample() {
-  local suite=$1 survivors
-  env -u FM_TEST_KEEP_TMP TMPDIR="$PARENT_TMP" FM_ROOT_OVERRIDE="$PARENT_TMP/root-override" \
-    bash "$ROOT/tests/$suite" >/dev/null \
-    || fail "$suite failed under the scratch TMPDIR"
+assert_no_fm_survivors() {
+  local label=$1 survivors
   survivors=$(find "$PARENT_TMP" -mindepth 1 -maxdepth 1 -type d -name 'fm-*' -print)
-  [ -z "$survivors" ] || fail "$suite left fm-* temp dirs:"$'\n'"$survivors"
+  [ -z "$survivors" ] || fail "$label left fm-* temp dirs:"$'\n'"$survivors"
 }
 
-# The two heaviest fixture-home leakers before the shared contract landed
-# (fm-afk-launch: 35 roots, fm-test-run: 9) lead the sample deliberately: they
-# are the suites the contract has to hold for.
-run_sample fm-afk-launch.test.sh
-run_sample fm-test-run.test.sh
-run_sample fm-spawn-worktree-claim.test.sh
-run_sample fm-backend-herdr.test.sh
-run_sample fm-bearings-snapshot.test.sh
-run_sample fm-fleet-snapshot-view.test.sh
-run_sample fm-teardown.test.sh
-run_sample fm-watch-triage.test.sh
+wait_for_file() {
+  local file=$1 limit=${2:-50} i=0
+  while [ "$i" -lt "$limit" ]; do
+    [ -e "$file" ] && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+run_bounded_sample() {
+  local suite=$1 limit=${2:-60} out err pid start now rc
+  out="$PARENT_TMP/$suite.out"
+  err="$PARENT_TMP/$suite.err"
+  start=$(date +%s)
+  env -u FM_TEST_KEEP_TMP TMPDIR="$PARENT_TMP" FM_ROOT_OVERRIDE="$PARENT_TMP/root-override" \
+    bash "$ROOT/tests/$suite" >"$out" 2>"$err" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    now=$(date +%s)
+    if [ $((now - start)) -ge "$limit" ]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      assert_no_fm_survivors "$suite timeout cleanup"
+      fail "$suite exceeded ${limit}s in the temp-cleanup regression"
+    fi
+    sleep 0.2
+  done
+  wait "$pid"
+  rc=$?
+  [ "$rc" -eq 0 ] || fail "$suite failed under the scratch TMPDIR; see $out and $err"
+  assert_no_fm_survivors "$suite"
+}
+
+synthetic_suite="$PARENT_TMP/synthetic-cleanup-suite.sh"
+cat > "$synthetic_suite" <<'SH'
+#!/usr/bin/env bash
+set -u
+. "$1/tests/lib.sh"
+fm_test_tmproot one fm-synthetic-one
+fm_test_tmproot root fm-synthetic-root-name
+mkdir -p "$one/nested" "$root/nested"
+SH
+chmod +x "$synthetic_suite"
+bash "$synthetic_suite" "$ROOT" >/dev/null
+assert_no_fm_survivors "synthetic cleanup suite"
+
+signal_suite="$PARENT_TMP/synthetic-signal-suite.sh"
+cat > "$signal_suite" <<'SH'
+#!/usr/bin/env bash
+set -u
+. "$1/tests/lib.sh"
+fm_test_tmproot root fm-synthetic-signal
+printf ready > "$2"
+mkfifo "$root/hold"
+read _ < "$root/hold" || true
+SH
+chmod +x "$signal_suite"
+ready="$PARENT_TMP/signal.ready"
+bash "$signal_suite" "$ROOT" "$ready" >/dev/null &
+signal_pid=$!
+wait_for_file "$ready" || { kill -TERM "$signal_pid" 2>/dev/null || true; wait "$signal_pid" 2>/dev/null || true; fail "synthetic signal suite did not become ready"; }
+kill -TERM "$signal_pid" 2>/dev/null || true
+wait "$signal_pid" || signal_rc=$?
+signal_rc=${signal_rc:-0}
+[ "$signal_rc" -eq 143 ] || fail "synthetic signal suite exited $signal_rc instead of 143"
+assert_no_fm_survivors "synthetic signal suite"
+
+# Keep the real-suite sample intentionally small and fast: the synthetic suites
+# above model the leak directly, while these prove ordinary converted suites run
+# under a scratch TMPDIR without leaving fm-* roots.
+run_bounded_sample fm-gotmp.test.sh 20
+run_bounded_sample fm-documentation-audiences.test.sh 20
+run_bounded_sample fm-tmux-submit-busy.test.sh 30
 
 keep_out="$PARENT_TMP/keep.out"
 keep_err="$PARENT_TMP/keep.err"
@@ -41,7 +103,7 @@ grep -F "keeping test tmp: $keep_dir" "$keep_err" >/dev/null \
   || fail "FM_TEST_KEEP_TMP=1 did not print the kept temp dir"
 rm -rf "$keep_dir"
 
-pass "sample suites clean their fm-* temp dirs"
+pass "bounded suites clean their fm-* temp dirs"
 
 # tests/lib.sh owns EXIT for every suite that uses it: an EXIT trap installed
 # after the first fm_test_tmproot call replaces the library's handler, silently

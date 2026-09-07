@@ -21,21 +21,12 @@
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
 #   direct-PR              push + PR via gh-axi, no pipeline
 #   local-only             local branch, no remote/PR, guarded local merge
-#   no-mistakes-prod-only  a conditional policy, not a task mode: firstmate
-#                          classifies each task's surface at intake (the
-#                          project-management skill owns that classification).
-#                          Mechanical output maps it to its most rigorous leg,
-#                          no-mistakes, so sync, seeding, and init treat such a
-#                          project as the remote-backed pipeline project it is.
 # yolo (orthogonal) = merge authority only: when on, firstmate merges green,
 #   in-scope work itself (AGENTS.md section 7).
 #
-# --raw prints the registered annotation unmapped, so a caller that must tell a
-# conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
-#
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
 # to stderr, so a typo never silently drops the gate.
-# Usage: fm-project-mode.sh [--raw] <project-name>
+# Usage: fm-project-mode.sh <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,12 +34,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
-RAW=0
-if [ "${1:-}" = "--raw" ]; then
-  RAW=1
-  shift
-fi
-NAME=${1:?usage: fm-project-mode.sh [--raw] <project-name>}
+NAME=${1:?usage: fm-project-mode.sh <project-name>}
 
 if [ ! -f "$REG" ]; then
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
@@ -81,13 +67,8 @@ fi
 mode=${parsed%% *}
 yolo=${parsed##* }
 case "$mode" in
-  no-mistakes|direct-PR|local-only|no-mistakes-prod-only) ;;
+  no-mistakes|direct-PR|local-only) ;;
   *) echo "warn: unknown mode \"$mode\" for $NAME; defaulting to no-mistakes off" >&2; mode=no-mistakes; yolo=off ;;
 esac
 case "$yolo" in on|off) ;; *) yolo=off ;; esac
-# A conditional policy is not a task mode. Mechanical callers get its most
-# rigorous leg; --raw callers get the annotation itself (see the header).
-if [ "$RAW" -eq 0 ] && [ "$mode" = no-mistakes-prod-only ]; then
-  mode=no-mistakes
-fi
 echo "$mode $yolo"

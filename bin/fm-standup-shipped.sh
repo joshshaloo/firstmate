@@ -476,7 +476,7 @@ for id in $PROJECT_IDS; do
   deploy_step_status=${deploy_step_record%%$'\t'*}
   deploy_step_name=${deploy_step_record#*$'\t'}
   [ "$deploy_step_name" != "$deploy_step_record" ] || deploy_step_name=-
-  mode=$("$SCRIPT_DIR/fm-project-mode.sh" --raw "$id" 2>/dev/null) || mode="unknown"
+  mode=$("$SCRIPT_DIR/fm-project-mode.sh" "$id" 2>/dev/null) || mode="unknown"
   remote=""
   forge=none
   slug=""

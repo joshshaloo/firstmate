@@ -165,14 +165,25 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantee: a pre-existing captain-owned workspace with a seed-shaped tab was adopted for routing but its tab was never eligible for prune because the current create call did not return that seed id.
 
-Restart-husk duplicate refusal is owned by:
+Adapter-level restart-husk create refusal is owned by:
 
 ```sh
 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-backend-herdr-respawn-idem-e2e.test.sh
 ```
 
-Observed guarantee: a restored no-agent tab is refused and left intact for explicit reconciliation, and a registered live agent is also refused without being touched.
+Asserted guarantee, transcribed from this test's current assertions on 2026-09-07 and not re-observed against a real Herdr lab, so this entry carries no Herdr version stamp: after a real named-session stop and restart, `fm_backend_herdr_create_task` refuses every same-labeled restored tab - crewmate-shaped husk, secondmate-shaped husk, and one hosting a genuinely live registered agent - and leaves each pane and the workspace's tab set untouched.
+Re-run it on a Herdr lane and restamp this entry as an observed guarantee with the Herdr version and date.
+Spawn-level reconciliation of the recorded endpoint is owned by the next entry.
+
+Same-id Herdr relaunch recovery is owned by:
+
+```sh
+tests/fm-spawn-worktree-claim.test.sh
+```
+
+Observed guarantee on 2026-09-07 with the fake Herdr suite: a restored no-agent tab is closed only after the idle-shell process proof succeeds and the recorded pane is proven to be its tab's only pane, the close runs through the focus-preserving owner under the named-session presentation lock and restores the captain's exact pre-close tab before releasing it, and the recorded worktree is reused.
+Live, unverified, foreground-job, active-tab, tab-sharing, presentation-lock-contended, and cross-backend relaunches all refuse without treehouse allocation or pane closure, and a close whose pane is already gone is reported gone rather than left untouched.
 
 ### Launcher workspace placement
 
@@ -260,7 +271,7 @@ ok - real Herdr lab: multi-home exact-pane teardowns restore captain focus witho
 ok - real Herdr lab validation completed on Herdr 0.7.4 with the default-session tripwire intact
 ```
 
-The suite also covers lost or failed move responses, active-tab refusal, restart husks, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
+The suite also covers lost or failed move responses, active-tab refusal, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
 
 The mandatory projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 16:
 
@@ -277,7 +288,7 @@ ok - real Herdr lab validation completed on Herdr 0.7.5 with the default-session
 ```
 
 That run's same-identity, secondmate-binding, and concurrent cross-home cases observed in-place husk replacement, which is no longer the contract.
-Those cases now assert that each relaunch is refused with the husk, workspace, journal, and focus left intact; [restart and liveness behavior](../herdr-backend.md#restart-and-liveness-behavior) owns the current rule and "Restart-husk duplicate refusal" above owns its evidence.
+[Restart and liveness behavior](../herdr-backend.md#restart-and-liveness-behavior) owns the current rule and "Same-id Herdr relaunch recovery" above owns its current deterministic evidence.
 
 The restored-shell session-start cleanup ran on 2026-07-24 against Herdr 0.7.5 protocol 17:
 

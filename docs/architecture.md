@@ -138,8 +138,8 @@ Firstmate's own records are the authoritative occupancy signal for that pool: a 
 Before asking Treehouse for a new worktree, `fm-spawn.sh` forks short-lived cwd guard processes of its own into every recorded worktree so Treehouse's process-based allocator cannot reset a slot this home already records as claimed.
 Those guards are proven, not assumed: spawn owns the processes, each one reports the worktree it actually entered, and the launch is refused before every `treehouse get` - re-proven on each retry, not once - unless every guard is accounted for and still running, because the reset it prevents is irreversible.
 A Treehouse that hands out a claimed slot anyway is still caught by the record check, which refuses that slot untouched, exits the offered subshell, and asks for another slot only once the pane has settled back in the project checkout.
-A same-id relaunch reuses the task's recorded worktree directly without asking Treehouse for another slot when the old endpoint is missing, or when the old tmux endpoint is only a dead shell.
-If that recorded worktree is missing, is also claimed by another record, or the recorded endpoint is in any other state - live, ambiguous, unreadable, or on a backend with no recovery classifier at all - spawn refuses instead of allocating a fresh copy.
+A same-id relaunch reuses the task's recorded worktree directly without asking Treehouse for another slot when the old endpoint is missing, when the old tmux endpoint is only a dead shell, or when the old Herdr endpoint is a restored shell that the Herdr backend positively proves is agent-free and then closes; [herdr-backend.md](herdr-backend.md#restart-and-liveness-behavior) owns that proof and its refusals.
+If that recorded worktree is missing, is also claimed by another record, or the recorded endpoint is in any other state - live, ambiguous, unreadable, a Herdr husk that fails that proof, or on a backend with no recovery classifier at all - spawn refuses instead of allocating a fresh copy.
 Treehouse infers occupancy from processes cwd'd inside a worktree, which goes stale whenever a working crewmate's shell sits elsewhere and is cleared entirely by a reboot; a claim whose task is no longer running is named in the refusal for firstmate to recover or tear down, never released by another task's spawn.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
@@ -299,7 +299,7 @@ The mechanics are owned by the `/updatefirstmate` skill and firstmate's operatin
 ## Restart-proof
 
 Fleet state lives in each task's session-provider backend (tmux by hard default, herdr or cmux when selected or auto-detected, zellij/orca when explicitly selected), no-mistakes run records, status event logs, local markdown under `data/` including `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, and persistent secondmate homes.
-For Herdr, respawning after a server-restored layout refuses same-labeled task-tab husks so the stale tab is reconciled explicitly before any replacement endpoint is created.
+For Herdr, respawning after a server-restored layout reuses the recorded worktree and closes a same-task restored shell only after the backend proves the exact pane has no agent, no foreground job, and no child process; every unproven endpoint still refuses before any replacement endpoint is created.
 At session start, confirmed-dead secondmate agent endpoints are closed and relaunched through the same secondmate spawn path, while ambiguous liveness reads are left untouched to avoid duplicate supervisors.
 Use `/stow` before an intentional reset when the conversation may hold durable knowledge that has not yet been written to disk; after that, the next firstmate session can reconcile and carry on.
 

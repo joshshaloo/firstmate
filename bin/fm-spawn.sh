@@ -41,12 +41,12 @@
 #   writes state/<id>.herdr-presentation atomically, then creates a disposable
 #   workspace containing only the ordinary task pane. A successful clean create
 #   upgrades its attempt journal with exact home, session, workspace, tab, pane,
-#   parent, and label bindings. On a same-identity restart, that complete binding
-#   plus authoritative metadata may replace one exact agent-free husk in place.
-#   The journal, visible token, and labels alone are never endpoint or ownership
-#   authority, and every ambiguous recovery stays on the flat fallback after
-#   duplicate-agent risk is independently absent. Treehouse allocation and task
-#   metadata are unchanged.
+#   parent, and label bindings. On a same-identity restart, a surviving restored
+#   task tab is reconciled only through the backend's recorded-endpoint recovery
+#   path before the new endpoint is created. The journal, visible token, and
+#   labels alone are never endpoint or ownership authority, and every ambiguous
+#   recovery stays on the flat fallback after duplicate-agent risk is
+#   independently absent. Treehouse allocation and task metadata are unchanged.
 #   A clean projected create or exact resume makes one bounded attempt to hold
 #   the one session-scoped presentation-order lock (keyed by named session plus
 #   canonical socket, outside any home's state/) through launch handoff. Lock
@@ -102,10 +102,11 @@
 #   recorded worktree so treehouse cannot reset a slot this home already records as
 #   claimed, and refuses the launch outright unless every one of those guards proves,
 #   on that attempt, that it entered its worktree and is still running.
-#   A same-id relaunch whose recorded endpoint is missing, or whose tmux endpoint is
-#   a dead shell, reuses its recorded worktree directly without treehouse get; a
-#   missing recorded worktree or conflicting claim refuses instead of allocating a
-#   fresh slot. A refused slot is re-requested up to FM_SPAWN_WORKTREE_ATTEMPTS times
+#   A same-id relaunch whose recorded endpoint is missing, whose tmux endpoint is
+#   a dead shell, or whose Herdr endpoint is a provably idle restored shell,
+#   reuses its recorded worktree directly without treehouse get; a missing
+#   recorded worktree or conflicting claim refuses instead of allocating a fresh
+#   slot. A refused slot is re-requested up to FM_SPAWN_WORKTREE_ATTEMPTS times
 #   (default 3, with FM_SPAWN_WORKTREE_POLLS/FM_SPAWN_WORKTREE_POLL_INTERVAL bounding
 #   each attempt's settle wait); an exhausted pool fails the spawn with every claiming
 #   task named. A claim whose task is no longer running is named the same way and is never
@@ -993,7 +994,7 @@ REUSE_RECORDED_ENDPOINT=0
 RECORDED_RELAUNCH_TARGET=
 prepare_recorded_worktree_relaunch() {
   local meta="$STATE/$ID.meta" old_kind recorded recorded_real recorded_project recorded_project_real claim
-  local old_backend old_target old_state
+  local old_backend old_target old_state reconcile_status
   [ "$KIND" != secondmate ] || return 0
   [ "$BACKEND" != orca ] || return 0
   [ -e "$meta" ] || [ -L "$meta" ] || return 0
@@ -1045,6 +1046,25 @@ prepare_recorded_worktree_relaunch() {
     dead)
       if [ "$old_backend" = tmux ] && [ "$BACKEND" = tmux ]; then
         REUSE_RECORDED_ENDPOINT=1
+      elif [ "$old_backend" = herdr ] && [ "$BACKEND" = herdr ]; then
+        fm_backend_herdr_parse_target "$old_target" || {
+          echo "error: existing herdr endpoint for $ID is malformed; refusing same-id relaunch" >&2
+          return 1
+        }
+        spawn_herdr_presentation_order_lock_acquire "$FM_BACKEND_HERDR_SESSION" || {
+          echo "error: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close and the same-id relaunch for $ID" >&2
+          return 1
+        }
+        fm_backend_herdr_reconcile_dead_endpoint "$old_target"
+        reconcile_status=$?
+        spawn_herdr_presentation_order_lock_release
+        if [ "$reconcile_status" -eq 2 ]; then
+          echo "error: existing herdr endpoint for $ID was closed during reconciliation but its disappearance could not be confirmed; refusing duplicate launch until that endpoint is verified by hand" >&2
+          return 1
+        elif [ "$reconcile_status" -ne 0 ]; then
+          echo "error: existing herdr endpoint for $ID is still present without a live agent and was left untouched; refusing duplicate launch" >&2
+          return 1
+        fi
       else
         echo "error: existing $old_backend endpoint for $ID is still present without a live agent; refusing duplicate launch until that endpoint is reconciled" >&2
         return 1
@@ -1076,20 +1096,14 @@ herdr_projection_meta_field_exact() {  # <meta> <key>
 # A stale presentation journal never grants launch authority.
 # Under the session lock, authoritative metadata must identify one positively
 # dead or agent-free endpoint before token inspection may allow flat fallback.
-# Exact Herdr fields are retained for the narrower version 2 reclaim path.
 herdr_projection_existing_meta_allows_flat() {  # <meta>
-  local meta=$1 old_backend old_target old_session old_pane old_state target_session target_pane
-  HERDR_RECOVERY_BACKEND=""
-  HERDR_RECOVERY_WORKSPACE_ID=""
-  HERDR_RECOVERY_TAB_ID=""
-  HERDR_RECOVERY_PANE_ID=""
+  local meta=$1 old_backend old_target old_session old_workspace old_tab old_pane old_state target_session target_pane
   old_backend=$(fm_backend_of_meta "$meta")
   old_target=$(fm_backend_target_of_meta "$meta")
   [ -n "$old_target" ] || {
     echo "error: existing metadata for $ID has no endpoint; refusing duplicate launch while its herdr presentation journal is quarantined" >&2
     return 1
   }
-  HERDR_RECOVERY_BACKEND=$old_backend
   if [ "$old_backend" = herdr ]; then
     fm_backend_herdr_parse_target "$old_target" || {
       echo "error: existing herdr endpoint for $ID is malformed; refusing duplicate launch" >&2
@@ -1101,11 +1115,11 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
       echo "error: existing herdr metadata for $ID has an ambiguous session; refusing duplicate launch" >&2
       return 1
     }
-    HERDR_RECOVERY_WORKSPACE_ID=$(herdr_projection_meta_field_exact "$meta" herdr_workspace_id) || {
+    old_workspace=$(herdr_projection_meta_field_exact "$meta" herdr_workspace_id) || {
       echo "error: existing herdr metadata for $ID has an ambiguous workspace; refusing duplicate launch" >&2
       return 1
     }
-    HERDR_RECOVERY_TAB_ID=$(herdr_projection_meta_field_exact "$meta" herdr_tab_id) || {
+    old_tab=$(herdr_projection_meta_field_exact "$meta" herdr_tab_id) || {
       echo "error: existing herdr metadata for $ID has an ambiguous tab; refusing duplicate launch" >&2
       return 1
     }
@@ -1117,7 +1131,14 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
       echo "error: existing herdr metadata for $ID has inconsistent endpoint identities; refusing duplicate launch" >&2
       return 1
     }
-    HERDR_RECOVERY_PANE_ID=$old_pane
+    [ -n "$old_workspace" ] || {
+      echo "error: existing herdr metadata for $ID records an empty herdr_workspace_id; refusing duplicate launch" >&2
+      return 1
+    }
+    [ -n "$old_tab" ] || {
+      echo "error: existing herdr metadata for $ID records an empty herdr_tab_id; refusing duplicate launch" >&2
+      return 1
+    }
     fm_backend_herdr_server_ensure "$old_session" || {
       echo "error: existing herdr endpoint for $ID could not be inspected; refusing duplicate launch" >&2
       return 1
@@ -1215,34 +1236,7 @@ case "$BACKEND" in
         fi
         fm_backend_herdr_projection_recovery_allows_flat \
           "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" || exit 1
-        if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ]; then
-          set +e
-          FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
-            "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \
-            "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID" "$HERDR_RECOVERY_PANE_ID" \
-            "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
-          HERDR_RECLAIM_STATUS=$?
-          set -e
-          case "$HERDR_RECLAIM_STATUS" in
-            0)
-              HERDR_PROJECTED=1
-              HERDR_WORKSPACE_ID=$HERDR_RECOVERY_WORKSPACE_ID
-              HERDR_SEEDED_DEFAULT_TAB_ID=""
-              HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
-              HERDR_PANE_ID=$FM_BACKEND_HERDR_PROJECTION_PANE_ID
-              HERDR_PROJECTION_ABORT_CLEANUP=1
-              HERDR_PROJECTION_ABORT_SESSION=$HERDR_SES
-              HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
-              HERDR_PROJECTION_ABORT_SEEDED_PANE=""
-              ;;
-            2)
-              spawn_herdr_presentation_order_lock_release
-              ;;
-            *) exit 1 ;;
-          esac
-        else
-          spawn_herdr_presentation_order_lock_release
-        fi
+        spawn_herdr_presentation_order_lock_release
       elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
         # Session lock path resolution and exact parent binding both need a
         # live named-session socket before journal publication.

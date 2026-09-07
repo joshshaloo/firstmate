@@ -103,10 +103,11 @@ If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and
 
 Recovery is deliberately conservative and presentation-only.
 An existing journal suppresses another projected create.
-Before any recovery decision, Firstmate holds the task spawn lock and, when presentation inspection is needed, the named-session presentation lock.
-A same-identity version 2 binding no longer replaces a restored task tab in place; any existing Herdr tab for the same task label is refused so the stale tab can be reconciled explicitly before relaunch.
+Before any recovery decision, Firstmate holds the task spawn lock and, when presentation inspection or a focus-preserving pane close is needed, the named-session presentation lock.
+A same-identity version 2 binding no longer replaces a restored task tab in place.
+If the recorded Herdr endpoint is present without a registered agent, same-id relaunch reconciles only that exact pane through the backend's recorded-endpoint recovery path under this same presentation lock, then creates a new endpoint in the ordinary flat workspace using the recorded worktree; [Restart and liveness behavior](#restart-and-liveness-behavior) owns that path's proof and refusals.
 Version 1 journals, missing panes, duplicate or absent tokens, renamed or detached spaces, cross-home mismatches, inconsistent endpoint bindings, active target tabs, and ambiguous identity or focus fall back flat without mutating the old projection when duplicate-agent risk is positively absent.
-A dead, live, unknown, or token-matched recorded endpoint refuses duplicate launch.
+A token-matched recorded endpoint refuses duplicate launch, as does every endpoint that recovery path refuses.
 
 Locked session start has one narrower cleanup for a restored projected child that is no longer current task state.
 It runs only when the current home has at least one ordinary presentation journal and considers only that home; a primary never recursively sweeps a secondmate home.
@@ -115,8 +116,7 @@ The title must contain exactly one token occurrence across the named-session sna
 The task's ordinary metadata must be absent, and the candidate must have exactly one tab and exactly one pane.
 Before cleanup, Firstmate acquires the existing task-id spawn lock and then the shared named-session presentation lock.
 Inside both locks it takes one exact snapshot, requires one unambiguous non-target focus and the exact title, token, tab, and pane shape, positively confirms no registered agent, and reads Herdr's process information for the exact named-session pane.
-The process proof requires one recognized idle shell as both the shell process and the sole foreground process-group member, an operating-system process-table row for that shell, no child process, and a sleeping or idle shell state.
-Any foreground command, child process, active shell job, unknown shell, unreadable process table, missing field, or API error preserves the pane.
+That pane must satisfy the one shared idle-shell process proof owned by [Restart and liveness behavior](#restart-and-liveness-behavior); anything short of it preserves the pane.
 Firstmate immediately revalidates the same journal, metadata absence, workspace title and token uniqueness, one-tab and one-pane topology, exact pane relationship, absent agent, process proof, and non-target focus before calling the existing exact-pane focus-preserving close helper.
 It closes only that pane, never a workspace.
 The matching journal is retired only after the exact pane is positively confirmed gone; an unconfirmed close retains the journal, while a confirmed close may retire it even when focus restoration reported an error after the close.
@@ -127,14 +127,15 @@ Operational compromises:
 
 - Grouping is best-effort and no projected task survives a Herdr restart in place; the exact version 2 binding only correlates a restored projection for duplicate refusal and for the session-start cleanup above.
 - Existing layouts are not force-renamed or rearranged.
-- Missing or ambiguous restart bindings fall back to the ordinary home workspace while the old projection remains untouched.
+- Missing or ambiguous restart bindings fall back to the ordinary home workspace while any old projection remains untouched unless it is the exact recorded dead endpoint and the idle-shell proof succeeds.
 - Crashes, lost responses, failed exact-pane cleanup, or human renames can leave quarantined spaces; session start removes only the exact home-local, uniquely journal-correlated, childless idle-shell shape above.
 - Spaces have no cross-home cleanup path, and a secondmate child can clean up only from its exact home.
 - Every stale-looking space outside that narrow startup proof still requires manual cleanup in Herdr's UI after human inspection.
 - Regaining a dedicated space after degradation requires stopping the flat task, manually checking the stale projection or task tab, and clearing its journal before a genuinely fresh launch.
 - The visible token is only a restart-stable correlator and never substitutes for the exact binding.
 
-`tests/fm-backend-herdr-presentation-e2e.test.sh` covers multi-home ordering, concurrency, lock contention, legacy coexistence, focus preservation, duplicate restart refusal, ambiguous bindings and tokens, and exact-pane cleanup through the guarded lab path.
+`tests/fm-backend-herdr-presentation-e2e.test.sh` covers multi-home ordering, concurrency, lock contention, legacy coexistence, focus preservation, ambiguous bindings and tokens, and exact-pane cleanup through the guarded lab path.
+`tests/fm-spawn-worktree-claim.test.sh` covers same-id Herdr relaunch across dead-pane reconciliation with focus restoration and lock release, live refusal, unverified refusal, process-proof refusal, active-tab refusal, shared-tab refusal, presentation-lock contention refusal, cross-backend refusal, and the close-race verdict.
 `tests/fm-herdr-session-cleanup.test.sh` covers every discovery, ownership, topology, process, locking, revalidation, focus, retirement, and continue-on-error boundary.
 `tests/fm-herdr-session-cleanup-e2e.test.sh` covers the restored-shell cleanup in a guarded non-default named lab; [`verification/runtime-backends.md`](verification/runtime-backends.md#per-home-and-presentation-topology) owns the active versioned evidence.
 
@@ -215,8 +216,15 @@ No Herdr-specific copy of that protocol exists.
 
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids, but the underlying harness processes and live agent registrations do not survive.
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
-Task creation now refuses any existing same-labeled tab, including a husk, so relaunch cannot create a second Herdr tab for one task while the old tab still needs explicit reconciliation.
-The recorded worktree remains protected by `fm-spawn.sh`; the operator must close or otherwise reconcile the stale Herdr tab before launching a new endpoint.
+Task creation refuses any existing same-labeled tab, including a husk, so relaunch cannot create a second Herdr tab for one task while the old tab still needs reconciliation.
+During same-id relaunch, `fm-spawn.sh` reuses the recorded worktree directly when the recorded Herdr endpoint is structurally gone.
+When the recorded Herdr endpoint is still present with no registered agent, `fm-spawn.sh` closes only that exact pane after the backend's idle-shell process proof succeeds and that pane is proven to be the only pane of its `fm-<id>` tab, so the close actually frees the label the create path checks.
+That proof is the one Herdr requires before closing any restored shell, here and in the session-start projection cleanup: one recognized idle shell as both the shell process and the sole foreground process-group member, an operating-system process-table row for that shell, no child process, and a sleeping or idle shell state.
+Any foreground command, child process, active shell job, unknown shell, unreadable process table, missing field, or API error preserves the pane.
+That close goes through the shared focus-preserving close owner, so it restores the captain's exact pre-close workspace and tab and refuses outright when the husk is the active tab.
+It adopts that owner's serialization precondition too: the relaunch holds the shared named-session presentation lock across the focus snapshot, the close, and the restore, on the same bounded retry teardown and session cleanup use, and refuses the relaunch untouched when the lock is unavailable rather than snapshotting a concurrent operation's transient focus.
+The reconcile's verdict comes from a post-close pane read rather than the close status alone, so a husk that vanished under the close is reported gone instead of left untouched, and every refusal names its own reason.
+A live, unreadable, unverified, process-unproven, active-tab, or tab-sharing endpoint refuses instead of closing or allocating a fresh slot, and so does a same-id relaunch whose target backend is not herdr.
 
 The generic Herdr agent-liveness probe reuses the same classifier.
 A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.

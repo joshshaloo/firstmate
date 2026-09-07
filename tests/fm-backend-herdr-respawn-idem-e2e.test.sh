@@ -14,12 +14,15 @@
 # the pane survives alive, but agent_status resets and nothing is registered
 # in it - exactly the restored-plain-shell husk shape), then proves
 # fm_backend_herdr_create_task refuses the duplicate tab and leaves it intact
-# for explicit reconciliation instead of closing and replacing it. Adapter-level
-# (fm_backend_herdr_container_ensure/create_task), not
-# through the full bin/fm-spawn.sh + treehouse pipeline - mirrors
-# tests/fm-backend-herdr-prune-safety-e2e.test.sh's own style, and avoids any
-# question of whether treehouse itself supports re-acquiring a worktree for
-# an id that already has one checked out (a separate, out-of-scope concern).
+# for its caller to reconcile instead of closing and replacing it itself.
+# That is the adapter-level create_task contract only: spawn-level same-id
+# relaunch recovery now reconciles a proven-dead restored pane automatically
+# after the idle-shell proof and under the named-session presentation lock.
+# Driving fm_backend_herdr_container_ensure/create_task directly, not the full
+# bin/fm-spawn.sh + treehouse pipeline, mirrors
+# tests/fm-backend-herdr-prune-safety-e2e.test.sh's own style and keeps this
+# test scoped to create_task duplicate refusal rather than spawn relaunch
+# reconciliation.
 #
 # Safety (tests/herdr-test-safety.sh): cleanup uses ONLY
 # herdr_safe_stop_and_delete, never a bare/inline-prefixed `herdr server

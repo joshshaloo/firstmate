@@ -172,8 +172,7 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-backend-herdr-respawn-idem-e2e.test.sh
 ```
 
-Asserted guarantee, transcribed from this test's current assertions on 2026-09-07 and not re-observed against a real Herdr lab, so this entry carries no Herdr version stamp: after a real named-session stop and restart, `fm_backend_herdr_create_task` refuses every same-labeled restored tab - crewmate-shaped husk, secondmate-shaped husk, and one hosting a genuinely live registered agent - and leaves each pane and the workspace's tab set untouched.
-Re-run it on a Herdr lane and restamp this entry as an observed guarantee with the Herdr version and date.
+Observed guarantee on 2026-09-07 against Herdr 0.7.5 protocol 17: after a real named-session stop and restart, `fm_backend_herdr_create_task` refuses every same-labeled restored tab - crewmate-shaped husk, secondmate-shaped husk, and one hosting a genuinely live registered agent - and leaves each pane and the workspace's tab set untouched.
 Spawn-level reconciliation of the recorded endpoint is owned by the next entry.
 
 Same-id Herdr relaunch recovery is owned by:

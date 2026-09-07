@@ -301,6 +301,9 @@ case "${1:-} ${2:-}" in
     printf ']}}\n'
     ;;
   "pane list")
+    # MODE=panelistfails: a transient socket failure on the listing the
+    # sole-pane proof depends on.
+    [ "$MODE" != panelistfails ] || exit 1
     sep=
     printf '{"result":{"panes":['
     while read -r pid tid; do
@@ -364,6 +367,12 @@ case "${1:-} ${2:-}" in
       # and the close itself, so herdr answers the close with a not-found
       # error even though the pane is genuinely gone.
       [ "$MODE" != closeraces ] || { json_not_found pane_not_found >&2; exit 1; }
+      # MODE=closefails: the close is rejected and the pane survives.
+      if [ "$MODE" = closefails ]; then
+        rm -f "$STATE/old-closed"
+        printf '%s' "$CAPTAIN_TAB" > "$FOCUS_FILE"
+        exit 1
+      fi
     fi
     ;;
   "pane run")
@@ -824,6 +833,44 @@ test_same_id_herdr_split_tab_refuses_without_closing() {
 # A close that herdr answers with a not-found error still destroyed the pane.
 # The reconcile's verdict comes from the post-close state read, so the relaunch
 # proceeds instead of reporting an endpoint it just closed as left untouched.
+# The contract is that every reconcile refusal names its own reason, because
+# the caller's catch-all deliberately asserts none. These two cover the paths
+# that would otherwise refuse in silence.
+test_same_id_herdr_unreadable_pane_list_refusal_names_its_reason() {
+  local id out status log
+  id=claim-herdr-panelist-zk
+  make_claim_case claim-herdr-panelist "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" panelistfails)
+  status=$?
+  expect_code 1 "$status" "an unreadable workspace pane list should refuse the same-id relaunch"
+  assert_contains "$out" "pane list could not be read while proving pane w1:p-old is tab w1:t-old's only pane" \
+    "the unreadable pane-list refusal did not name its reason"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_not_contains "$log" $'pane\x1fclose\x1fw1:p-old' \
+    "an unreadable pane list still closed the recorded pane"
+  pass "a reconcile refusal on an unreadable pane list names its own reason"
+}
+
+test_same_id_herdr_failed_close_refusal_names_its_reason() {
+  local id out status
+  id=claim-herdr-closefails-zl
+  make_claim_case claim-herdr-closefails "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" closefails)
+  status=$?
+  expect_code 1 "$status" "a rejected close should refuse the same-id relaunch"
+  assert_contains "$out" "herdr pane w1:p-old could not be closed" \
+    "the failed-close refusal did not name its reason"
+  assert_contains "$out" "was left untouched" \
+    "the failed-close refusal did not say the endpoint survived"
+  assert_grep "window=default:w1:p-old" "$HOME_DIR/state/$id.meta" \
+    "a refused relaunch rewrote the recorded endpoint"
+  pass "a reconcile refusal on a rejected close names its own reason"
+}
+
 test_same_id_herdr_close_race_is_reported_as_gone_not_untouched() {
   local id out status log
   id=claim-herdr-closerace-zj
@@ -835,6 +882,8 @@ test_same_id_herdr_close_race_is_reported_as_gone_not_untouched() {
   expect_code 0 "$status" "a close the husk lost a race to should still let the relaunch proceed"
   assert_not_contains "$out" "was left untouched" \
     "a destroyed endpoint was reported as left untouched"
+  assert_not_contains "$out" "refusing to close it" \
+    "a successful reconcile printed a refusal reason"
   assert_grep "window=default:w1:p-new" "$HOME_DIR/state/$id.meta" \
     "the relaunch did not record the replacement pane after the close race"
   log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
@@ -936,6 +985,8 @@ test_same_id_herdr_foreground_job_refuses_without_closing
 test_same_id_herdr_reconcile_refuses_while_presentation_lock_is_held
 test_same_id_herdr_active_tab_husk_refuses
 test_same_id_herdr_split_tab_refuses_without_closing
+test_same_id_herdr_unreadable_pane_list_refusal_names_its_reason
+test_same_id_herdr_failed_close_refusal_names_its_reason
 test_same_id_herdr_close_race_is_reported_as_gone_not_untouched
 test_same_id_herdr_cross_backend_relaunch_refuses_without_closing
 

@@ -1317,18 +1317,30 @@ fm_backend_herdr_pane_process_is_idle_shell() {  # <session> <pane-id>
 # tab's only pane; a human-added split leaves the tab (and the refusal) behind.
 fm_backend_herdr_pane_is_tab_sole_pane() {  # <session> <pane-id>
   local session=$1 pane=$2 info tab workspace panes others
-  info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || return 1
+  info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || {
+    echo "error: herdr pane $pane could not be read while proving it is its tab's only pane; refusing to close it" >&2
+    return 1
+  }
   tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
   workspace=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
-  [ -n "$tab" ] && [ -n "$workspace" ] || return 1
-  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
+  [ -n "$tab" ] && [ -n "$workspace" ] || {
+    echo "error: herdr pane $pane reported no exact tab and workspace identity; refusing to close it" >&2
+    return 1
+  }
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || {
+    echo "error: herdr workspace $workspace pane list could not be read while proving pane $pane is tab $tab's only pane; refusing to close it" >&2
+    return 1
+  }
   others=$(printf '%s' "$panes" | jq -er --arg tab "$tab" --arg pane "$pane" '
     (.result.panes | select(type == "array"))
     | [.[] | select(.tab_id == $tab)] as $siblings
     | select(([$siblings[] | select(.pane_id == $pane)] | length) == 1)
     | [$siblings[] | select(.pane_id != $pane) | .pane_id]
     | join(" ")
-  ' 2>/dev/null) || return 1
+  ' 2>/dev/null) || {
+    echo "error: herdr workspace $workspace pane list did not list the recorded pane $pane exactly once in tab $tab; refusing to close it" >&2
+    return 1
+  }
   [ -z "$others" ] || {
     echo "error: herdr tab $tab still holds another pane ($others) besides the recorded pane $pane; closing it would leave the task tab behind" >&2
     return 1
@@ -1348,13 +1360,19 @@ fm_backend_herdr_pane_is_tab_sole_pane() {  # <session> <pane-id>
 # taken from a post-close state read rather than the close status alone, so a
 # pane that vanished under the close is reported gone, not left-untouched.
 fm_backend_herdr_reconcile_dead_endpoint() {  # <target>
-  local target=$1 session pane state close_status
-  fm_backend_herdr_parse_target "$target" || return 1
+  local target=$1 session pane state close_status boundary_state
+  fm_backend_herdr_parse_target "$target" || {
+    echo "error: herdr endpoint '$target' is malformed; refusing to close it" >&2
+    return 1
+  }
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
   fm_backend_herdr_server_ensure "$session" || return 1
   state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
-  [ "$state" = no-agent ] || return 1
+  [ "$state" = no-agent ] || {
+    echo "error: herdr pane $pane is $state, not a confirmed agent-free restored shell; refusing to close it" >&2
+    return 1
+  }
   fm_backend_herdr_pane_is_tab_sole_pane "$session" "$pane" || return 1
   fm_backend_herdr_pane_process_is_idle_shell "$session" "$pane" || {
     echo "error: herdr pane $pane is not a provably idle childless shell (one recognized idle shell, no foreground job, no child process); refusing to close it" >&2
@@ -1362,14 +1380,19 @@ fm_backend_herdr_reconcile_dead_endpoint() {  # <target>
   }
   fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane" no-agent
   close_status=$?
-  case "${FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE:-}" in
-    ''|no-agent) ;;
-    *)
-      echo "error: herdr pane $pane became $FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE at the close boundary; refusing to close it" >&2
-      ;;
-  esac
+  boundary_state=${FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE:-}
   state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
   [ "$state" != dead ] || return 0
+  case "$boundary_state" in
+    '') ;;
+    no-agent)
+      [ "$close_status" != 1 ] \
+        || echo "error: herdr pane $pane could not be closed; refusing to close it" >&2
+      ;;
+    *)
+      echo "error: herdr pane $pane became $boundary_state at the close boundary; refusing to close it" >&2
+      ;;
+  esac
   [ "$close_status" != 1 ] || return 1
   return 2
 }

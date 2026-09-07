@@ -171,7 +171,8 @@ Same-id Herdr relaunch recovery is owned by:
 tests/fm-spawn-worktree-claim.test.sh
 ```
 
-Observed guarantee on 2026-09-07 with the fake Herdr suite: a restored no-agent tab is closed only after the idle-shell process proof succeeds and the recorded worktree is reused; live, unverified, and foreground-job endpoints refuse without treehouse allocation or pane closure.
+Observed guarantee on 2026-09-07 with the fake Herdr suite: a restored no-agent tab is closed only after the idle-shell process proof succeeds and the recorded pane is proven to be its tab's only pane, the close runs through the focus-preserving owner under the named-session presentation lock and restores the captain's exact pre-close tab before releasing it, and the recorded worktree is reused.
+Live, unverified, foreground-job, active-tab, tab-sharing, presentation-lock-contended, and cross-backend relaunches all refuse without treehouse allocation or pane closure, and a close whose pane is already gone is reported gone rather than left untouched.
 
 ### Launcher workspace placement
 

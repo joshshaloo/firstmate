@@ -17,7 +17,7 @@ set -u
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-busy-lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-busy-state)
+fm_test_tmproot TMP_ROOT fm-busy-state
 EV="$ROOT/bin/fm-busy-event.sh"
 
 new_state_dir() {  # <name>

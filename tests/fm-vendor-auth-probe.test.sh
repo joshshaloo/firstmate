@@ -25,7 +25,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
-TMP_ROOT=$(fm_test_tmproot fm-vendor-auth-probe-tests)
+fm_test_tmproot TMP_ROOT fm-vendor-auth-probe-tests
 SCRIPT="$ROOT/bin/fm-vendor-auth-probe.sh"
 
 # A stdin payload the script must never leak into a probed vendor CLI.

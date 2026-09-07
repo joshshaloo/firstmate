@@ -15,7 +15,7 @@ FLEET="$ROOT/bin/fm-fleet-snapshot.sh"
 # Linux caps a single argv/envp string at MAX_ARG_STRLEN, which is well below
 # the byte policy the snapshot applies to a secondmate home summary.
 MAX_ARG_STRLEN=131072
-TMP_ROOT=$(fm_test_tmproot fm-bearings)
+fm_test_tmproot TMP_ROOT fm-bearings
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 

@@ -18,7 +18,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
-TMP_ROOT=$(fm_test_tmproot fm-spawn-worktree-settle)
+fm_test_tmproot TMP_ROOT fm-spawn-worktree-settle
 
 # make_settle_fakebin <dir> builds a fake tmux whose `#{pane_current_path}`
 # query returns FM_FAKE_PANE_STALE for the first FM_FAKE_PANE_STALE_READS

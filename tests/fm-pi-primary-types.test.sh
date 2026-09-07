@@ -2,6 +2,9 @@
 # Strict no-emit contract check for the tracked Firstmate Pi extensions.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 command -v npm >/dev/null 2>&1 || { echo "skip: npm not found for Pi extension typecheck"; exit 0; }
@@ -19,7 +22,7 @@ if [ ! -d "$PI_PACKAGE_DIR/node_modules/typebox" ] || \
   exit 1
 fi
 
-TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-pi-primary-types.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-pi-primary-types
 cleanup() {
   rm -rf "$TMP_ROOT"
 }

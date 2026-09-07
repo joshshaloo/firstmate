@@ -16,6 +16,9 @@
 # is not reliably honored once another herdr server is already running.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -157,7 +160,7 @@ fm_backend_herdr_kill "$SESSION:$HUSK_PANE_ID"
 # right after it exercises the true multi-workspace shape, not a
 # possibly-emptied-and-auto-closed primary workspace.
 
-SM_SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-smoke-sm.XXXXXX")
+fm_test_tmproot SM_SCRATCH fm-herdr-smoke-sm
 SM_HOME="$SM_SCRATCH/secondmate-home"
 mkdir -p "$SM_HOME"
 printf 'smoketest-sm1\n' > "$SM_HOME/.fm-secondmate-home"

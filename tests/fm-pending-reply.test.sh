@@ -30,7 +30,7 @@ set -u
 
 SEND="$ROOT/bin/fm-send.sh"
 REPORT="$ROOT/bin/fm-secondmate-report.sh"
-TMP_ROOT=$(fm_test_tmproot fm-pending-reply)
+fm_test_tmproot TMP_ROOT fm-pending-reply
 
 export FM_PENDING_REPLY_GRACE_SECS=0
 export FM_SEND_SETTLE=0

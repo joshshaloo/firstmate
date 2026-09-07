@@ -16,7 +16,7 @@ set -u
 . "$ROOT/bin/fm-busy-lib.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
-TMP_ROOT=$(fm_test_tmproot fm-busy-adapter-wiring)
+fm_test_tmproot TMP_ROOT fm-busy-adapter-wiring
 
 make_spawn_fakebin() {
   local dir=$1 fakebin

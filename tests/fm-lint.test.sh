@@ -48,7 +48,7 @@ test_pins_an_explicit_version() {
 
 test_installer_retries_transient_download_failure() {
   local tmp fakebin destination out
-  tmp=$(fm_test_tmproot fm-shellcheck-download)
+  fm_test_tmproot tmp fm-shellcheck-download
   fakebin=$(fm_fakebin "$tmp")
   destination="$tmp/bin"
 
@@ -106,7 +106,7 @@ test_rejects_wrong_shellcheck_version() {
   # Version-independent: a fake shellcheck reporting a different version must be
   # refused before any lint, proving local and CI cannot silently diverge.
   local tmp fakebin out rc
-  tmp=$(fm_test_tmproot fm-lint-ver)
+  fm_test_tmproot tmp fm-lint-ver
   fakebin=$(fm_fakebin "$tmp")
   cat > "$fakebin/shellcheck" <<'SH'
 #!/usr/bin/env bash
@@ -138,7 +138,7 @@ test_catches_a_real_lint_defect() {
   # warning present at default severity (and is itself one of the recurring
   # classes that slipped through, PR 474).
   local tmp bad out rc
-  tmp=$(fm_test_tmproot fm-lint-bad)
+  fm_test_tmproot tmp fm-lint-bad
   mkdir -p "$tmp"
   bad="$tmp/bad.sh"
   cat > "$bad" <<'SH'
@@ -162,7 +162,7 @@ test_ignores_ambient_shellcheck_opts() {
     return
   fi
   local tmp bad out rc
-  tmp=$(fm_test_tmproot fm-lint-opts)
+  fm_test_tmproot tmp fm-lint-opts
   mkdir -p "$tmp"
   bad="$tmp/bad.sh"
   cat > "$bad" <<'SH'
@@ -186,7 +186,7 @@ test_clean_fixture_passes() {
     return
   fi
   local tmp good rc
-  tmp=$(fm_test_tmproot fm-lint-good)
+  fm_test_tmproot tmp fm-lint-good
   mkdir -p "$tmp"
   good="$tmp/good.sh"
   cat > "$good" <<'SH'
@@ -209,7 +209,7 @@ test_jobs_are_deterministic_and_complete() {
   fi
   local tmp good bad_a bad_b out_clean_1 out_clean_2 out_fail_1 out_fail_2 out_fail_2b
   local telemetry telemetry_out cleanup_tmp cleanup_out rc_clean_1 rc_clean_2 rc_fail_1 rc_fail_2 rc_fail_2b rc_bad_jobs
-  tmp=$(fm_test_tmproot fm-lint-jobs)
+  fm_test_tmproot tmp fm-lint-jobs
   mkdir -p "$tmp"
   good="$tmp/good.sh"
   bad_a="$tmp/bad-a.sh"
@@ -282,7 +282,7 @@ SH
 test_worker_trees_stop_on_signal() {
   local tmp fakebin fixture jobs telemetry lint_tmp pid_file out_file telemetry_file
   local parent_pid shellcheck_pid i parent_rc survivor
-  tmp=$(fm_test_tmproot fm-lint-signal)
+  fm_test_tmproot tmp fm-lint-signal
   mkdir -p "$tmp"
   fakebin=$(fm_fakebin "$tmp")
   fixture="$tmp/good.sh"
@@ -362,10 +362,8 @@ test_seeded_module_boundary_parity() {
   fi
   local tmp rel adapter dispatcher dep owner test_root out rc
   tmp=$(mktemp -d "$ROOT/.fm-lint-parity.XXXXXX")
-  if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
-    trap fm_test_cleanup EXIT
-  fi
   FM_TEST_CLEANUP_DIRS+=("$tmp")
+  fm_test_install_cleanup_trap
   rel=${tmp#"$ROOT/"}
   adapter="$tmp/adapter.sh"
   dispatcher="$tmp/dispatcher.sh"

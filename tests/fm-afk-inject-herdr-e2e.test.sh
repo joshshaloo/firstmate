@@ -32,6 +32,9 @@
 # agent_not_found forever and never confirm a submission.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 
@@ -81,7 +84,7 @@ fm_backend_source herdr || fail "fm_backend_source herdr failed"
 
 fm_backend_herdr_version_check || fail "version_check failed against the real installed herdr"
 
-STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-e2e.XXXXXX")
+fm_test_tmproot STATE_DIR fm-afk-herdr-e2e
 mkdir -p "$STATE_DIR"
 LOG_FILE="$STATE_DIR/submitted.log"
 : > "$LOG_FILE"
@@ -234,7 +237,7 @@ sleep 1  # let the loop start and settle
 
 # --- herdr shim: forwards to the real binary, optionally swallows one Enter --
 REAL_HERDR=$(command -v herdr)
-HERDR_SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-shim.XXXXXX")
+fm_test_tmproot HERDR_SHIM_DIR fm-herdr-shim
 cat > "$HERDR_SHIM_DIR/herdr" <<SHIM
 #!/usr/bin/env bash
 if [ "\${1:-}" = "pane" ] && [ "\${2:-}" = "send-keys" ] && [ -f "$STATE_DIR/.swallow-enter" ]; then

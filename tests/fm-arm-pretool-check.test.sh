@@ -141,9 +141,7 @@ matrix_case E15 allow '$FM_HOME/bin/fm-watch-arm.sh'
 matrix_case E16 allow '~/firstmate/bin/fm-watch-checkpoint.sh --seconds 180'
 matrix_case E17 allow 'for f in 1; do echo fm-watch; done'
 
-MATRIX_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-arm-policy-matrix.XXXXXX")
-FM_TEST_CLEANUP_DIRS+=("$MATRIX_TMP")
-trap fm_test_cleanup EXIT
+fm_test_tmproot MATRIX_TMP fm-arm-policy-matrix
 
 run_matrix_entry() {
   local id=$1 expected=$2 entry=$3 cmd=$4 payload out_file err_file rc
@@ -371,7 +369,7 @@ test_failopen_garbage_stdin() {
 
 test_failopen_missing_jq() {
   local dir fakebin rc real
-  dir=$(fm_test_tmproot fm-arm-pretool-check)
+  fm_test_tmproot dir fm-arm-pretool-check
   fakebin="$dir/fakebin"
   mkdir -p "$fakebin"
   local tool
@@ -387,7 +385,7 @@ test_failopen_missing_jq() {
 
 test_failopen_missing_node() {
   local dir fakebin rc real tool
-  dir=$(fm_test_tmproot fm-arm-pretool-node)
+  fm_test_tmproot dir fm-arm-pretool-node
   fakebin="$dir/fakebin"
   mkdir -p "$fakebin"
   for tool in bash dirname; do

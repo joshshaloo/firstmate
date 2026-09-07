@@ -52,28 +52,67 @@ pass() {
 
 # --- self-cleaning temp root ------------------------------------------------
 #
-# fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
-# on EXIT. The first call installs the cleanup trap. A test file that needs
-# extra teardown (e.g. killing a daemon) should define its own EXIT trap and
-# call fm_test_cleanup from inside it so registered dirs are still removed.
+# fm_test_tmproot <var> <prefix> creates a fresh temp dir, assigns it to <var>,
+# and registers it for removal on EXIT, HUP, INT, and TERM. FM_TEST_KEEP_TMP=1
+# preserves registered dirs and prints each kept path for debugging. A test file
+# that needs extra teardown (e.g. killing a daemon) should define that cleanup
+# before its first fm_test_tmproot call so the helper can chain it; per-suite
+# temp-dir removal traps should not be added.
 
 FM_TEST_CLEANUP_DIRS=()
+FM_TEST_CLEANUP_TRAP_INSTALLED=0
 
 fm_test_cleanup() {
   local d
+  if [ "${FM_TEST_KEEP_TMP:-}" = 1 ]; then
+    for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
+      [ -n "$d" ] && printf 'keeping test tmp: %s\n' "$d" >&2
+    done
+    return 0
+  fi
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
-    [ -n "$d" ] && rm -rf "$d"
+    [ -n "$d" ] && rm -rf -- "$d"
   done
 }
 
-fm_test_tmproot() {
-  local prefix=${1:-fm-test} root
-  root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX")
-  if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
+fm_test_cleanup_signal() {
+  local sig=$1 code=$2
+  trap - EXIT HUP INT TERM
+  fm_test_cleanup
+  trap - "$sig"
+  exit "$code"
+}
+
+fm_test_trap_command() {
+  trap -p "$1" | sed "s/^trap -- '\(.*\)' $1$/\1/"
+}
+
+fm_test_install_cleanup_trap() {
+  local old_exit
+  [ "$FM_TEST_CLEANUP_TRAP_INSTALLED" -eq 0 ] || return 0
+  old_exit=$(fm_test_trap_command EXIT)
+  if [ -n "$old_exit" ]; then
+    # shellcheck disable=SC2064 # Capture the prior trap command when chaining.
+    trap "fm_test_cleanup; $old_exit" EXIT
+  else
     trap fm_test_cleanup EXIT
   fi
+  trap 'fm_test_cleanup_signal HUP 129' HUP
+  trap 'fm_test_cleanup_signal INT 130' INT
+  trap 'fm_test_cleanup_signal TERM 143' TERM
+  FM_TEST_CLEANUP_TRAP_INSTALLED=1
+}
+
+fm_test_tmproot() {
+  local __var=$1 prefix=${2:-fm-test} root tmpbase
+  case "$__var" in
+    ""|[!A-Za-z_]*|*[!A-Za-z0-9_]*) fail "fm_test_tmproot requires a simple variable name" ;;
+  esac
+  tmpbase=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P)
+  root=$(mktemp -d "$tmpbase/${prefix}.XXXXXX")
   FM_TEST_CLEANUP_DIRS+=("$root")
-  printf '%s\n' "$root"
+  fm_test_install_cleanup_trap
+  eval "$__var=\$root"
 }
 
 # --- fakebin / PATH shims ---------------------------------------------------

@@ -6,7 +6,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
-TMP_ROOT=$(fm_test_tmproot fm-teardown-endpoint-safety)
+fm_test_tmproot TMP_ROOT fm-teardown-endpoint-safety
 REAL_TMUX=$(command -v tmux || true)
 
 make_case() {  # <name>

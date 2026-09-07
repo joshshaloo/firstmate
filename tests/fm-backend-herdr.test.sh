@@ -22,7 +22,7 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 # fake never models. The launcher cases below set HERDR_PANE_ID themselves.
 herdr_forget_inherited_pane
 
-TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
+fm_test_tmproot TMP_ROOT fm-backend-herdr-tests
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
 
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,

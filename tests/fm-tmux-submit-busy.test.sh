@@ -9,7 +9,7 @@ set -u
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-tmux-lib.sh"
 
-TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-tmux-submit-busy.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-tmux-submit-busy
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # Override fm_pane_is_busy for testing: FM_FAKE_PANE_BUSY=1 means busy.

@@ -24,6 +24,9 @@
 # flag and verifies the default fleet session is unchanged after teardown.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -46,7 +49,7 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 # the terminal this suite was started in must not leak into any of them.
 herdr_forget_inherited_pane
 
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-launcher-e2e.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-herdr-launcher-e2e
 HERDR_LAB_HELPER="$ROOT/bin/fm-herdr-lab.sh"
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-herdr-launcher-ws) || {
   rm -rf "$TMP_ROOT"

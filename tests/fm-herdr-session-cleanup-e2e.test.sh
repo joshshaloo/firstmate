@@ -4,6 +4,9 @@
 # lab teardown verifies that the default fleet session is byte-identical.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
@@ -17,7 +20,7 @@ command -v python3 >/dev/null 2>&1 || { echo 'skip: python3 not found'; exit 0; 
 
 REAL_HERDR=$(command -v herdr)
 HERDR_ORIGINAL_PATH=$PATH
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-session-cleanup-e2e.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-herdr-session-cleanup-e2e
 FAKEBIN="$TMP_ROOT/fakebin"
 HOME_DIR="$TMP_ROOT/home"
 mkdir -p "$FAKEBIN" "$HOME_DIR/state" "$HOME_DIR/config"

@@ -6,7 +6,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BRIEF="$ROOT/bin/fm-brief.sh"
-TMP_ROOT=$(fm_test_tmproot fm-ask-user-authority)
+fm_test_tmproot TMP_ROOT fm-ask-user-authority
 
 test_primary_and_secondmate_instruction_generation() {
   local home ship charter

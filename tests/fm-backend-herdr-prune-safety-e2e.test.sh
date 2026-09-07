@@ -22,6 +22,9 @@
 # 2026-07-02 incident in the first place.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -40,7 +43,7 @@ herdr_forget_inherited_pane
 
 SESSION="fm-lab-prune-safety-e2e-$$"
 export HERDR_SESSION="$SESSION"
-SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-prune-safety.XXXXXX")
+fm_test_tmproot SCRATCH fm-herdr-prune-safety
 cleanup_all() {
   herdr_safe_stop_and_delete "$SESSION"
   rm -rf "$SCRATCH"

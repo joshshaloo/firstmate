@@ -71,7 +71,7 @@ EOF
 TARGET="$SESSION:$PANE_ID"
 
 # scratch firstmate state so window_to_task and the wake queue resolve
-SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-evwait.XXXXXX")
+fm_test_tmproot SCRATCH fm-evwait
 STATE="$SCRATCH/state"; mkdir -p "$STATE"
 cat > "$STATE/evwait1.meta" <<EOF
 window=$TARGET

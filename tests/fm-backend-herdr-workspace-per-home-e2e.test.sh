@@ -30,6 +30,9 @@
 #   - list-live recovery seeing only its own home's tabs, for both homes
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -65,7 +68,7 @@ herdr_forget_inherited_pane
 # fm-spawn no longer needs this as a symlink workaround: fm-spawn-symlink-guard-s8
 # canonicalized project and backend cwd comparisons in the worktree-discovery
 # poll.
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-e2e.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-herdr-e2e
 SESSION="fm-lab-herdr-e2e-$$"
 export HERDR_SESSION="$SESSION"
 WT1=; WT2=

@@ -660,6 +660,27 @@ assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].counted')" "branch un
 assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" "branch could not be determined" \
   "runs excluded for an undetermined branch are disclosed"
 
+# A payload may also name no build number and no uuid at all. That run is still a
+# successful default-branch run nobody examined, so it keeps forcing the partial
+# read, and its row says the reason that actually applies rather than a bound the
+# probe never reached.
+runs_unidentified=$(jq -nc '
+  {values:[{state:{result:{name:"SUCCESSFUL"}},
+            target:{ref_name:"main"}, created_on:"2026-08-28T10:00:00Z"}]}')
+json=$(FAKE_BKT_RUNS="$runs_unidentified" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  FAKE_BKT_LOG="$(recorded_log "$head_shipped")" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] \
+  || fail "a run with no identifier was never examined, so it must leave merges unknown, got: $deployed"
+row=$(printf '%s' "$json" | jq -r '.deploys[] | select(.run == "-") | "\(.counted)|\(.evidence_unavailable)"')
+assert_contains "$row" "no identifier to probe" \
+  "an unidentifiable run says it could not be probed, not that a bound was spent"
+assert_not_contains "$row" "step bound" \
+  "an unidentifiable run must not report a step bound it never reached"
+assert_not_contains "$row" "deploy budget" \
+  "an unidentifiable run must not report a deploy budget it never spent"
+
 pass "a run whose branch cannot be determined never grants a verdict"
 
 # --- a partial deploy read reports uncertainty, never a firm negative --------

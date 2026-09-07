@@ -861,6 +861,7 @@ EOF
                             elif $run.result != "SUCCESSFUL" then "not a successful run"
                             elif $run.branch == "-" then "branch undetermined"
                             elif $run.branch != $b then "another branch"
+                            elif $run.run == "-" then "not examined: the run carries no identifier to probe"
                             else $unprobed end),
                    evidence_sought:($p.evidence_sought // $sought),
                    evidence_found:($p.evidence_found // "-"),
@@ -868,6 +869,7 @@ EOF
                      (if $run.result != "SUCCESSFUL" then "the run did not succeed"
                       elif $run.branch == "-" then "the run branch could not be determined"
                       elif $run.branch != $b then "the run belongs to another branch"
+                      elif $run.run == "-" then "the run carries no identifier to probe, so its steps could not be read"
                       else $unprobed_why end))} ]')
   [ -n "${heads// /}" ] || [ "$head_gaps" -eq 0 ] || DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
   # A truncated or partial read must never produce a firm negative. The run list

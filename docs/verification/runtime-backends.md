@@ -120,7 +120,8 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 ## Herdr
 
 The compatibility floor is protocol 14.
-The latest active verification uses Herdr 0.7.5 protocol 17 on macOS aarch64, with earlier 0.7.4, protocol-16, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
+The latest active verification uses Herdr 0.7.5 protocol 17, most recently on Linux x86_64 with a nix-provided herdr for the restart-husk create refusal below; the section's earlier 0.7.5 protocol 17 evidence was observed on macOS aarch64 and still stands.
+Earlier 0.7.4, protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 
 Core read-only probes:
@@ -172,8 +173,7 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-backend-herdr-respawn-idem-e2e.test.sh
 ```
 
-Asserted guarantee, transcribed from this test's current assertions on 2026-09-07 and not re-observed against a real Herdr lab, so this entry carries no Herdr version stamp: after a real named-session stop and restart, `fm_backend_herdr_create_task` refuses every same-labeled restored tab - crewmate-shaped husk, secondmate-shaped husk, and one hosting a genuinely live registered agent - and leaves each pane and the workspace's tab set untouched.
-Re-run it on a Herdr lane and restamp this entry as an observed guarantee with the Herdr version and date.
+Observed guarantee on 2026-09-07 against Herdr 0.7.5 protocol 17 on Linux x86_64 (nix-provided herdr): after a real named-session stop and restart, `fm_backend_herdr_create_task` refuses every same-labeled restored tab - crewmate-shaped husk, secondmate-shaped husk, and one hosting a genuinely live registered agent - and leaves each pane and the workspace's tab set untouched.
 Spawn-level reconciliation of the recorded endpoint is owned by the next entry.
 
 Same-id Herdr relaunch recovery is owned by:

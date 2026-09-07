@@ -23,10 +23,6 @@ if [ ! -d "$PI_PACKAGE_DIR/node_modules/typebox" ] || \
 fi
 
 fm_test_tmproot TMP_ROOT fm-pi-primary-types
-cleanup() {
-  rm -rf "$TMP_ROOT"
-}
-trap cleanup EXIT
 
 mkdir -p "$TMP_ROOT/lib" "$TMP_ROOT/node_modules/@earendil-works" "$TMP_ROOT/node_modules/@types"
 cp "$ROOT/.pi/extensions/fm-calm.ts" "$TMP_ROOT/fm-calm.ts"

@@ -38,11 +38,13 @@ herdr_forget_inherited_pane
 SESSION="fm-lab-backend-smoke-$$"
 export HERDR_SESSION="$SESSION"
 SM_SCRATCH=
+CLEANED=0
 cleanup_all() {
-  [ -n "$SM_SCRATCH" ] && rm -rf "$SM_SCRATCH"
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   herdr_safe_stop_and_delete "$SESSION"
 }
-trap cleanup_all EXIT
+fm_test_at_exit cleanup_all
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # shellcheck source=/dev/null
@@ -335,4 +337,3 @@ pass "real herdr: list_live discovers a live task tab by fm-<id> label"
 fm_backend_herdr_kill "$SESSION:$PANE_ID2"
 
 cleanup_all
-trap - EXIT

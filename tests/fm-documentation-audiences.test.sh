@@ -8,7 +8,6 @@ set -u
 CHECK="$ROOT/bin/fm-doc-audience-check.sh"
 INVENTORY="$ROOT/docs/documentation-audiences.json"
 fm_test_tmproot TMP_ROOT fm-doc-audiences
-trap 'rm -rf "$TMP_ROOT"' EXIT
 
 run_expect_failure() {
   local expected=$1

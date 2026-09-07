@@ -30,12 +30,10 @@ printf '%s\n' herdr > "$HOME_DIR/config/backend"
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-herdr-session-start-stale-projection-cleanup-r1)
 export HERDR_LAB_HELPER HERDR_LAB_SESSION REAL_HERDR HERDR_ORIGINAL_PATH
 cleanup() {
-  local status=$?
-  env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || status=1
-  rm -rf "$TMP_ROOT"
-  exit "$status"
+  env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" \
+    || FM_TEST_EXIT_STATUS=1
 }
-trap cleanup EXIT
+fm_test_at_exit cleanup
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
 
 # Keep the lab helper as the only CLI transport. Production adapter calls have

@@ -26,15 +26,6 @@ pass() {
   printf 'ok - %s\n' "$1"
 }
 
-TMP_ROOT=
-
-cleanup() {
-  if [ -n "${TMP_ROOT:-}" ]; then
-    rm -rf "$TMP_ROOT"
-  fi
-}
-trap cleanup EXIT
-
 fm_test_tmproot TMP_ROOT fm-gotmp-tests
 
 # Build a fake FM_HOME/FM_ROOT so the real fm-teardown.sh (symlinked in) resolves
@@ -197,13 +188,18 @@ mode=no-mistakes
 yolo=off
 tasktmp=$task_tmp
 META
-  if FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >"$TMP_ROOT/shared.out" 2>"$TMP_ROOT/shared.err"; then
-    fail "teardown succeeded despite another task recording the same tasktmp"
-  fi
+  FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >"$TMP_ROOT/shared.out" 2>"$TMP_ROOT/shared.err" \
+    || fail "a shared tasktmp must not abort teardown"$'\n'"$(cat "$TMP_ROOT/shared.err")"
   [ -d "$task_tmp" ] || fail "teardown removed a tasktmp still recorded for another task"
   grep -F "also recorded for task $other" "$TMP_ROOT/shared.err" >/dev/null \
     || fail "teardown did not explain the shared tasktmp refusal"
-  pass "fm-teardown preserves tasktmp recorded for another task"
+  # The refusal must skip ONLY the shared directory: the task itself is fully
+  # released, so neither task is stranded in the fleet by the other's record.
+  assert_absent "$fake/state/$id.meta" "the released task's meta survived a shared-tasktmp refusal"
+  assert_present "$fake/state/$other.meta" "the other live task's meta was removed"
+  grep -F "teardown $id complete" "$TMP_ROOT/shared.out" >/dev/null \
+    || fail "teardown did not report completion after skipping the shared tasktmp"
+  pass "fm-teardown preserves a shared tasktmp and still releases the task completely"
 }
 
 test_teardown_removes_tasktmp_dir

@@ -45,15 +45,11 @@ REQUEST='FM_MARKER_HERDR_E2E exact-id request'
 DIRECT='FM_MARKER_HERDR_DIRECT captain input'
 
 cleanup() {
-  local rc=$?
-  trap - EXIT
   if ! "$LAB_HELPER" teardown "$SESSION"; then
-    rc=1
+    FM_TEST_EXIT_STATUS=1
   fi
-  rm -rf "$TMP_ROOT"
-  exit "$rc"
 }
-trap cleanup EXIT
+fm_test_at_exit cleanup
 
 mkdir -p "$SENDER_HOME/state" "$SENDER_HOME/data" "$SENDER_HOME/config" "$SENDER_HOME/projects" "$FAKEBIN"
 

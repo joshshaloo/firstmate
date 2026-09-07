@@ -32,9 +32,8 @@ cleanup() {
   if command -v tmux >/dev/null 2>&1; then
     tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
   fi
-  fm_test_cleanup
 }
-trap cleanup EXIT
+fm_test_at_exit cleanup
 
 wait_for_text() {
   local file=$1 text=$2 i=0

@@ -44,11 +44,13 @@ herdr_forget_inherited_pane
 SESSION="fm-lab-prune-safety-e2e-$$"
 export HERDR_SESSION="$SESSION"
 fm_test_tmproot SCRATCH fm-herdr-prune-safety
+CLEANED=0
 cleanup_all() {
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   herdr_safe_stop_and_delete "$SESSION"
-  rm -rf "$SCRATCH"
 }
-trap cleanup_all EXIT
+fm_test_at_exit cleanup_all
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # shellcheck source=/dev/null
@@ -180,4 +182,3 @@ pass "happy path: a genuinely fresh workspace's seeded default tab is still prun
 fm_backend_herdr_kill "$SESSION:$HAPPY_PANE"
 
 cleanup_all
-trap - EXIT

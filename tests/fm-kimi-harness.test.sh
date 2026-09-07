@@ -17,9 +17,8 @@ BASE_PATH=${FM_TEST_BASE_PATH:-$PYTHON_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin}
 
 cleanup_kimi_harness() {
   [ -z "$KIMI_RUNTIME_TASK_TMP" ] || rm -rf "$KIMI_RUNTIME_TASK_TMP"
-  rm -rf "$TMP_ROOT"
 }
-trap cleanup_kimi_harness EXIT
+fm_test_at_exit cleanup_kimi_harness
 
 make_spawn_fakebin() {
   local dir=$1 fakebin

@@ -426,12 +426,17 @@ remove_pr_poll_artifacts() {
   fi
 }
 
+# Remove the per-task temp root recorded by spawn. A refusal (suspicious path, or
+# a path another live task state file still records) skips ONLY this removal and
+# reports 0: stranding the rest of teardown would leave the task in the fleet
+# forever, and two tasks sharing a path would block each other symmetrically with
+# no escape. A non-zero return means the removal itself failed.
 remove_recorded_tasktmp() {
   local target=$1 meta other_id other_target target_phys other_phys
   [ -n "$target" ] || return 0
   case "$target" in
     /*/fm-*) ;;
-    *) echo "error: refusing to remove suspicious tasktmp for $ID: $target" >&2; return 1 ;;
+    *) echo "warning: refusing to remove suspicious tasktmp for $ID: $target" >&2; return 0 ;;
   esac
   target_phys=
   if [ -d "$target" ] && [ ! -L "$target" ]; then
@@ -444,14 +449,14 @@ remove_recorded_tasktmp() {
     other_target=$(grep '^tasktmp=' "$meta" | cut -d= -f2- || true)
     [ -n "$other_target" ] || continue
     if [ "$other_target" = "$target" ]; then
-      echo "error: refusing to remove tasktmp also recorded for task $other_id: $target" >&2
-      return 1
+      echo "warning: refusing to remove tasktmp also recorded for task $other_id: $target" >&2
+      return 0
     fi
     if [ -n "$target_phys" ] && [ -d "$other_target" ] && [ ! -L "$other_target" ]; then
       other_phys=$(CDPATH='' cd -- "$other_target" 2>/dev/null && pwd -P) || other_phys=
       if [ -n "$other_phys" ] && [ "$other_phys" = "$target_phys" ]; then
-        echo "error: refusing to remove tasktmp also recorded for task $other_id: $target" >&2
-        return 1
+        echo "warning: refusing to remove tasktmp also recorded for task $other_id: $target" >&2
+        return 0
       fi
     fi
   done
@@ -1606,7 +1611,7 @@ remove_kimi_turnend_auth "$STATE" "$ID"
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root recorded by spawn only after the task has been released.
 # Empty (pre-fix tasks without tasktmp=) is a no-op, and a temp root still recorded
-# by another task is preserved.
+# by another task is preserved without holding up the rest of the release.
 remove_recorded_tasktmp "$TASK_TMP" || exit 1
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1

@@ -60,7 +60,6 @@ cleanup_all() {
     "$REAL_TMUX" -L "$SOCKET" kill-server 2>/dev/null || true
   fi
   rm -rf "${TMUX_SHIM_DIR:-}" 2>/dev/null || true
-  rm -rf "${STATE_DIR:-}" 2>/dev/null || true
 }
 trap cleanup_all EXIT
 

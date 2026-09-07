@@ -13,7 +13,8 @@
 # refuses the default session and verifies the fleet-state tripwire.
 set -u
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
@@ -32,12 +33,13 @@ herdr_forget_inherited_pane
 
 SESSION="fm-lab-eventwait-smoke-$$"
 export HERDR_SESSION="$SESSION"
-SCRATCH=
+CLEANED=0
 cleanup_all() {
-  [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   herdr_safe_stop_and_delete "$SESSION"
 }
-trap cleanup_all EXIT
+fm_test_at_exit cleanup_all
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare the isolated Herdr lab session"
 
 # The dispatcher is a separately linted production boundary. Its dynamic
@@ -52,8 +54,6 @@ HERDR_VERSION=$(herdr --version 2>/dev/null | head -1)
 
 if ! fm_backend_herdr_events_capable "$SESSION"; then
   echo "skip: this herdr build is below the events.subscribe capability (protocol < 16 or events surface absent)"
-  cleanup_all
-  trap - EXIT
   exit 0
 fi
 pass "real herdr ($HERDR_VERSION): events.subscribe capability gate passes (protocol >= 16, events surface present in api schema)"
@@ -133,4 +133,3 @@ grep -q 'herdr: agent blocked' "$STATE/.wake-queue" || fail "the stale payload m
 pass "real herdr: the watcher fast-path enqueues a stale wake naming the task window from the live blocked transition"
 
 cleanup_all
-trap - EXIT

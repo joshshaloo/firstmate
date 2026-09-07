@@ -51,11 +51,13 @@ herdr_forget_inherited_pane
 SESSION="fm-lab-respawn-idem-e2e-$$"
 export HERDR_SESSION="$SESSION"
 fm_test_tmproot SCRATCH fm-herdr-respawn-idem
+CLEANED=0
 cleanup_all() {
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   herdr_safe_stop_and_delete "$SESSION"
-  rm -rf "$SCRATCH"
 }
-trap cleanup_all EXIT
+fm_test_at_exit cleanup_all
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # shellcheck source=/dev/null
@@ -163,4 +165,3 @@ fm_backend_herdr_kill "$SESSION:$CREW_PANE_ID"
 fm_backend_herdr_kill "$SESSION:$SM_PANE_ID"
 
 cleanup_all
-trap - EXIT

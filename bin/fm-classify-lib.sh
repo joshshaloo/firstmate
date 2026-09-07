@@ -186,20 +186,82 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
     *) printf 'default' ;;
   esac
 }
-# Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
-# Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.
-_fm_decision_drop() {  # <open-set> <key>
-  local set=$1 key=$2 line out=''
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    case "$line" in
-      "$key"$'\t'*) : ;;
-      *) out="${out}${line}"$'\n' ;;
-    esac
-  done <<EOF
-$set
-EOF
-  printf '%s' "$out"
+# Single-pass keyed status fold. POSIX awk associative arrays keep this portable
+# on macOS bash 3.2 while avoiding the old per-event shell re-read of the open set.
+_fm_status_fold_stream() {  # <mode: decisions|activities>
+  local mode=$1 resolve held pause
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
+  # shellcheck disable=SC2016 # awk program; shell values enter through -v above.
+  "${AWK:-/usr/bin/awk}" -v mode="$mode" -v resolve="$resolve" -v held="$held" -v pause="$pause" '
+    function trim_leading(s) { sub(/^[[:space:]]+/, "", s); return s }
+    function trim_both(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function status_verb(line, p) {
+      p = line
+      sub(/:.*/, "", p)
+      sub(/\[key=.*/, "", p)
+      return trim_both(p)
+    }
+    function status_key(line, p, k, start) {
+      p = line
+      sub(/:.*/, "", p)
+      start = index(p, "[key=")
+      if (start == 0) return "default"
+      k = substr(p, start + 5)
+      sub(/\].*$/, "", k)
+      if (k == "" || k !~ /^[A-Za-z0-9._-]+$/) return ""
+      return k
+    }
+    function status_note(line, n) {
+      if (line !~ /:/) return line
+      n = line
+      sub(/^[^:]*:/, "", n)
+      return trim_leading(n)
+    }
+    function drop(key, p, n) {
+      if (!(key in present)) return
+      p = prev[key]
+      n = next_key[key]
+      if (p != "") next_key[p] = n; else head = n
+      if (n != "") prev[n] = p; else tail = p
+      delete present[key]
+      delete prev[key]
+      delete next_key[key]
+      delete verbs[key]
+      delete notes[key]
+    }
+    function append(key, verb, note) {
+      drop(key)
+      present[key] = 1
+      verbs[key] = verb
+      notes[key] = note
+      prev[key] = tail
+      next_key[key] = ""
+      if (tail != "") next_key[tail] = key; else head = key
+      tail = key
+    }
+    {
+      stripped = $0
+      gsub(/[[:space:]]/, "", stripped)
+      if (stripped == "") next
+      verb = status_verb($0)
+      key = status_key($0)
+      if (key == "") next
+      if (mode == "decisions") {
+        if (verb == "needs-decision" || verb == "blocked") append(key, verb, status_note($0))
+        else if (verb == resolve || verb == held) drop(key)
+      } else if (mode == "activities") {
+        if (verb == "working" || verb == pause) append(key, verb, status_note($0))
+        else if (verb == "done" || verb == "failed" || verb == "needs-decision" || verb == "blocked" || verb == resolve || verb == held) drop(key)
+      }
+    }
+    END {
+      for (key = head; key != ""; key = next_key[key]) {
+        printf "%s\t%s\t%s\n", key, verbs[key], notes[key]
+      }
+    }
+  '
 }
 # Fold the WHOLE status stream into the set of decisions still open. Prints one
 # TAB-separated "<key>\t<verb>\t<summary>" line per still-open decision, in
@@ -208,29 +270,9 @@ EOF
 # is the durable open-set the fleet snapshot and any point-in-time consumer must use
 # instead of trusting the last status line.
 status_open_decisions() {  # <status-file>
-  local f=$1 line verb key note resolve held open='' stripped
+  local f=$1
   [ -f "$f" ] || return 0
-  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
-  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  while IFS= read -r line || [ -n "$line" ]; do
-    stripped=${line//[[:space:]]/}
-    [ -n "$stripped" ] || continue
-    verb=$(status_line_verb "$line")
-    key=$(_fm_decision_key "$line") || continue
-    case "$verb" in
-      needs-decision|blocked)
-        note=$(status_line_note "$line")
-        open=$(_fm_decision_drop "$open" "$key")
-        [ -n "$open" ] && open="${open}"$'\n'
-        open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
-        ;;
-      "$resolve"|"$held")
-        open=$(_fm_decision_drop "$open" "$key")
-        [ -n "$open" ] && open="${open}"$'\n'
-        ;;
-    esac
-  done < "$f"
-  printf '%s' "$open"
+  _fm_status_fold_stream decisions < "$f"
 }
 
 # Fold material routed-work phases in the same keyed event stream.
@@ -243,29 +285,7 @@ status_open_decisions() {  # <status-file>
 # It is never authoritative current crew state, and consumers must not let an open
 # phase outrank a structured home snapshot or fm-crew-state result.
 _fm_status_open_activities_stream() {
-  local line verb key note resolve held open='' stripped pause
-  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
-  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
-  while IFS= read -r line || [ -n "$line" ]; do
-    stripped=${line//[[:space:]]/}
-    [ -n "$stripped" ] || continue
-    verb=$(status_line_verb "$line")
-    key=$(_fm_decision_key "$line") || continue
-    case "$verb" in
-      working|"$pause")
-        note=$(status_line_note "$line")
-        open=$(_fm_decision_drop "$open" "$key")
-        [ -n "$open" ] && open="${open}"$'\n'
-        open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
-        ;;
-      done|failed|needs-decision|blocked|"$resolve"|"$held")
-        open=$(_fm_decision_drop "$open" "$key")
-        [ -n "$open" ] && open="${open}"$'\n'
-        ;;
-    esac
-  done
-  printf '%s' "$open"
+  _fm_status_fold_stream activities
 }
 
 status_open_activities() {  # <status-file-or-dash>

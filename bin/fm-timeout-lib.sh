@@ -129,7 +129,10 @@ fm_run_external_timeout() {
         sleep 0.1
         grace=$((grace - 1))
       done
-      kill -KILL -- "-$runner_pid" 2>/dev/null || true
+      # A group that drained inside the window needs no signal, and the pid it was
+      # keyed on is free to be recycled the moment it does, so only what outlived
+      # the whole window is killed.
+      [ "$grace" -gt 0 ] || kill -KILL -- "-$runner_pid" 2>/dev/null || true
       return 124
       ;;
     *) return "$runner_rc" ;;

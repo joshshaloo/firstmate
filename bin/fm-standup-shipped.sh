@@ -172,7 +172,7 @@ Fields: schema, home, generated, window{spec,hours,since,since_date},
   projects{id,mode,path,forge,slug,branch,available,reason,fetched,deploy_step,deploy_step_status},
   merges{project,when,commit,pr,deployed,title},
   closed{id,home,project,closed_on,artifact,title},
-  deploys{project,source,run,result,branch,deploy_step,head,head_from,when,counted,evidence_sought,evidence_found,evidence_unavailable},
+  deploys{project,source,run,result,branch,deploy_step,deploy_step_outcome,head,head_from,when,counted,evidence_sought,evidence_found,evidence_unavailable},
   forge_prs{project,pr,when,when_means,title} (only under --include-forge),
   bodies{id,body} (only under --fields bodies),
   omitted{surface,reveal}.
@@ -187,8 +187,9 @@ production deploy step for the repository, that step's successful outcome, and a
 deploy log recording a production head that contains the merge commit by git
 ancestry. It is no only when the read was complete and none of the heads found
 contain the commit; a truncated run list, a step probe that stopped short, a spent
-deploy budget, an undeclared production step, or a head missing from the local
-copy leaves it unknown rather than calling the work undeployed. A parsed run that
+deploy budget, an undeclared production step, a listing that nominated no run to
+examine, or a head missing from the local copy leaves it unknown rather than
+calling the work undeployed. A parsed run that
 lacks the repository's declared production deploy step is a known absence and can
 support a no. A repository with no declaration is different: its deploy step was
 not recognized here, so the verdict remains unknown. Disclosures keep the reasons
@@ -663,6 +664,12 @@ for id in $PROJECT_IDS; do
   head_gaps=0
   probed=0
   STEP_ROWS='[]'
+  # Why a candidate run went unexamined is decided wherever the reason is actually
+  # known, never re-derived after the loop from whatever flag happens to be set:
+  # a run the step bound or the budget cut off and a run there was never anything
+  # to examine against are different facts, and each row has to say its own.
+  unexamined=""
+  unexamined_why=""
   # Two facts belong to the REPOSITORY rather than to any one run, and both are
   # settled here, before a single run is examined, so that neither can be decided
   # by a loop that never ran. Which step is the production deploy is a per-project
@@ -695,6 +702,8 @@ for id in $PROJECT_IDS; do
     DEPLOY_IDENTITY_UNCONFIGURED=$((DEPLOY_IDENTITY_UNCONFIGURED + 1))
     head_gaps=$((head_gaps + 1))
     candidate_runs=""
+    unexamined="not examined: $gap_counted"
+    unexamined_why="$gap_unavailable"
   elif [ "$candidate_n" -eq 0 ]; then
     deploy_project_row "$id" bkt "$deploy_step_name" \
       "unavailable (no candidate deploy run to examine)" \
@@ -825,13 +834,17 @@ EOF
   if [ "$candidate_n" -gt 0 ] && [ -z "${heads// /}" ] && [ "$head_gaps" -eq 0 ]; then
     DEPLOY_NO_DEPLOYMENT=$((DEPLOY_NO_DEPLOYMENT + 1))
   fi
-  if [ "$DEPLOY_BUDGET_EXHAUSTED" = 1 ]; then
-    unprobed="not probed within the deploy budget"
-  else
-    unprobed="not probed within the step bound"
+  if [ -z "$unexamined" ]; then
+    if [ "$DEPLOY_BUDGET_EXHAUSTED" = 1 ]; then
+      unexamined="not probed within the deploy budget"
+    else
+      unexamined="not probed within the step bound"
+    fi
+    unexamined_why="$unexamined"
   fi
   DEPLOY_ROWS=$(printf '%s\n%s\n%s' "$DEPLOY_ROWS" "$ok_runs" "$STEP_ROWS" | jq -sc \
-    --arg project "$id" --arg b "${branch#origin/}" --arg unprobed "$unprobed" \
+    --arg project "$id" --arg b "${branch#origin/}" --arg unprobed "$unexamined" \
+    --arg unprobed_why "$unexamined_why" \
     --arg step "$deploy_step_name" --arg sought "$DEPLOY_EVIDENCE_SOUGHT" \
     '(.[2] | map({key:.run, value:.}) | from_entries) as $probe
      | .[0] + [ .[1][]
@@ -855,7 +868,7 @@ EOF
                      (if $run.result != "SUCCESSFUL" then "the run did not succeed"
                       elif $run.branch == "-" then "the run branch could not be determined"
                       elif $run.branch != $b then "the run belongs to another branch"
-                      else $unprobed end))} ]')
+                      else $unprobed_why end))} ]')
   [ -n "${heads// /}" ] || [ "$head_gaps" -eq 0 ] || DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
   # A truncated or partial read must never produce a firm negative. The run list
   # is capped, the step probe is capped, and an accepted run whose head is not in

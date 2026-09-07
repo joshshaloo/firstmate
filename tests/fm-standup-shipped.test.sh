@@ -469,6 +469,28 @@ assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].evidence_unavailable'
 : > "$HOME_A/config/standup-deploy-steps"
 set_deploy_step "$HOME_A" alpha "Deploy to production"
 
+# An undeclared repository whose listing DOES carry successful default-branch runs
+# is the case where the two reasons could be confused. Those runs went unexamined
+# because there was nothing to examine them against, not because a bound cut the
+# probe short, and every row has to say the reason that actually applies.
+: > "$HOME_A/config/standup-deploy-steps"
+: > "$HOME_A/net.log"
+json=$(FAKE_BKT_RUNS="$runs" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] \
+  || fail "an undeclared repository with candidate runs must stay unknown, got: $deployed"
+row=$(printf '%s' "$json" | jq -r '.deploys[] | select(.run == "1041") | "\(.counted)|\(.evidence_unavailable)"')
+assert_contains "$row" "not examined: no declared production deploy step" \
+  "an unexamined run names the missing declaration, not a bound it never reached"
+assert_not_contains "$row" "step bound" \
+  "a run nothing was probed for must not report a spent step bound"
+assert_not_contains "$row" "deploy budget" \
+  "a run nothing was probed for must not report a spent deploy budget"
+grep -q "bkt pipeline view" "$HOME_A/net.log" \
+  && fail "an undeclared repository must not probe a run's steps at all"
+: > "$HOME_A/config/standup-deploy-steps"
+set_deploy_step "$HOME_A" alpha "Deploy to production"
+
 pass "a deploy read that examined no run withholds the verdict instead of denying it"
 
 # --- the ledger names the declared step and its outcome in separate columns --

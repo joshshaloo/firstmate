@@ -5,6 +5,9 @@
 # `fm-fleet-snapshot.v1`.
 # The command is read-only: it does not acquire the session lock, drain wakes,
 # arm watchers, mutate backlog state, or write reports.
+# Its only write is a private temporary directory under TMPDIR that carries
+# intermediate JSON between jq stages and is removed on exit, so the command
+# needs a writable TMPDIR and exits 1 when it cannot create that directory.
 #
 # Top-level fields:
 #   schema: stable schema id.
@@ -183,6 +186,13 @@ cleanup_snapshot_tmpdir() {
 }
 trap cleanup_snapshot_tmpdir EXIT HUP INT TERM
 
+# Large intermediate JSON reaches jq by file or stdin, never as an --argjson
+# value: Linux caps a single argv string at MAX_ARG_STRLEN (128 KiB), which a
+# parsed backlog, task set, secondmate summary, or accumulated record set
+# exceeds in a large home, and the exec then fails with "Argument list too
+# long". Route every such value through this helper and --slurpfile, or through
+# a stdin pipe, and keep growing accumulators in a file rather than rebuilding
+# them through jq arguments.
 snapshot_json_file() {  # <name>, JSON on stdin; prints path
   local name=$1 path
   path="$SNAPSHOT_TMPDIR/$name.json"

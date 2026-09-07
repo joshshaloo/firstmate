@@ -26,42 +26,44 @@
 #     provably stale lock before re-running safety checks.
 #
 # Matrix:
-#   (a) local-only + HEAD on a fork remote-tracking branch     -> ALLOW  (fork fix)
-#   (b) local-only + truly unpushed work (no remote, not main) -> REFUSE (safety)
-#   (c) local-only + merged into local main, no remote         -> ALLOW  (no regression)
-#   (d) local-only + content equivalent only on a remote ref   -> REFUSE (lands locally)
-#   (e) no-mistakes + HEAD on origin remote-tracking branch    -> ALLOW  (no regression)
-#   (f) no-mistakes + unpushed, no PR, content not in default  -> REFUSE (safety)
-#   (g) local-only + truly unpushed + --force                  -> ALLOW  (escape hatch)
-#   (h) no-mistakes + squash-merged PR, exact PR head          -> ALLOW  (squash fix)
-#   (i) no-mistakes + no PR but content already in default     -> ALLOW  (content fallback)
-#   (j) no-mistakes + squash-landed, target later edits file   -> ALLOW  (merge-tree proof)
-#   (k) no-mistakes + no PR but content in recorded release    -> ALLOW  (non-default target)
-#   (l) no-mistakes + no PR but explicit release target        -> ALLOW  (operator target)
-#   (m) no-mistakes + dirty worktree, even when work landed    -> REFUSE (dirty wins)
-#   (n) no-mistakes + target content differs                   -> REFUSE (safety + files)
-#   (o) no-mistakes + target missing change                    -> REFUSE (safety + files)
-#   (p) no-mistakes + unknown explicit target                  -> REFUSE (fail-safe)
-#   (q) no-mistakes + gh lookup errors + content not in target -> REFUSE (fail-safe)
-#   (r) no-mistakes + merged PR but HEAD moved afterward       -> REFUSE (stale PR)
-#   (s) no-mistakes + stale origin/main but fetched content    -> ALLOW  (fresh fetch)
-#   (t) no-mistakes + local HEAD ancestor of merged PR head    -> ALLOW  (lagging local)
-#   (u) no-mistakes + replayed unpushed patch in merged PR head -> ALLOW (replayed local)
-#   (v) fm-pr-check rerun after HEAD moved                     -> no stale pr_head
-#   (w) fm-pr-check when local HEAD lags                       -> record remote PR head
-#   (x) fm-pr-check on a GitHub PR records the PR base branch  -> record landing_branch
-#   (y) no-mistakes + NO pr= recorded, PR discovered by branch -> ALLOW  (yolo/no-CI merge)
+#   - local-only + HEAD on a fork remote-tracking branch -> ALLOW  (fork fix)
+#   - local-only + truly unpushed work (no remote, not main) -> REFUSE (safety)
+#   - local-only + merged into local main, no remote -> ALLOW  (no regression)
+#   - local-only + content equivalent only on a remote ref -> REFUSE (lands locally)
+#   - local-only + recorded landing branch with a local head -> ALLOW (directed target)
+#   - local-only + recorded landing branch only on origin -> REFUSE (names the target)
+#   - no-mistakes + HEAD on origin remote-tracking branch -> ALLOW  (no regression)
+#   - no-mistakes + unpushed, no PR, content not in default -> REFUSE (safety)
+#   - local-only + truly unpushed + --force -> ALLOW  (escape hatch)
+#   - no-mistakes + squash-merged PR, exact PR head -> ALLOW  (squash fix)
+#   - no-mistakes + no PR but content already in default -> ALLOW  (content fallback)
+#   - no-mistakes + squash-landed, target later edits file -> ALLOW  (merge-tree proof)
+#   - no-mistakes + no PR but content in recorded release -> ALLOW  (non-default target)
+#   - no-mistakes + no PR but explicit release target -> ALLOW  (operator target)
+#   - no-mistakes + dirty worktree, even when work landed -> REFUSE (dirty wins)
+#   - no-mistakes + target content differs -> REFUSE (safety + files)
+#   - no-mistakes + target missing change -> REFUSE (safety + files)
+#   - no-mistakes + unknown explicit target -> REFUSE (fail-safe)
+#   - no-mistakes + gh lookup errors + content not in target -> REFUSE (fail-safe)
+#   - no-mistakes + merged PR but HEAD moved afterward -> REFUSE (stale PR)
+#   - no-mistakes + stale origin/main but fetched content -> ALLOW  (fresh fetch)
+#   - no-mistakes + local HEAD ancestor of merged PR head -> ALLOW  (lagging local)
+#   - no-mistakes + replayed unpushed patch in merged PR head -> ALLOW (replayed local)
+#   - fm-pr-check rerun after HEAD moved -> no stale pr_head
+#   - fm-pr-check when local HEAD lags -> record remote PR head
+#   - fm-pr-check on a GitHub PR records the PR base branch -> record landing_branch
+#   - no-mistakes + NO pr= recorded, PR discovered by branch -> ALLOW  (yolo/no-CI merge)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
-#   (z) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
-#   (aa) index.lock with a live holder, any age               -> lock kept, REFUSE
-#   (ab) lsof error while checking index.lock                 -> lock kept, REFUSE
-#   (ac) dirty worktree after stale lock cleanup              -> lock removed, REFUSE
-#   (ad) non-linked repo index.lock                           -> lock removed, ALLOW
-#   (ae) index.lock mtime read failure                        -> lock kept, REFUSE
-#   (af) transient lock cleared after first failed return     -> retry ALLOW
-#   (ag) persistent lock (never clears, not provably stale)   -> REFUSE loudly
+#   - provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
+#   - index.lock with a live holder, any age -> lock kept, REFUSE
+#   - lsof error while checking index.lock -> lock kept, REFUSE
+#   - dirty worktree after stale lock cleanup -> lock removed, REFUSE
+#   - non-linked repo index.lock -> lock removed, ALLOW
+#   - index.lock mtime read failure -> lock kept, REFUSE
+#   - transient lock cleared after first failed return -> retry ALLOW
+#   - persistent lock (never clears, not provably stale) -> REFUSE loudly
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -636,6 +638,55 @@ test_local_only_merged_to_local_main_allows() {
   pass "local-only worktree with work merged into local main is torn down (no regression)"
 }
 
+# A recorded landing target that resolves to a local head is the branch the work
+# is judged against, exactly like the default branch is when nothing is recorded.
+test_local_only_recorded_local_landing_branch_allows() {
+  local case_dir rc wt_head
+  case_dir=$(make_case local-only-recorded-local-target)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "release work"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/release-Aug2026 "$wt_head"
+  append_landing_branch_meta "$case_dir" release-Aug2026
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "local-only-recorded-local-target: work merged into the recorded local landing branch should tear down"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "local-only-recorded-local-target: teardown printed a REFUSED line"
+  pass "local-only worktree merged into its recorded local landing branch is torn down"
+}
+
+# The recorded target exists only on origin while the work happens to be merged
+# into local main. Falling back to main would clear work that never landed on the
+# branch it was directed at, so teardown must refuse and name the recorded target.
+test_local_only_recorded_remote_only_landing_branch_refuses() {
+  local case_dir rc wt_head
+  case_dir=$(make_case local-only-recorded-remote-target)
+  write_meta "$case_dir" local-only ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  land_equivalent_patch_on_origin_branch "$case_dir" release-Aug2026 feature.txt hello "release landing" >/dev/null
+  append_landing_branch_meta "$case_dir" release-Aug2026
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "local-only-recorded-remote-target: a remote-only recorded target must not fall back to the local default branch"
+  assert_grep "directed at landing branch release-Aug2026, which cannot be resolved" "$case_dir/stderr" \
+    "local-only-recorded-remote-target: refusal did not name the recorded target"
+  assert_grep "has no local head" "$case_dir/stderr" \
+    "local-only-recorded-remote-target: refusal did not explain why the target is unresolvable"
+  assert_grep "Record or pass the correct --landing-branch, or land the work on release-Aug2026 and rerun" "$case_dir/stderr" \
+    "local-only-recorded-remote-target: refusal did not name the two real exits"
+  pass "local-only worktree with a remote-only recorded landing branch refuses instead of falling back"
+}
+
 test_no_mistakes_origin_remote_allows() {
   local case_dir rc
   case_dir=$(make_case nm-origin)
@@ -985,9 +1036,13 @@ test_unknown_landing_branch_refuses() {
 
   expect_code 1 "$rc" "unknown-release: teardown should refuse when the landing branch cannot be read"
   grep -q REFUSED "$case_dir/stderr" || fail "unknown-release: no REFUSED line in stderr"
-  assert_grep "landing branch release-missing is unavailable" "$case_dir/stderr" \
-    "unknown-release: refusal did not explain the missing landing branch"
-  pass "unknown landing branch refuses instead of guessing"
+  assert_grep "directed at landing branch release-missing, which cannot be resolved" "$case_dir/stderr" \
+    "unknown-release: refusal did not name the unresolvable landing branch"
+  assert_grep "Record or pass the correct --landing-branch, or land the work on release-missing and rerun" "$case_dir/stderr" \
+    "unknown-release: refusal did not name the two real exits"
+  assert_grep "will not judge the work against a different branch" "$case_dir/stderr" \
+    "unknown-release: refusal did not rule out a default-branch fallback"
+  pass "unresolvable recorded landing branch refuses and names the target"
 }
 
 # A squash landing followed by an unrelated later edit to the same file: the raw
@@ -1617,6 +1672,8 @@ test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_local_only_content_equivalent_on_remote_refuses
+test_local_only_recorded_local_landing_branch_allows
+test_local_only_recorded_remote_only_landing_branch_refuses
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed

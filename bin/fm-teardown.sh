@@ -12,7 +12,12 @@
 # GitHub reports a PR head that contains the current local work, or its work is
 # already present in the up-to-date landing branch. The landing branch comes from
 # --landing-branch, then the task's recorded landing_branch= metadata, then the
-# project's default branch. This recognizes non-default release landings and the
+# project's default branch. Absence and unresolvability are different things:
+# recording no target means the default branch IS the target, but a target that
+# was recorded or passed and cannot be resolved to a usable ref is a hard refusal
+# naming that target. Teardown never falls back to the default branch there,
+# because judging the work against a branch it was not directed at could clear
+# genuinely unlanded work. This recognizes non-default release landings and the
 # common squash-merge-then-delete-branch flow, where the branch's own commits live
 # nowhere on a remote yet the change is fully in the branch it targeted.
 # The PR itself is resolved from the task's recorded pr= when present, or - when
@@ -32,11 +37,12 @@
 # names those files.
 # Uncommitted changes are never landed.
 # local-only projects are deliberately narrower rather than wider: their only
-# landed-work proof is work merged into the local landing branch - the recorded
-# or passed branch when it exists locally, otherwise the local default branch -
-# which firstmate performs after configured approval (bin/fm-merge-local.sh). A
-# merged GitHub PR and content equivalence against a remote ref never authorize a
-# local-only teardown, because a local-only project's work lands locally.
+# landed-work proof is work merged into their local landing branch, which
+# firstmate performs after configured approval (bin/fm-merge-local.sh). That
+# branch resolves as a local head only, so a recorded target that exists only on
+# a remote is refused by name rather than defaulted to the local default branch.
+# A merged GitHub PR and content equivalence against a remote ref never authorize
+# a local-only teardown, because a local-only project's work lands locally.
 # Scout tasks (kind=scout in meta) carve out of that check: their worktree is
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
@@ -514,18 +520,25 @@ pr_is_merged() {
   unpushed_patches_are_in_pr_head "$head"
 }
 
-# The branch the work was directed at: the explicit --landing-branch, then the
-# task's recorded landing_branch=, then the project's default branch.
-landing_branch_target() {
+# The single owner of "which branch was this work directed at". Publishes the
+# name in LANDING_BRANCH_NAME and, in LANDING_BRANCH_DIRECTED, whether that name
+# was recorded or passed for this task rather than selected by absence: the two
+# carry different refusal rules when the name will not resolve.
+resolve_landing_branch_target() {
+  LANDING_BRANCH_NAME=
+  LANDING_BRANCH_DIRECTED=0
   if [ -n "$TEARDOWN_LANDING_BRANCH_ARG" ]; then
-    printf '%s\n' "$TEARDOWN_LANDING_BRANCH_ARG"
+    LANDING_BRANCH_NAME=$TEARDOWN_LANDING_BRANCH_ARG
+    LANDING_BRANCH_DIRECTED=1
     return 0
   fi
   if [ -n "$LANDING_BRANCH_META" ]; then
-    printf '%s\n' "$LANDING_BRANCH_META"
+    LANDING_BRANCH_NAME=$LANDING_BRANCH_META
+    LANDING_BRANCH_DIRECTED=1
     return 0
   fi
-  default_branch
+  LANDING_BRANCH_NAME=$(default_branch) || return 1
+  [ -n "$LANDING_BRANCH_NAME" ]
 }
 
 # Resolve the landing branch to the ref teardown may treat as authoritative.
@@ -631,19 +644,28 @@ work_is_landed() {
   local branch=$1 landing_branch ref
   LANDING_REFUSAL_DETAIL=
   LANDING_BRANCH_NAME=
+  LANDING_BRANCH_DIRECTED=0
+  LANDING_TARGET_UNRESOLVABLE=0
   if [ "$MODE" != local-only ]; then
     pr_is_merged "$branch" && return 0
   fi
-  landing_branch=$(landing_branch_target) || {
+  resolve_landing_branch_target || {
     LANDING_REFUSAL_DETAIL="cannot determine landing branch for $PROJ; expected origin/HEAD, main, or master."
     return 1
   }
-  LANDING_BRANCH_NAME=$landing_branch
+  landing_branch=$LANDING_BRANCH_NAME
   ref=$(resolve_landing_branch_ref "$landing_branch") || {
-    if [ "$MODE" = local-only ]; then
-      LANDING_REFUSAL_DETAIL="local landing branch $landing_branch does not exist in $PROJ."
+    if [ "$LANDING_BRANCH_DIRECTED" = 1 ]; then
+      LANDING_TARGET_UNRESOLVABLE=1
+      if [ "$MODE" = local-only ]; then
+        LANDING_REFUSAL_DETAIL="recorded landing branch $landing_branch has no local head in $PROJ, and a local-only task lands locally, so a remote-only branch cannot prove it."
+      else
+        LANDING_REFUSAL_DETAIL="recorded landing branch $landing_branch cannot be resolved from $PROJ."
+      fi
+    elif [ "$MODE" = local-only ]; then
+      LANDING_REFUSAL_DETAIL="local default branch $landing_branch does not exist in $PROJ."
     else
-      LANDING_REFUSAL_DETAIL="landing branch $landing_branch is unavailable."
+      LANDING_REFUSAL_DETAIL="default landing branch $landing_branch is unavailable."
     fi
     return 1
   }
@@ -943,6 +965,14 @@ validate_worktree_teardown_safety() {
     fi
     if ! work_is_landed "$branch"; then
       landing_target=${LANDING_BRANCH_NAME:-the local default branch}
+      if [ "${LANDING_TARGET_UNRESOLVABLE:-0}" = 1 ]; then
+        echo "REFUSED: worktree $WT is directed at landing branch $LANDING_BRANCH_NAME, which cannot be resolved." >&2
+        printf 'unpushed commits:\n%s\n' "$unpushed" >&2
+        [ -z "$LANDING_REFUSAL_DETAIL" ] || printf '%s\n' "$LANDING_REFUSAL_DETAIL" >&2
+        echo "Record or pass the correct --landing-branch, or land the work on $LANDING_BRANCH_NAME and rerun teardown." >&2
+        echo "Teardown will not judge the work against a different branch." >&2
+        return 1
+      fi
       if [ "$MODE" = local-only ]; then
         echo "REFUSED: local-only worktree $WT has work not yet merged into $landing_target and not on any remote." >&2
       else

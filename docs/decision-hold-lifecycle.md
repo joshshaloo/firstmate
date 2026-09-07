@@ -28,7 +28,7 @@ It is the only command that writes canonical `data/captain-decisions/` answer fi
 It writes that answer file, records the decision digest and routed task identities in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done as one rollback-protected action.
 A failed step restores the prior backlog, done archive, and answer-file state, leaving the hold open and routed work still blocked.
 A changed decision or routed-task set on retry is rejected.
-Retrying `resolve` on a decision that was closed before answer files existed backfills the missing answer file instead of failing; `bin/fm-decision-hold.sh --help` owns that backfill marker.
+A resolution written by the current code records the answer file's identity and format version in the hold body, so retrying it without that file fails loudly, while a decision closed before answer files existed carries no such record and backfills instead; `bin/fm-decision-hold.sh --help` owns both markers.
 
 The `reconcile-answers` subcommand is read-only apart from temporary files.
 An answer belongs to exactly one hold identity, so every match is scoped to that identity and each identity is reported at most once; a bare decision key shared by unrelated decisions never matches.
@@ -70,7 +70,7 @@ ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - reconciliation matches answer files to open holds by identity alone
-ok - resolve backfills a legacy-resolved captain answer file instead of failing
+ok - resolve separates legacy resolutions from recorded answer identities
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
 
 $ bash tests/fm-fleet-snapshot-view.test.sh

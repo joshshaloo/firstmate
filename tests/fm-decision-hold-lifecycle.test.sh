@@ -540,11 +540,20 @@ EOF
   pass "reconciliation matches answer files to open holds by identity alone"
 }
 
-# A captain hold resolved before answer files existed carries the durable
-# resolution record without a canonical answer file. Retrying resolve must
-# backfill that file instead of failing forever.
-test_resolve_backfills_legacy_resolved_answer_file() {
-  local home origin hold answer out
+text_digest() {  # <text>
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  fi
+}
+
+# A resolution written by the current code stamps the answer path and format
+# version into the hold body. A hold carrying that marker must fail loudly when
+# its answer file is gone, while a hold resolved before answer files existed
+# carries no marker and backfills instead.
+test_resolve_separates_legacy_and_recorded_answers() {
+  local home origin hold answer decision digest body show current current_hold current_answer out rc
   home=$(make_home legacy-answer-backfill)
   origin=sample-legacy-review
   mkdir -p "$home/data/$origin"
@@ -561,23 +570,63 @@ test_resolve_backfills_legacy_resolved_answer_file() {
   tasks_in "$home" add sample-legacy-work "Apply the legacy access path" \
     --kind ship --repo sample --blocked-by "$hold" >/dev/null \
     || fail "could not create legacy dependent work"
-  printf 'Grant the sample service read-only access.\n' > "$home/legacy-decision.txt"
-  run_decisions "$home" resolve "$origin" access --decision-file "$home/legacy-decision.txt" \
-    --routed-to sample-legacy-work >/dev/null \
-    || fail "could not resolve the legacy hold"
+  decision="Grant the sample service read-only access."
+  printf '%s\n' "$decision" > "$home/legacy-decision.txt"
+  digest=$(text_digest "$decision")
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: sample-legacy-work\n\nCaptain decision:\n%s\n\nRouted work:\n- sample-legacy-work\n' \
+    "$digest" "$decision")
+  tasks_in "$home" update "$hold" --body "$body" >/dev/null \
+    || fail "could not stage a pre-answer-file resolution record"
+  tasks_in "$home" unblock sample-legacy-work --by "$hold" >/dev/null \
+    || fail "could not release legacy dependent work"
+  tasks_in "$home" "done" "$hold" >/dev/null \
+    || fail "could not close the legacy hold"
   answer="$home/data/captain-decisions/$hold.md"
-  rm -f "$answer"
+  assert_absent "$answer" "the legacy fixture must start without an answer file"
   out=$(run_decisions "$home" resolve "$origin" access --decision-file "$home/legacy-decision.txt" \
     --routed-to sample-legacy-work) \
     || fail "retrying a decision resolved before answer files existed failed loudly"
   assert_contains "$out" "resolved: $hold" "legacy backfill did not report the resolved hold"
   assert_grep "Hold: $hold" "$answer" "legacy backfill did not record the hold identity"
   assert_grep "Legacy-resolved:" "$answer" "legacy backfill did not mark the answer file"
-  assert_grep "Grant the sample service read-only access." "$answer" \
-    "legacy backfill did not recover the durable decision text"
+  assert_grep "$decision" "$answer" "legacy backfill did not recover the durable decision text"
   run_decisions "$home" reconcile-answers >/dev/null \
     || fail "a backfilled answer file for a closed decision was reported as open"
-  pass "resolve backfills a legacy-resolved captain answer file instead of failing"
+
+  current=sample-recorded-review
+  mkdir -p "$home/data/$current"
+  tasks_in "$home" add "$current" "Recorded resolution" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create recorded origin"
+  write_origin_meta "$home" "$current"
+  printf 'done: report complete\n' > "$home/state/$current.status"
+  printf '# Recorded review\n' > "$home/data/$current/report.md"
+  current_hold=$(run_decisions "$home" hold "$current" access \
+    --title "Choose the recorded access path" --reason "captain access pending" --repo sample) \
+    || fail "could not register recorded hold"
+  run_decisions "$home" complete "$current" access >/dev/null \
+    || fail "could not complete recorded inventory"
+  tasks_in "$home" add sample-recorded-work "Apply the recorded access path" \
+    --kind ship --repo sample --blocked-by "$current_hold" >/dev/null \
+    || fail "could not create recorded dependent work"
+  printf 'Grant the sample service write access.\n' > "$home/recorded-decision.txt"
+  run_decisions "$home" resolve "$current" access --decision-file "$home/recorded-decision.txt" \
+    --routed-to sample-recorded-work >/dev/null \
+    || fail "could not resolve the recorded hold"
+  current_answer="$home/data/captain-decisions/$current_hold.md"
+  show=$(tasks_in "$home" show "$current_hold" --full)
+  assert_contains "$show" "Answer record: data/captain-decisions/$current_hold.md (v1)" \
+    "resolve did not durably record the answer file identity and format version"
+  rm -f "$current_answer"
+  set +e
+  out=$(run_decisions "$home" resolve "$current" access --decision-file "$home/recorded-decision.txt" \
+    --routed-to sample-recorded-work 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a missing answer file for a recorded resolution was silently relabelled legacy"
+  assert_contains "$out" "is missing its answer file" \
+    "the recorded-resolution failure did not name the missing answer file"
+  assert_absent "$current_answer" "the loud failure recreated the answer file it refused to backfill"
+  pass "resolve separates legacy resolutions from recorded answer identities"
 }
 
 # tasks-axi quotes multi-entry blocked_by values as "a,b,c". resolve must strip
@@ -685,5 +734,5 @@ test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_reconcile_answers_reports_open_answered_holds
-test_resolve_backfills_legacy_resolved_answer_file
+test_resolve_separates_legacy_and_recorded_answers
 test_resolve_matches_quoted_blocked_by_edges

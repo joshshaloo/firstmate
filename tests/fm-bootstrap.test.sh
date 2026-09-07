@@ -782,12 +782,8 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
 }
 
 test_bootstrap_reports_decision_answer_reconciliation() {
-  local case_dir fakebin real_tasks real_node out hold
+  local case_dir fakebin real_tasks node_bin node_dir='' tools_path out hold
   real_tasks=$(command -v tasks-axi 2>/dev/null) || { echo "skip: tasks-axi not found"; return 0; }
-  # make_fake_toolchain shadows node with an exit-0 stub, so the real tasks-axi
-  # must be launched through the real interpreter rather than its `env node`
-  # shebang, which would otherwise resolve to that stub and silently do nothing.
-  real_node=$(command -v node 2>/dev/null) || { echo "skip: node not found"; return 0; }
   case_dir="$TMP_ROOT/decision-reconcile-bootstrap"
   mkdir -p "$case_dir/home/data/captain-decisions" "$case_dir/home/state" "$case_dir/home/config" "$case_dir/home/projects"
   cp "$ROOT/.tasks.toml" "$case_dir/home/.tasks.toml"
@@ -799,6 +795,13 @@ test_bootstrap_reports_decision_answer_reconciliation() {
 ## Done
 EOF
   fakebin=$(make_fake_toolchain "$case_dir")
+  # This case runs the real tasks-axi, so the stubbed node must not shadow the
+  # runtime it ships with; a real one answers for this case only.
+  rm -f "$fakebin/node"
+  if node_bin=$(command -v node 2>/dev/null); then
+    node_dir=$(dirname "$node_bin")
+  fi
+  tools_path="$fakebin${node_dir:+:$node_dir}:$BASE_PATH"
   cat > "$fakebin/tasks-axi" <<EOF
 #!/usr/bin/env bash
 if [ "\${1:-}" = --version ]; then
@@ -819,7 +822,7 @@ if [ "\${1:-}" = hold ] && [ "\${2:-}" = --help ]; then
   printf '%s\n' 'usage: tasks-axi hold <id> --reason <reason> --kind captain'
   exit 0
 fi
-exec '$real_node' '$real_tasks' "\$@"
+exec '$real_tasks' "\$@"
 EOF
   chmod +x "$fakebin/tasks-axi"
   (cd "$case_dir/home" && tasks-axi add sample-origin "Review sample" --kind scout --repo sample --start) >/dev/null \
@@ -834,11 +837,11 @@ EOF
   printf 'done: report complete\n' > "$case_dir/home/state/sample-origin.status"
   mkdir -p "$case_dir/home/data/sample-origin"
   printf '# Sample origin\n' > "$case_dir/home/data/sample-origin/report.md"
-  hold=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_STATE_OVERRIDE="$case_dir/home/state" \
+  hold=$(PATH="$tools_path" FM_HOME="$case_dir/home" FM_STATE_OVERRIDE="$case_dir/home/state" \
     FM_DATA_OVERRIDE="$case_dir/home/data" "$ROOT/bin/fm-decision-hold.sh" hold sample-origin route \
     --title "Choose route" --reason "captain route pending" --repo sample) \
     || fail "could not create bootstrap reconciliation hold"
-  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_STATE_OVERRIDE="$case_dir/home/state" \
+  PATH="$tools_path" FM_HOME="$case_dir/home" FM_STATE_OVERRIDE="$case_dir/home/state" \
     FM_DATA_OVERRIDE="$case_dir/home/data" "$ROOT/bin/fm-decision-hold.sh" complete sample-origin route >/dev/null \
     || fail "could not complete bootstrap reconciliation inventory"
   cat > "$case_dir/home/data/captain-decisions/$hold.md" <<EOF
@@ -848,7 +851,7 @@ Hold: $hold
 
 Use the bootstrap route.
 EOF
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+  out=$(PATH="$tools_path" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_contains "$out" "DECISION_HOLD: ANSWER_FILE_OPEN_HOLD: $case_dir/home/data/captain-decisions/$hold.md -> $hold" \
     "bootstrap did not surface answer-file reconciliation diagnostics"

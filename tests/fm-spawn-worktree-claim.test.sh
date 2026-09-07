@@ -232,6 +232,9 @@ OLD_PANE=w1:p-old
 OLD_TAB=w1:t-old
 NEW_PANE=w1:p-new
 NEW_TAB=w1:t-new
+SPLIT_PANE=w1:p-old-split
+CAPTAIN_TAB=w1:t-captain
+NEIGHBOR_TAB=w1:t-neighbor
 mkdir -p "$STATE"
 {
   printf 'HERDR_SESSION=%s' "${HERDR_SESSION:-}"
@@ -248,19 +251,72 @@ arg_after() {
   done
   return 1
 }
+# The captain sits on its own tab; the husk tab is a sibling. MODE=activetab
+# instead parks the captain on the husk tab itself, which is exactly the shape
+# no exact-tab restore can survive.
+FOCUS_FILE="$STATE/focused-tab"
+if [ ! -f "$FOCUS_FILE" ]; then
+  if [ "$MODE" = activetab ]; then printf '%s' "$OLD_TAB" > "$FOCUS_FILE"
+  else printf '%s' "$CAPTAIN_TAB" > "$FOCUS_FILE"; fi
+fi
+focused_tab() { cat "$FOCUS_FILE"; }
+tab_rows() {  # "<tab_id> <label>"
+  printf '%s captain\n' "$CAPTAIN_TAB"
+  printf '%s neighbor\n' "$NEIGHBOR_TAB"
+  [ -e "$STATE/old-closed" ] || printf '%s fm-%s\n' "$OLD_TAB" "$ID"
+  [ ! -e "$STATE/new-created" ] || printf '%s fm-%s\n' "$NEW_TAB" "$ID"
+  return 0
+}
+pane_rows() {  # "<pane_id> <tab_id>"
+  printf 'w1:p-captain %s\n' "$CAPTAIN_TAB"
+  printf 'w1:p-neighbor %s\n' "$NEIGHBOR_TAB"
+  if [ ! -e "$STATE/old-closed" ]; then
+    printf '%s %s\n' "$OLD_PANE" "$OLD_TAB"
+    [ "$MODE" != split ] || printf '%s %s\n' "$SPLIT_PANE" "$OLD_TAB"
+  fi
+  [ ! -e "$STATE/new-created" ] || printf '%s %s\n' "$NEW_PANE" "$NEW_TAB"
+  return 0
+}
 case "${1:-} ${2:-}" in
   "status --json")
     printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
     ;;
   "workspace list")
-    printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n'
+    printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate","focused":true,"active_tab_id":"%s"}]}}\n' \
+      "$(focused_tab)"
     ;;
   "tab list")
-    if [ -e "$STATE/old-closed" ]; then
-      printf '{"result":{"tabs":[]}}\n'
+    focus=$(focused_tab)
+    sep=
+    printf '{"result":{"tabs":['
+    while read -r tid label; do
+      [ -n "$tid" ] || continue
+      if [ "$tid" = "$focus" ]; then flag=true; else flag=false; fi
+      printf '%s{"tab_id":"%s","label":"%s","workspace_id":"w1","focused":%s}' "$sep" "$tid" "$label" "$flag"
+      sep=,
+    done < <(tab_rows)
+    printf ']}}\n'
+    ;;
+  "pane list")
+    sep=
+    printf '{"result":{"panes":['
+    while read -r pid tid; do
+      [ -n "$pid" ] || continue
+      printf '%s{"pane_id":"%s","tab_id":"%s","workspace_id":"w1"}' "$sep" "$pid" "$tid"
+      sep=,
+    done < <(pane_rows)
+    printf ']}}\n'
+    ;;
+  "tab get")
+    tid=${3:-}
+    if tab_rows | cut -d' ' -f1 | grep -Fqx -- "$tid"; then
+      printf '{"result":{"tab":{"tab_id":"%s","workspace_id":"w1"}}}\n' "$tid"
     else
-      printf '{"result":{"tabs":[{"tab_id":"%s","label":"fm-%s","workspace_id":"w1"}]}}\n' "$OLD_TAB" "$ID"
+      json_not_found tab_not_found
     fi
+    ;;
+  "tab focus")
+    printf '%s' "${3:-}" > "$FOCUS_FILE"
     ;;
   "tab create")
     : > "$STATE/new-created"
@@ -296,7 +352,12 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   "pane close")
-    [ "${3:-}" = "$OLD_PANE" ] && : > "$STATE/old-closed"
+    # Herdr 0.7.4's last-pane close focuses an unrelated neighbor; the caller
+    # is only correct if it restores the exact pre-close tab afterwards.
+    if [ "${3:-}" = "$OLD_PANE" ]; then
+      : > "$STATE/old-closed"
+      printf '%s' "$NEIGHBOR_TAB" > "$FOCUS_FILE"
+    fi
     ;;
   "pane run")
     command=${4:-}
@@ -345,13 +406,17 @@ claim_herdr_slot() {  # <task-id> <worktree> [backend]
   fi
 }
 
-run_herdr_relaunch_spawn() {  # <id> <mode>
-  local id=$1 mode=$2 fake_dir herdr_fakebin_dir
+herdr_relaunch_focused_tab() {
+  cat "$CASE_DIR/herdr-fake/herdr-state/focused-tab" 2>/dev/null
+}
+
+run_herdr_relaunch_spawn() {  # <id> <mode> [target-backend]
+  local id=$1 mode=$2 target_backend=${3:-herdr} fake_dir herdr_fakebin_dir
   fake_dir="$CASE_DIR/herdr-fake"
   herdr_fakebin_dir=$(make_herdr_relaunch_fakebin "$fake_dir")
   : > "$fake_dir/herdr.log"
   mkdir -p "$fake_dir/herdr-state"
-  printf 'herdr\n' > "$HOME_DIR/config/backend"
+  printf '%s\n' "$target_backend" > "$HOME_DIR/config/backend"
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
@@ -632,7 +697,81 @@ test_same_id_herdr_dead_pane_reconciles_and_reuses_worktree() {
     "Herdr relaunch did not close the exact old pane"
   assert_contains "$log" $'tab\x1fcreate\x1f--workspace\x1fw1' \
     "Herdr relaunch did not create a replacement endpoint after reconciliation"
+  assert_contains "$log" $'tab\x1ffocus\x1fw1:t-captain' \
+    "Herdr relaunch did not restore the captain's exact pre-close tab"
+  [ "$(herdr_relaunch_focused_tab)" = w1:t-captain ] \
+    || fail "Herdr relaunch left the captain focused somewhere other than its pre-close tab"
   pass "a same-id Herdr relaunch closes a proven dead pane and reuses the recorded worktree"
+}
+
+# The husk is the captain's own active tab, so no exact-tab restore can survive
+# its close. The one focus-preserving close owner refuses instead of moving the
+# captain, and the relaunch refuses with it.
+test_same_id_herdr_active_tab_husk_refuses() {
+  local id out status log
+  id=claim-herdr-activetab-zf
+  make_claim_case claim-herdr-activetab "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" activetab)
+  status=$?
+  expect_code 1 "$status" "same-id relaunch should refuse to close the captain's active tab"
+  assert_contains "$out" "active tab" \
+    "the active-tab refusal did not name the focus boundary"
+  assert_contains "$out" "was left untouched" \
+    "the active-tab refusal did not say the endpoint survived"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_not_contains "$log" $'pane\x1fclose\x1fw1:p-old' \
+    "the active-tab husk was closed anyway"
+  assert_not_contains "$log" $'tab\x1fcreate\x1f--workspace\x1fw1' \
+    "the active-tab refusal created a duplicate endpoint"
+  [ "$(herdr_relaunch_focused_tab)" = w1:t-old ] \
+    || fail "the refused relaunch still moved the captain's focus"
+  pass "a same-id Herdr relaunch refuses an active-tab husk instead of stealing focus"
+}
+
+# A human split the husk pane in the Herdr UI. Closing the recorded pane would
+# leave the fm-<id> tab alive, and the create path refuses any surviving
+# same-labeled tab - so the proof must cover the tab, not just the pane.
+test_same_id_herdr_split_tab_refuses_without_closing() {
+  local id out status log
+  id=claim-herdr-split-zg
+  make_claim_case claim-herdr-split "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" split)
+  status=$?
+  expect_code 1 "$status" "same-id relaunch should refuse a husk whose tab holds another pane"
+  assert_contains "$out" "w1:t-old still holds another pane (w1:p-old-split)" \
+    "the split-tab refusal did not name the tab and the extra pane"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_not_contains "$log" $'pane\x1fclose\x1fw1:p-old' \
+    "the split-tab refusal destroyed the recorded pane anyway"
+  assert_not_contains "$log" $'tab\x1fcreate\x1f--workspace\x1fw1' \
+    "the split-tab refusal created a duplicate endpoint"
+  pass "a same-id Herdr relaunch refuses a husk that would leave its task tab behind"
+}
+
+# Reconciliation is symmetric with tmux adoption: it only runs when the recorded
+# AND the target backend are both herdr. A relaunch onto a different backend
+# still refuses and asks for explicit reconciliation instead of mutating Herdr.
+test_same_id_herdr_cross_backend_relaunch_refuses_without_closing() {
+  local id out status log
+  id=claim-herdr-cross-zh
+  make_claim_case claim-herdr-cross "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" dead zellij)
+  status=$?
+  expect_code 1 "$status" "a cross-backend same-id relaunch should refuse instead of reconciling Herdr"
+  assert_contains "$out" "until that endpoint is reconciled" \
+    "the cross-backend refusal did not ask for explicit reconciliation"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_not_contains "$log" $'pane\x1fclose\x1fw1:p-old' \
+    "a cross-backend relaunch closed the recorded Herdr pane"
+  [ ! -f "$COUNTFILE" ] || [ "$(cat "$COUNTFILE")" = 0 ] \
+    || fail "a refused cross-backend relaunch called treehouse get"
+  pass "a same-id relaunch onto another backend refuses without mutating Herdr"
 }
 
 test_same_id_herdr_alive_refuses_without_closing() {
@@ -706,5 +845,8 @@ test_same_id_herdr_dead_pane_reconciles_and_reuses_worktree
 test_same_id_herdr_alive_refuses_without_closing
 test_same_id_unverified_endpoint_refuses_without_get
 test_same_id_herdr_foreground_job_refuses_without_closing
+test_same_id_herdr_active_tab_husk_refuses
+test_same_id_herdr_split_tab_refuses_without_closing
+test_same_id_herdr_cross_backend_relaunch_refuses_without_closing
 
 echo "# all fm-spawn-worktree-claim tests passed"

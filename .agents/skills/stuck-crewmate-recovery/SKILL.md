@@ -31,7 +31,7 @@ Do not sweep another home's endpoints or infer ownership from a matching window 
 
 Before relaunch, prove that no live agent still owns the recorded task and that the existing worktree remains available.
 Preserve its uncommitted changes and commits, keep the same task identity, and invoke `bin/fm-spawn.sh <id> <project>` only after that proof; same-id relaunch reuses the recorded worktree directly and refuses a missing or conflicting record instead of allocating a fresh slot.
-Spawn reuses only a recorded endpoint it can prove is gone, a tmux window left as a bare shell, or a Herdr endpoint that the backend closes after proving it is one recognized idle shell with no foreground job and no child process.
+Spawn reuses only a recorded endpoint it can prove is gone, a tmux window left as a bare shell, or a Herdr endpoint that the backend closes after proving it is one recognized idle shell with no foreground job, no child process, and no sibling pane keeping its task tab alive - and that close still refuses when the husk is the captain's active tab.
 It refuses live, unreadable, unverified, or process-unproven endpoints rather than replacing them.
 Expect a Zellij or cmux task to refuse while its metadata exists at all, because those backends have no recovery classifier that can prove the old agent is gone.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
@@ -46,7 +46,8 @@ Escalate in order:
 3. If the crewmate is confused or looping, interrupt with the adapter's interrupt key, then redirect with one corrective line.
    For example, for a single-Escape adapter: `FM_HOME=<this-firstmate-home> bin/fm-send.sh <window> --key Escape`.
 4. If the crewmate is genuinely wedged after redirection, exit the agent with the adapter's exit command and relaunch with the same brief plus a `progress so far` note appended to it.
-   A tmux window left as a bare shell is reused in place; a Herdr restored shell is closed only by the backend's positive no-agent process proof; on every other backend close the endpoint before relaunching, or the same-id spawn refuses.
+   A tmux window left as a bare shell is reused in place; a Herdr restored shell is closed only by the backend's positive no-agent process proof, and only when the relaunch also targets herdr; on every other backend close the endpoint before relaunching, or the same-id spawn refuses.
+   If Herdr refuses because the husk is your active tab or because someone split its pane, focus another tab or close the extra pane in Herdr's UI and relaunch.
    Genuine wedging means looping, unresponsive, repeating the same obstacle, or truly dead.
    A low context reading is not wedging; modern harnesses auto-compact and keep going.
    The worktree and commits persist, so relaunch is cheap.

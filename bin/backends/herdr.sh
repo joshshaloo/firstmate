@@ -30,6 +30,9 @@
 # exact active workspace and tab. Herdr 0.7.4's last-pane close can focus an
 # unrelated neighbor, so projected cleanup serializes and restores only the
 # exact pre-close tab id, while refusing to close the active tab itself.
+# Every Herdr pane close - projected cleanup, session cleanup, and same-id
+# relaunch reconciliation alike - goes through that one focus-preserving close
+# owner, so an active-tab husk refuses rather than moving the captain's focus.
 #
 # Target string shape: "<herdr-session>:<pane-id>", e.g. "default:w1:p2" (the
 # pane id itself contains a colon; the session is always the FIRST field, the
@@ -1307,21 +1310,53 @@ fm_backend_herdr_pane_process_is_idle_shell() {  # <session> <pane-id>
   esac
 }
 
+# fm_backend_herdr_pane_is_tab_sole_pane: the condition that actually unblocks a
+# same-id relaunch is fm_backend_herdr_create_task's refusal of any surviving
+# fm-<id> tab, not the death of one pane. Herdr drops a tab when its last pane
+# goes, so closing the recorded pane frees the label only while that pane is its
+# tab's only pane; a human-added split leaves the tab (and the refusal) behind.
+fm_backend_herdr_pane_is_tab_sole_pane() {  # <session> <pane-id>
+  local session=$1 pane=$2 info tab workspace panes others
+  info=$(fm_backend_herdr_cli "$session" pane get "$pane" 2>/dev/null) || return 1
+  tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
+  workspace=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
+  [ -n "$tab" ] && [ -n "$workspace" ] || return 1
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
+  others=$(printf '%s' "$panes" | jq -er --arg tab "$tab" --arg pane "$pane" '
+    (.result.panes | select(type == "array"))
+    | [.[] | select(.tab_id == $tab)] as $siblings
+    | select(([$siblings[] | select(.pane_id == $pane)] | length) == 1)
+    | [$siblings[] | select(.pane_id != $pane) | .pane_id]
+    | join(" ")
+  ' 2>/dev/null) || return 1
+  [ -z "$others" ] || {
+    echo "error: herdr tab $tab still holds another pane ($others) besides the recorded pane $pane; closing it would leave the task tab behind" >&2
+    return 1
+  }
+}
+
 # fm_backend_herdr_reconcile_dead_endpoint: close one exact recorded endpoint
-# only after re-proving it is a restored shell, not an agent-owned pane.
+# only after re-proving it is a restored shell, not an agent-owned pane, and
+# that closing it actually frees the task tab the create path checks.
+# The close goes through the one focus-preserving close owner, so it snapshots
+# and restores the captain's exact workspace and tab and refuses outright when
+# the husk is the active tab.
+# Exit codes: 0 the pane is confirmed gone, 1 refused with nothing mutated,
+# 2 the close was issued but its outcome could not be confirmed.
 fm_backend_herdr_reconcile_dead_endpoint() {  # <target>
-  local target=$1 session pane state
+  local target=$1 session pane state close_status
   fm_backend_herdr_parse_target "$target" || return 1
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
   fm_backend_herdr_server_ensure "$session" || return 1
   state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
   [ "$state" = no-agent ] || return 1
+  fm_backend_herdr_pane_is_tab_sole_pane "$session" "$pane" || return 1
   fm_backend_herdr_pane_process_is_idle_shell "$session" "$pane" || return 1
-  state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
-  [ "$state" = no-agent ] || return 1
-  fm_backend_herdr_cli "$session" pane close "$pane" >/dev/null 2>&1 || return 1
-  [ "$(fm_backend_herdr_pane_agent_state "$session" "$pane")" = dead ]
+  fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane" no-agent
+  close_status=$?
+  [ "$close_status" -eq 0 ] || return "$close_status"
+  [ "$(fm_backend_herdr_pane_agent_state "$session" "$pane")" = dead ] || return 2
 }
 
 # fm_backend_herdr_agent_state: recovery-grade state for the same session-start

@@ -994,7 +994,7 @@ REUSE_RECORDED_ENDPOINT=0
 RECORDED_RELAUNCH_TARGET=
 prepare_recorded_worktree_relaunch() {
   local meta="$STATE/$ID.meta" old_kind recorded recorded_real recorded_project recorded_project_real claim
-  local old_backend old_target old_state
+  local old_backend old_target old_state reconcile_status
   [ "$KIND" != secondmate ] || return 0
   [ "$BACKEND" != orca ] || return 0
   [ -e "$meta" ] || [ -L "$meta" ] || return 0
@@ -1046,11 +1046,16 @@ prepare_recorded_worktree_relaunch() {
     dead)
       if [ "$old_backend" = tmux ] && [ "$BACKEND" = tmux ]; then
         REUSE_RECORDED_ENDPOINT=1
-      elif [ "$old_backend" = herdr ]; then
-        fm_backend_herdr_reconcile_dead_endpoint "$old_target" || {
-          echo "error: existing herdr endpoint for $ID is still present without a live agent, but it is not a provably idle childless shell; refusing duplicate launch" >&2
+      elif [ "$old_backend" = herdr ] && [ "$BACKEND" = herdr ]; then
+        fm_backend_herdr_reconcile_dead_endpoint "$old_target"
+        reconcile_status=$?
+        if [ "$reconcile_status" -eq 2 ]; then
+          echo "error: existing herdr endpoint for $ID was closed during reconciliation but its disappearance could not be confirmed; refusing duplicate launch until that endpoint is verified by hand" >&2
           return 1
-        }
+        elif [ "$reconcile_status" -ne 0 ]; then
+          echo "error: existing herdr endpoint for $ID is still present without a live agent and was left untouched, because it is not a provably idle childless shell that this relaunch may close; refusing duplicate launch" >&2
+          return 1
+        fi
       else
         echo "error: existing $old_backend endpoint for $ID is still present without a live agent; refusing duplicate launch until that endpoint is reconciled" >&2
         return 1
@@ -1117,7 +1122,14 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
       echo "error: existing herdr metadata for $ID has inconsistent endpoint identities; refusing duplicate launch" >&2
       return 1
     }
-    [ -n "$old_workspace" ] && [ -n "$old_tab" ] || return 1
+    [ -n "$old_workspace" ] || {
+      echo "error: existing herdr metadata for $ID records an empty herdr_workspace_id; refusing duplicate launch" >&2
+      return 1
+    }
+    [ -n "$old_tab" ] || {
+      echo "error: existing herdr metadata for $ID records an empty herdr_tab_id; refusing duplicate launch" >&2
+      return 1
+    }
     fm_backend_herdr_server_ensure "$old_session" || {
       echo "error: existing herdr endpoint for $ID could not be inspected; refusing duplicate launch" >&2
       return 1

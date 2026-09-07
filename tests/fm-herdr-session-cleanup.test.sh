@@ -26,9 +26,9 @@ export FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY=1
 unset FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY
 
 LINUX_PROCESS_INFO='{"result":{"process_info":{"foreground_processes":[{"argv":["/bin/sh"],"name":"sh","pid":67}]}}}'
-[ "$(fm_herdr_cleanup_process_argv0 "$LINUX_PROCESS_INFO")" = /bin/sh ] \
+[ "$(fm_backend_herdr_process_argv0 "$LINUX_PROCESS_INFO")" = /bin/sh ] \
   || fail "Linux Herdr process argv array was not accepted"
-if fm_herdr_cleanup_process_argv0 \
+if fm_backend_herdr_process_argv0 \
   '{"result":{"process_info":{"foreground_processes":[{"argv":[67],"name":"sh","pid":67}]}}}' \
   >/dev/null 2>&1; then
   fail "non-string Herdr process argv was accepted"
@@ -54,7 +54,7 @@ fm_lock_try_acquire() {
   mkdir "$1" 2>/dev/null
 }
 fm_lock_release() { rm -rf -- "$1"; }
-fm_herdr_cleanup_process_is_idle_shell() { [ ! -e "$FIXTURE_DIR/process-unsafe" ]; }
+fm_backend_herdr_pane_process_is_idle_shell() { [ ! -e "$FIXTURE_DIR/process-unsafe" ]; }
 fm_backend_herdr_projection_focus_snapshot() {
   [ ! -e "$FIXTURE_DIR/focus-unreadable" ] || return 1
   printf 'w1\t%s' "$(cat "$FIXTURE_DIR/active-tab")"

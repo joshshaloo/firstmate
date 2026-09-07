@@ -216,6 +216,158 @@ run_claim_spawn() {  # <id> [windows] [command]
     "$SPAWN" "$id" "$PROJ_DIR" 2>&1
 }
 
+make_herdr_relaunch_fakebin() {  # <dir> -> echoes fakebin dir
+  local dir=$1 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+LOG="${FM_FAKE_HERDR_RELAUNCH_LOG:?}"
+STATE="${FM_FAKE_HERDR_RELAUNCH_STATE:?}"
+ID="${FM_FAKE_HERDR_RELAUNCH_ID:?}"
+WT="${FM_FAKE_HERDR_RELAUNCH_WT:?}"
+PROJ="${FM_FAKE_PROJECT_DIR:?}"
+MODE="${FM_FAKE_HERDR_RELAUNCH_MODE:?}"
+OLD_PANE=w1:p-old
+OLD_TAB=w1:t-old
+NEW_PANE=w1:p-new
+NEW_TAB=w1:t-new
+mkdir -p "$STATE"
+{
+  printf 'HERDR_SESSION=%s' "${HERDR_SESSION:-}"
+  for a in "$@"; do printf '\x1f%s' "$a"; done
+  printf '\n'
+} >> "$LOG"
+json_not_found() { printf '{"error":{"code":"%s"}}\n' "$1"; }
+arg_after() {
+  local want=$1 prev= arg
+  shift
+  for arg in "$@"; do
+    if [ "$prev" = "$want" ]; then printf '%s' "$arg"; return 0; fi
+    prev=$arg
+  done
+  return 1
+}
+case "${1:-} ${2:-}" in
+  "status --json")
+    printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
+    ;;
+  "workspace list")
+    printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n'
+    ;;
+  "tab list")
+    if [ -e "$STATE/old-closed" ]; then
+      printf '{"result":{"tabs":[]}}\n'
+    else
+      printf '{"result":{"tabs":[{"tab_id":"%s","label":"fm-%s","workspace_id":"w1"}]}}\n' "$OLD_TAB" "$ID"
+    fi
+    ;;
+  "tab create")
+    : > "$STATE/new-created"
+    printf '%s\n' "$PROJ" > "$STATE/current-path"
+    printf '{"result":{"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$NEW_TAB" "$NEW_PANE"
+    ;;
+  "pane get")
+    pane=${3:-}
+    if [ "$pane" = "$OLD_PANE" ]; then
+      if [ -e "$STATE/old-closed" ]; then json_not_found pane_not_found; else printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"w1"}}}\n' "$OLD_PANE" "$OLD_TAB"; fi
+    elif [ "$pane" = "$NEW_PANE" ] && [ -e "$STATE/new-created" ]; then
+      path=$(cat "$STATE/current-path" 2>/dev/null || printf '%s' "$PROJ")
+      printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"w1","foreground_cwd":"%s"}}}\n' "$NEW_PANE" "$NEW_TAB" "$path"
+    else
+      json_not_found pane_not_found
+    fi
+    ;;
+  "agent get")
+    pane=${3:-}
+    if [ "$pane" = "$OLD_PANE" ] && [ "$MODE" = alive ]; then
+      printf '{"result":{"agent":{"agent_status":"idle"}}}\n'
+    else
+      json_not_found agent_not_found
+    fi
+    ;;
+  "pane process-info")
+    pane=$(arg_after --pane "$@" || true)
+    [ "$pane" = "$OLD_PANE" ] || { json_not_found pane_not_found; exit 0; }
+    if [ "$MODE" = fgjob ]; then
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":67,"foreground_process_group_id":99,"foreground_processes":[{"pid":99,"name":"sleep","argv":["/bin/sleep","100"]}]}}}\n' "$OLD_PANE"
+    else
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"pid":67,"name":"bash","argv":["/bin/bash"]}]}}}\n' "$OLD_PANE"
+    fi
+    ;;
+  "pane close")
+    [ "${3:-}" = "$OLD_PANE" ] && : > "$STATE/old-closed"
+    ;;
+  "pane run")
+    command=${4:-}
+    case "$command" in cd\ *) printf '%s\n' "$WT" > "$STATE/current-path" ;; esac
+    ;;
+  *) : ;;
+esac
+SH
+  chmod +x "$fakebin/herdr"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  '-axo pid=,ppid=') printf '67 1\n' ;;
+  '-p 67 -o stat=') printf 'S\n' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  fm_fake_exit0 "$fakebin" treehouse
+  printf '%s\n' "$fakebin"
+}
+
+claim_herdr_slot() {  # <task-id> <worktree> [backend]
+  local id=$1 worktree=$2 backend=${3:-herdr}
+  if [ "$backend" = herdr ]; then
+    fm_write_meta "$HOME_DIR/state/$id.meta" \
+      "window=default:w1:p-old" \
+      "endpoint_task_id=$id" \
+      "worktree=$worktree" \
+      "project=$PROJ_DIR" \
+      "harness=codex" \
+      "kind=ship" \
+      "mode=no-mistakes" \
+      "yolo=off" \
+      "tasktmp=/tmp/fm-$id" \
+      "model=default" \
+      "effort=default" \
+      "backend=herdr" \
+      "herdr_session=default" \
+      "herdr_workspace_id=w1" \
+      "herdr_tab_id=w1:t-old" \
+      "herdr_pane_id=w1:p-old"
+  else
+    claim_slot "$id" "$worktree" "$backend"
+  fi
+}
+
+run_herdr_relaunch_spawn() {  # <id> <mode>
+  local id=$1 mode=$2 fake_dir herdr_fakebin_dir
+  fake_dir="$CASE_DIR/herdr-fake"
+  herdr_fakebin_dir=$(make_herdr_relaunch_fakebin "$fake_dir")
+  : > "$fake_dir/herdr.log"
+  mkdir -p "$fake_dir/herdr-state"
+  printf 'herdr\n' > "$HOME_DIR/config/backend"
+  FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    FM_SPAWN_NO_GUARD=1 FM_SPAWN_WORKTREE_POLLS=3 \
+    HERDR_ENV='' HERDR_PANE_ID='' HERDR_SOCKET_PATH='' HERDR_TAB_ID='' HERDR_WORKSPACE_ID='' \
+    FM_SPAWN_WORKTREE_POLL_INTERVAL=0.05 FM_HERDR_PS_BIN=ps \
+    FM_FAKE_PROJECT_DIR="$PROJ_DIR" \
+    FM_FAKE_HERDR_RELAUNCH_LOG="$fake_dir/herdr.log" \
+    FM_FAKE_HERDR_RELAUNCH_STATE="$fake_dir/herdr-state" \
+    FM_FAKE_HERDR_RELAUNCH_ID="$id" \
+    FM_FAKE_HERDR_RELAUNCH_WT="$SLOT_A" \
+    FM_FAKE_HERDR_RELAUNCH_MODE="$mode" \
+    PATH="$herdr_fakebin_dir:$PATH" \
+    "$SPAWN" "$id" "$PROJ_DIR" --harness 'echo launched' 2>&1
+}
+
 # Incident shape 1: the pool offers a slot a live task already records as its
 # worktree. Metadata outranks treehouse's process detection, so the slot is
 # refused; with nothing else to offer, the spawn fails naming the claimant
@@ -457,6 +609,89 @@ test_unclassifiable_claim_is_still_refused() {
   pass "a claim with no classifiable liveness is refused, not assumed free"
 }
 
+test_same_id_herdr_dead_pane_reconciles_and_reuses_worktree() {
+  local id out status log
+  id=claim-herdr-dead-zb
+  make_claim_case claim-herdr-dead "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" dead)
+  status=$?
+  expect_code 0 "$status" "same-id relaunch should reconcile a dead Herdr pane and reuse its worktree"
+  assert_contains "$out" "spawned $id" "Herdr relaunch did not report success"
+  assert_grep "worktree=$SLOT_A" "$HOME_DIR/state/$id.meta" \
+    "Herdr relaunch did not preserve the recorded worktree"
+  assert_grep "window=default:w1:p-new" "$HOME_DIR/state/$id.meta" \
+    "Herdr relaunch did not record the replacement pane"
+  [ ! -f "$COUNTFILE" ] || [ "$(cat "$COUNTFILE")" = 0 ] \
+    || fail "Herdr same-id relaunch called treehouse get instead of reusing the recorded worktree"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_contains "$log" $'pane\x1fprocess-info\x1f--pane\x1fw1:p-old' \
+    "Herdr relaunch did not prove the old pane process state"
+  assert_contains "$log" $'pane\x1fclose\x1fw1:p-old' \
+    "Herdr relaunch did not close the exact old pane"
+  assert_contains "$log" $'tab\x1fcreate\x1f--workspace\x1fw1' \
+    "Herdr relaunch did not create a replacement endpoint after reconciliation"
+  pass "a same-id Herdr relaunch closes a proven dead pane and reuses the recorded worktree"
+}
+
+test_same_id_herdr_alive_refuses_without_closing() {
+  local id out status log
+  id=claim-herdr-live-zc
+  make_claim_case claim-herdr-live "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" alive)
+  status=$?
+  expect_code 1 "$status" "same-id relaunch should refuse a live Herdr endpoint"
+  assert_contains "$out" "still has a live agent" \
+    "Herdr live refusal did not name the live-agent risk"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_not_contains "$log" $'pane\x1fclose\x1fw1:p-old' \
+    "Herdr live refusal closed the old pane"
+  assert_not_contains "$log" $'tab\x1fcreate\x1f--workspace\x1fw1' \
+    "Herdr live refusal created a duplicate endpoint"
+  pass "a same-id Herdr relaunch refuses a live endpoint without closing it"
+}
+
+test_same_id_unverified_endpoint_refuses_without_get() {
+  local id out status
+  id=claim-unverified-self-zd
+  make_claim_case claim-unverified-self "$id"
+  offer_slots "$SLOT_A"
+  claim_herdr_slot "$id" "$SLOT_A" zellij
+
+  out=$(run_herdr_relaunch_spawn "$id" dead)
+  status=$?
+  expect_code 1 "$status" "same-id relaunch should refuse an unverified old backend"
+  assert_contains "$out" "is unverified" \
+    "unverified endpoint refusal did not name the unverified state"
+  [ ! -f "$COUNTFILE" ] || [ "$(cat "$COUNTFILE")" = 0 ] \
+    || fail "unverified same-id relaunch called treehouse get"
+  pass "a same-id relaunch refuses an unverified old endpoint without treehouse get"
+}
+
+test_same_id_herdr_foreground_job_refuses_without_closing() {
+  local id out status log
+  id=claim-herdr-fgjob-ze
+  make_claim_case claim-herdr-fgjob "$id"
+  claim_herdr_slot "$id" "$SLOT_A"
+
+  out=$(run_herdr_relaunch_spawn "$id" fgjob)
+  status=$?
+  expect_code 1 "$status" "same-id relaunch should refuse when Herdr process proof fails"
+  assert_contains "$out" "not a provably idle childless shell" \
+    "Herdr process-proof refusal did not explain the safety reason"
+  log=$(cat "$CASE_DIR/herdr-fake/herdr.log")
+  assert_contains "$log" $'pane\x1fprocess-info\x1f--pane\x1fw1:p-old' \
+    "Herdr process-proof case did not inspect process info"
+  assert_not_contains "$log" $'pane\x1fclose\x1fw1:p-old' \
+    "Herdr process-proof failure still closed the old pane"
+  assert_not_contains "$log" $'tab\x1fcreate\x1f--workspace\x1fw1' \
+    "Herdr process-proof failure created a duplicate endpoint"
+  pass "a same-id Herdr relaunch refuses a pane with a foreground job instead of closing it"
+}
+
 test_live_claim_is_refused
 test_retry_lands_on_clean_slot
 test_ghost_claim_is_named_not_discarded
@@ -467,5 +702,9 @@ test_same_id_relaunch_refuses_conflicting_record_claim_without_get
 test_unproven_guards_refuse_before_get
 test_guard_ignoring_treehouse_is_refused_and_retried
 test_unclassifiable_claim_is_still_refused
+test_same_id_herdr_dead_pane_reconciles_and_reuses_worktree
+test_same_id_herdr_alive_refuses_without_closing
+test_same_id_unverified_endpoint_refuses_without_get
+test_same_id_herdr_foreground_job_refuses_without_closing
 
 echo "# all fm-spawn-worktree-claim tests passed"

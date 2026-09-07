@@ -165,14 +165,13 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantee: a pre-existing captain-owned workspace with a seed-shaped tab was adopted for routing but its tab was never eligible for prune because the current create call did not return that seed id.
 
-Restart-husk duplicate refusal is owned by:
+Same-id Herdr relaunch recovery is owned by:
 
 ```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-respawn-idem-e2e.test.sh
+tests/fm-spawn-worktree-claim.test.sh
 ```
 
-Observed guarantee: a restored no-agent tab is refused and left intact for explicit reconciliation, and a registered live agent is also refused without being touched.
+Observed guarantee on 2026-09-07 with the fake Herdr suite: a restored no-agent tab is closed only after the idle-shell process proof succeeds and the recorded worktree is reused; live, unverified, and foreground-job endpoints refuse without treehouse allocation or pane closure.
 
 ### Launcher workspace placement
 
@@ -260,7 +259,7 @@ ok - real Herdr lab: multi-home exact-pane teardowns restore captain focus witho
 ok - real Herdr lab validation completed on Herdr 0.7.4 with the default-session tripwire intact
 ```
 
-The suite also covers lost or failed move responses, active-tab refusal, restart husks, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
+The suite also covers lost or failed move responses, active-tab refusal, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
 
 The mandatory projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 16:
 
@@ -277,7 +276,7 @@ ok - real Herdr lab validation completed on Herdr 0.7.5 with the default-session
 ```
 
 That run's same-identity, secondmate-binding, and concurrent cross-home cases observed in-place husk replacement, which is no longer the contract.
-Those cases now assert that each relaunch is refused with the husk, workspace, journal, and focus left intact; [restart and liveness behavior](../herdr-backend.md#restart-and-liveness-behavior) owns the current rule and "Restart-husk duplicate refusal" above owns its evidence.
+[Restart and liveness behavior](../herdr-backend.md#restart-and-liveness-behavior) owns the current rule and "Same-id Herdr relaunch recovery" above owns its current deterministic evidence.
 
 The restored-shell session-start cleanup ran on 2026-07-24 against Herdr 0.7.5 protocol 17:
 

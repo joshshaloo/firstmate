@@ -299,7 +299,7 @@ The mechanics are owned by the `/updatefirstmate` skill and firstmate's operatin
 ## Restart-proof
 
 Fleet state lives in each task's session-provider backend (tmux by hard default, herdr or cmux when selected or auto-detected, zellij/orca when explicitly selected), no-mistakes run records, status event logs, local markdown under `data/` including `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, and persistent secondmate homes.
-For Herdr, respawning after a server-restored layout refuses same-labeled task-tab husks so the stale tab is reconciled explicitly before any replacement endpoint is created.
+For Herdr, respawning after a server-restored layout reuses the recorded worktree and closes a same-task restored shell only after the backend proves the exact pane has no agent, no foreground job, and no child process; every unproven endpoint still refuses before any replacement endpoint is created.
 At session start, confirmed-dead secondmate agent endpoints are closed and relaunched through the same secondmate spawn path, while ambiguous liveness reads are left untouched to avoid duplicate supervisors.
 Use `/stow` before an intentional reset when the conversation may hold durable knowledge that has not yet been written to disk; after that, the next firstmate session can reconcile and carry on.
 

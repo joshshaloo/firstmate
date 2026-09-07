@@ -105,8 +105,10 @@
 #   A same-id relaunch whose recorded endpoint is missing, or whose tmux endpoint is
 #   a dead shell, reuses its recorded worktree directly without treehouse get; a
 #   missing recorded worktree or conflicting claim refuses instead of allocating a
-#   fresh slot. An exhausted pool fails the spawn with every claiming task named. A
-#   claim whose task is no longer running is named the same way and is never
+#   fresh slot. A refused slot is re-requested up to FM_SPAWN_WORKTREE_ATTEMPTS times
+#   (default 3, with FM_SPAWN_WORKTREE_POLLS/FM_SPAWN_WORKTREE_POLL_INTERVAL bounding
+#   each attempt's settle wait); an exhausted pool fails the spawn with every claiming
+#   task named. A claim whose task is no longer running is named the same way and is never
 #   discarded here - only fm-teardown.sh releases a claim.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]

@@ -269,15 +269,15 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-backend-herdr-presentation-e2e.test.sh
 ```
 
-Observed restart-reclaim guarantees:
+Observed restart guarantees that remain active from that run:
 
 ```text
-ok - real Herdr lab: Hi Bit and Wheelhouse-style same-identity restarts reclaim one nested space with exact focus and idempotence
-ok - real Herdr lab: secondmate restart binding and reclaim stay isolated to the exact child home and parent
-ok - real Herdr lab: concurrent cross-home recoveries replace exact husks under one session lock with no focus drift
 ok - real Herdr lab: missing, renamed, and duplicate tokens trigger zero destructive or adoptive calls, and live duplicate risk refuses launch
 ok - real Herdr lab validation completed on Herdr 0.7.5 with the default-session tripwire intact
 ```
+
+That run's same-identity, secondmate-binding, and concurrent cross-home cases observed in-place husk replacement, which is no longer the contract.
+Those cases now assert that each relaunch is refused with the husk, workspace, journal, and focus left intact; [restart and liveness behavior](../herdr-backend.md#restart-and-liveness-behavior) owns the current rule and "Restart-husk duplicate refusal" above owns its evidence.
 
 The restored-shell session-start cleanup ran on 2026-07-24 against Herdr 0.7.5 protocol 17:
 

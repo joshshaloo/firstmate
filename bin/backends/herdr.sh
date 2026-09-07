@@ -1270,8 +1270,8 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
 }
 
 # fm_backend_herdr_agent_state: recovery-grade state for the same session-start
-# sweep as the tmux classifier. It reuses fm_backend_herdr_pane_agent_state
-# rather than creating a second Herdr state machine: a structurally gone pane is `missing`,
+# sweep as the tmux classifier. It reuses fm_backend_herdr_pane_agent_state rather
+# than creating a second Herdr state machine: a structurally gone pane is `missing`,
 # a confirmed agent-less pane is `dead`, a registered agent is `alive`, and an
 # unexpected or failed API read is `unreadable`.
 fm_backend_herdr_agent_state() {  # <target>

@@ -31,7 +31,8 @@ Do not sweep another home's endpoints or infer ownership from a matching window 
 
 Before relaunch, prove that no live agent still owns the recorded task and that the existing worktree remains available.
 Preserve its uncommitted changes and commits, keep the same task identity, and invoke `bin/fm-spawn.sh <id> <project>` only after that proof; same-id relaunch reuses the recorded worktree directly and refuses a missing or conflicting record instead of allocating a fresh slot.
-If Herdr still has a same-labeled task tab, reconcile that stale tab explicitly before relaunch because spawn now refuses it rather than replacing it.
+Spawn reuses only a recorded endpoint it can prove is gone, plus a tmux window left as a bare shell, and refuses every other surviving endpoint rather than replacing it.
+So close or otherwise reconcile a restored Herdr task tab first, and expect a Zellij or cmux task to refuse while its metadata exists at all, because those backends have no recovery classifier that can prove the old agent is gone.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
 
@@ -44,6 +45,7 @@ Escalate in order:
 3. If the crewmate is confused or looping, interrupt with the adapter's interrupt key, then redirect with one corrective line.
    For example, for a single-Escape adapter: `FM_HOME=<this-firstmate-home> bin/fm-send.sh <window> --key Escape`.
 4. If the crewmate is genuinely wedged after redirection, exit the agent with the adapter's exit command and relaunch with the same brief plus a `progress so far` note appended to it.
+   A tmux window left as a bare shell is reused in place; on every other backend close the endpoint before relaunching, or the same-id spawn refuses.
    Genuine wedging means looping, unresponsive, repeating the same obstacle, or truly dead.
    A low context reading is not wedging; modern harnesses auto-compact and keep going.
    The worktree and commits persist, so relaunch is cheap.

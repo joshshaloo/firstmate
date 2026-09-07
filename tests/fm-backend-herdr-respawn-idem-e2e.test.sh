@@ -33,6 +33,9 @@
 # session is never touched.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -51,12 +54,14 @@ herdr_forget_inherited_pane
 
 SESSION="fm-lab-respawn-idem-e2e-$$"
 export HERDR_SESSION="$SESSION"
-SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-respawn-idem.XXXXXX")
+fm_test_tmproot SCRATCH fm-herdr-respawn-idem
+CLEANED=0
 cleanup_all() {
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   herdr_safe_stop_and_delete "$SESSION"
-  rm -rf "$SCRATCH"
 }
-trap cleanup_all EXIT
+fm_test_at_exit cleanup_all
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # shellcheck source=/dev/null
@@ -164,4 +169,3 @@ fm_backend_herdr_kill "$SESSION:$CREW_PANE_ID"
 fm_backend_herdr_kill "$SESSION:$SM_PANE_ID"
 
 cleanup_all
-trap - EXIT

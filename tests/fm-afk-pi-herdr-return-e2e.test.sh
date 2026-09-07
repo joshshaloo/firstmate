@@ -31,7 +31,7 @@ done
 
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 SESSION=$("$LAB_HELPER" name fm-afk-pi-return-e2e)
-TMP_ROOT=$(fm_test_tmproot fm-afk-pi-return-e2e)
+fm_test_tmproot TMP_ROOT fm-afk-pi-return-e2e
 HOME_DIR="$TMP_ROOT/home"
 STATE="$HOME_DIR/state"
 PROJECT="$TMP_ROOT/project"
@@ -46,20 +46,16 @@ PRIMARY_TARGET=
 DAEMON_STARTED=0
 
 cleanup() {
-  local rc=$?
-  trap - EXIT
   if [ "$DAEMON_STARTED" -eq 1 ]; then
     PATH="$FAKEBIN:$ORIGINAL_PATH" HERDR_SESSION="$SESSION" FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$STATE" \
       FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="$PRIMARY_TARGET" \
       "$ROOT/bin/fm-afk-launch.sh" stop >/dev/null 2>&1 || true
   fi
   if ! "$LAB_HELPER" teardown "$SESSION"; then
-    rc=1
+    FM_TEST_EXIT_STATUS=1
   fi
-  rm -rf "$TMP_ROOT"
-  exit "$rc"
 }
-trap cleanup EXIT
+fm_test_at_exit cleanup
 "$LAB_HELPER" provision "$SESSION"
 
 mkdir -p "$HOME_DIR"/{state,data,config,projects} "$PROJECT" "$PI_DIR" "$FAKEBIN"

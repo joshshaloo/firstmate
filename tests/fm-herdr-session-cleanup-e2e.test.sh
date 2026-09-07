@@ -4,6 +4,9 @@
 # lab teardown verifies that the default fleet session is byte-identical.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
@@ -17,7 +20,7 @@ command -v python3 >/dev/null 2>&1 || { echo 'skip: python3 not found'; exit 0; 
 
 REAL_HERDR=$(command -v herdr)
 HERDR_ORIGINAL_PATH=$PATH
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-session-cleanup-e2e.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-herdr-session-cleanup-e2e
 FAKEBIN="$TMP_ROOT/fakebin"
 HOME_DIR="$TMP_ROOT/home"
 mkdir -p "$FAKEBIN" "$HOME_DIR/state" "$HOME_DIR/config"
@@ -27,12 +30,10 @@ printf '%s\n' herdr > "$HOME_DIR/config/backend"
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-herdr-session-start-stale-projection-cleanup-r1)
 export HERDR_LAB_HELPER HERDR_LAB_SESSION REAL_HERDR HERDR_ORIGINAL_PATH
 cleanup() {
-  local status=$?
-  env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || status=1
-  rm -rf "$TMP_ROOT"
-  exit "$status"
+  env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" \
+    || FM_TEST_EXIT_STATUS=1
 }
-trap cleanup EXIT
+fm_test_at_exit cleanup
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
 
 # Keep the lab helper as the only CLI transport. Production adapter calls have

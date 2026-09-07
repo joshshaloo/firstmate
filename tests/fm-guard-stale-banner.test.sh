@@ -10,7 +10,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-guard-stale-banner)
+fm_test_tmproot TMP_ROOT fm-guard-stale-banner
 
 make_guard_case() {
   local name=$1 dir home root

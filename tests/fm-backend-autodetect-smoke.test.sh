@@ -26,6 +26,9 @@
 # with an ambient HERDR_SESSION-only command.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
@@ -58,29 +61,24 @@ herdr_forget_inherited_pane
 # backend cwd reads before the worktree-discovery comparison.
 # The dedicated regression is
 # tests/fm-backend.test.sh:test_spawn_symlinked_project_prefix_avoids_false_refusal.
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-backend-autodetect-smoke.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-backend-autodetect-smoke
 HERDR_LAB_HELPER="$ROOT/bin/fm-herdr-lab.sh"
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-autodetect-smoke-concurrency-h3) || {
-  rm -rf "$TMP_ROOT"
   fail "could not generate an isolated Herdr lab session name"
 }
 export HERDR_SESSION="$HERDR_LAB_SESSION"
 ID="autodetectsmoke1"
 WT=
+CLEANED=0
 cleanup_all() {
   local cleanup_status=0
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   [ -n "$WT" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT" >/dev/null 2>&1
   "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || cleanup_status=$?
-  rm -rf "$TMP_ROOT"
   return "$cleanup_status"
 }
-on_exit() {
-  local status=$?
-  cleanup_all || status=$?
-  trap - EXIT
-  exit "$status"
-}
-trap on_exit EXIT
+fm_test_at_exit 'cleanup_all || FM_TEST_EXIT_STATUS=$?'
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
 
 # --- scratch world: FM_HOME with NO backend config, one throwaway project ---
@@ -164,8 +162,6 @@ WT=
 pass "real herdr: teardown completes the auto-detected spawn/teardown cycle (meta cleared, pane closed)"
 
 if ! cleanup_all; then
-  trap - EXIT
   fail "isolated Herdr lab teardown failed or the default fleet session changed"
 fi
-trap - EXIT
 pass "real herdr: isolated lab session removed and default fleet session unchanged"

@@ -8,6 +8,9 @@
 # actual sessions.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -29,18 +32,18 @@ wait_for_capture_text() {  # <target> <text> [samples]
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-backend-smoke-$$"
-SHIM_DIR=
-trap cleanup_all EXIT
-
+CLEANED=0
 cleanup_all() {
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  [ -n "${SHIM_DIR:-}" ] && rm -rf "$SHIM_DIR"
 }
+fm_test_at_exit cleanup_all
 
 # A `tmux` shim on PATH that transparently redirects every call to the private
 # socket, so bin/backends/tmux.sh's bare `tmux ...` invocations never touch the
 # host's real sessions.
-SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-backend-smoke.XXXXXX")
+fm_test_tmproot SHIM_DIR fm-backend-smoke
 cat > "$SHIM_DIR/tmux" <<SH
 #!/usr/bin/env bash
 exec "$REAL_TMUX" -L "$SOCKET" "\$@"
@@ -193,4 +196,3 @@ fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead 
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
 
 cleanup_all
-trap - EXIT

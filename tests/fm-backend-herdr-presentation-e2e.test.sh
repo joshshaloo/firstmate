@@ -6,7 +6,9 @@
 # and the guarded named-session lab helper.
 set -u
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -20,7 +22,7 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found"; exit
 REAL_HERDR=$(command -v herdr)
 REAL_TREEHOUSE=$(command -v treehouse)
 HERDR_ORIGINAL_PATH=$PATH
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-presentation.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-herdr-presentation
 FAKEBIN="$TMP_ROOT/fakebin"
 HERDR_CALL_LOG="$TMP_ROOT/herdr-calls.log"
 TREEHOUSE_CALL_LOG="$TMP_ROOT/treehouse-calls.log"
@@ -286,9 +288,8 @@ EOF
       "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" >/dev/null 2>&1 || true
     LAB_READY=0
   fi
-  rm -rf "$TMP_ROOT"
 }
-trap cleanup_all EXIT
+fm_test_at_exit cleanup_all
 
 PATH="$HERDR_ORIGINAL_PATH" \
   "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
@@ -1166,4 +1167,3 @@ LAB_READY=0
 pass "real Herdr lab validation completed on Herdr $HERDR_VERSION with the default-session tripwire intact"
 
 cleanup_all
-trap - EXIT

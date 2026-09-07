@@ -5,7 +5,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-calm-pi-extension)
+fm_test_tmproot TMP_ROOT fm-calm-pi-extension
 EXT="$ROOT/.pi/extensions/fm-calm.ts"
 ASSISTANT_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
 OPERATIONAL_USER_LAYOUT="$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
@@ -32,9 +32,8 @@ cleanup() {
   if command -v tmux >/dev/null 2>&1; then
     tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
   fi
-  fm_test_cleanup
 }
-trap cleanup EXIT
+fm_test_at_exit cleanup
 
 wait_for_text() {
   local file=$1 text=$2 i=0

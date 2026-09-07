@@ -48,6 +48,14 @@ fm_herdr_lab_tripwire_path() { # <session>
   printf '%s/%s.fleet-state.json' "$(fm_herdr_lab_state_dir)" "$1"
 }
 
+# Drop a session's tripwire and, once the last one is gone, the state dir itself,
+# so a lab run leaves nothing behind under TMPDIR. The rmdir is best-effort: a
+# concurrent lab session still holding a tripwire simply keeps the dir.
+fm_herdr_lab_release_tripwire() { # <session>
+  rm -f "$(fm_herdr_lab_tripwire_path "$1")"
+  rmdir "$(fm_herdr_lab_state_dir)" 2>/dev/null || true
+}
+
 fm_herdr_lab_raw() { # <session> <herdr arguments...>
   local name=$1
   shift
@@ -101,7 +109,7 @@ fm_herdr_lab_prepare() { # <session>
     return 1
   }
   fm_herdr_lab_fleet_state "$name" > "$tripwire" || {
-    rm -f "$tripwire"
+    fm_herdr_lab_release_tripwire "$name"
     return 1
   }
 }
@@ -235,10 +243,9 @@ fm_herdr_lab_check_tripwire() { # <session>
 }
 
 fm_herdr_lab_verify_tripwire() { # <session>
-  local name=$1 tripwire
+  local name=$1
   fm_herdr_lab_check_tripwire "$name" || return 1
-  tripwire=$(fm_herdr_lab_tripwire_path "$name")
-  rm -f "$tripwire"
+  fm_herdr_lab_release_tripwire "$name"
 }
 
 fm_herdr_lab_stop() { # <session>

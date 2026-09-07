@@ -30,6 +30,9 @@
 #   - list-live recovery seeing only its own home's tabs, for both homes
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -65,17 +68,19 @@ herdr_forget_inherited_pane
 # fm-spawn no longer needs this as a symlink workaround: fm-spawn-symlink-guard-s8
 # canonicalized project and backend cwd comparisons in the worktree-discovery
 # poll.
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-e2e.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-herdr-e2e
 SESSION="fm-lab-herdr-e2e-$$"
 export HERDR_SESSION="$SESSION"
 WT1=; WT2=
+CLEANED=0
 cleanup_all() {
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   [ -n "$WT1" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT1" >/dev/null 2>&1
   [ -n "$WT2" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT2" >/dev/null 2>&1
   herdr_safe_stop_and_delete "$SESSION"
-  rm -rf "$TMP_ROOT"
 }
-trap cleanup_all EXIT
+fm_test_at_exit cleanup_all
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # shellcheck source=/dev/null
@@ -242,4 +247,3 @@ pass "real herdr E2E: tearing down cm2 closes only its own tab - the secondmate'
 fm_backend_herdr_kill "$SESSION:$SM_PANE"
 
 cleanup_all
-trap - EXIT

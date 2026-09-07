@@ -36,7 +36,7 @@ fm_git_identity fmtest fmtest@example.invalid
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-backend-tests)
+fm_test_tmproot TMP_ROOT fm-backend-tests
 
 # fm_backend_detect's cmux fallback (bundle id + process ancestry,
 # docs/cmux-backend.md "Runtime auto-detection") consults uname, lsappinfo,

@@ -21,7 +21,7 @@ EMIT="$ROOT/bin/fm-public-followup-emit.sh"
 POLL="$ROOT/bin/fm-x-poll.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 SESSION_START="$ROOT/bin/fm-session-start.sh"
-TMP_ROOT=$(fm_test_tmproot fm-public-followup)
+fm_test_tmproot TMP_ROOT fm-public-followup
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit 0; }

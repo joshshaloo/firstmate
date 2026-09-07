@@ -12,7 +12,7 @@ set -u
 . "$ROOT/bin/fm-config-inherit-lib.sh"
 
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
-TMP_ROOT=$(fm_test_tmproot fm-shared-captain)
+fm_test_tmproot TMP_ROOT fm-shared-captain
 
 fm_git_identity fmtest fmtest@example.invalid
 

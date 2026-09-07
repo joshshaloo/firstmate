@@ -21,7 +21,7 @@ if [ -z "${FM_TEST_DAEMON_SOURCED:-}" ]; then
   . "$DAEMON"
 fi
 
-TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
+fm_test_tmproot TMP_ROOT fm-daemon-tests
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
 

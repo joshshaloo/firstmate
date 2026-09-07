@@ -21,7 +21,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
-TMP_ROOT=$(fm_test_tmproot fm-spawn-worktree-claim)
+fm_test_tmproot TMP_ROOT fm-spawn-worktree-claim
 
 # make_claim_fakebin <dir> builds a fake tmux that models the treehouse pool as
 # an ordered list of slots (FM_FAKE_SLOTS_FILE, one absolute path per line).

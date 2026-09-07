@@ -25,8 +25,8 @@ test_list_all_exact_suite_coverage() {
     done | LC_ALL=C sort
   )
   [ -n "$listed" ] || fail "--list --all printed nothing"
-  missing=$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
-  extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
+  missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
+  extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
   [ -z "$missing" ] || fail "--list --all missing scripts: $missing"
   [ -z "$extra" ] || fail "--list --all unexpected scripts: $extra"
   # No duplicates.
@@ -133,7 +133,7 @@ init_changed_fixture_repo() {
 
 test_changed_dependency_selection_and_unmapped_failure() {
   local tmp repo listed rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-changed.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-changed
   repo="$tmp/repo"
   init_changed_fixture_repo "$repo"
 
@@ -184,7 +184,7 @@ test_changed_dependency_selection_and_unmapped_failure() {
 
 test_empty_selection_emits_summary() {
   local tmp repo out json
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-empty.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-empty
   repo="$tmp/repo"
   init_changed_fixture_repo "$repo"
   printf 'documentation only\n' >"$repo/README.md"
@@ -206,7 +206,7 @@ assert doc["families"] == []
 
 test_timing_markers_and_json() {
   local tmp fixture out json begin_n end_n summary
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-timing.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-timing
   fixture="$tmp/ok.test.sh"
   out="$tmp/out.txt"
   json="$tmp/timing.json"
@@ -252,7 +252,7 @@ assert "family" in doc["scripts"][0]
 
 test_aggregate_exit_behavior() {
   local tmp pass_f fail_f rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-agg.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-agg
   pass_f="$tmp/pass.test.sh"
   fail_f="$tmp/fail.test.sh"
   cat >"$pass_f" <<'SH'
@@ -285,7 +285,7 @@ SH
 
 test_gate_skip_accounting() {
   local tmp skip_f out json
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-skip.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-skip
   skip_f="$tmp/skip.test.sh"
   out="$tmp/out.txt"
   json="$tmp/timing.json"
@@ -314,7 +314,7 @@ assert doc["summary"]["failed"] == 0
 
 test_fail_on_gate_skip_token() {
   local tmp skip_f out rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-fail-skip.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-fail-skip
   skip_f="$tmp/skip.test.sh"
   out="$tmp/out.txt"
   cat >"$skip_f" <<'SH'
@@ -359,7 +359,7 @@ test_portable_shard_union_and_coverage_guard() {
   herdr=$("$RUNNER" --list --family real-herdr-gated)
   [ -n "$s1" ] && [ -n "$s2" ] || fail "portable parallel shards must be non-empty"
   # Shards disjoint.
-  overlap=$(comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
+  overlap=$(LC_ALL=C comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
   [ -z "$overlap" ] || fail "portable parallel shards overlap: $overlap"
   # Union of shards equals proven-isolated.
   [ "$(printf '%s\n' "$s1" "$s2" | LC_ALL=C sort -u)" = \
@@ -388,7 +388,7 @@ test_portable_shard_union_and_coverage_guard() {
 
 test_jobs_requires_proven_isolated() {
   local tmp rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-jobs
   set +e
   "$RUNNER" --jobs 2 --lane portable-serial >"$tmp/out" 2>"$tmp/err"
   rc=$?
@@ -407,7 +407,7 @@ test_jobs_requires_proven_isolated() {
 
 test_jobs_parallel_scheduler_and_failure_propagation() {
   local tmp repo runner evidence fake_bin a b c d rc begin_n end_n
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-sched.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-jobs-sched
   repo="$tmp/repo"
   runner="$repo/bin/fm-test-run.sh"
   evidence="$tmp/evidence"
@@ -527,7 +527,7 @@ SH
 
 test_aggregate_json() {
   local tmp a b
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggjson.XXXXXX")
+  fm_test_tmproot tmp fm-test-run-aggjson
   cat >"$tmp/a.json" <<'JSON'
 {
   "run_id": "a",

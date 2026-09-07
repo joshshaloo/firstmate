@@ -11,11 +11,8 @@
 # metadata publication, and the pane environment export.
 set -u
 
-# This suite does not source tests/lib.sh, so exempt its teardown subprocess from
-# the gate-lifecycle refusal (bin/fm-gate-refuse-lib.sh) the way lib.sh does for
-# the rest of the suite: the no-mistakes gate runs this suite from a gate worktree,
-# which the guard would otherwise refuse.
-export FM_GATE_REFUSE_BYPASS=1
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
@@ -29,16 +26,7 @@ pass() {
   printf 'ok - %s\n' "$1"
 }
 
-TMP_ROOT=
-
-cleanup() {
-  if [ -n "${TMP_ROOT:-}" ]; then
-    rm -rf "$TMP_ROOT"
-  fi
-}
-trap cleanup EXIT
-
-TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-gotmp-tests.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-gotmp-tests
 
 # Build a fake FM_HOME/FM_ROOT so the real fm-teardown.sh (symlinked in) resolves
 # state and helper scripts inside it. Stub the helper scripts fm-teardown calls so no
@@ -173,7 +161,7 @@ META
 test_teardown_skips_gracefully_when_dir_missing() {
   # tasktmp= points to a path that does not exist. Teardown must not error.
   local id=td-missing-z4
-  local task_tmp="$TMP_ROOT/never-created-fm-$id"
+  local task_tmp="$TMP_ROOT/fm-$id"
   # Intentionally do NOT create $task_tmp.
   [ ! -e "$task_tmp" ] || fail "precondition: task_tmp should not exist yet"
   local fake
@@ -184,6 +172,37 @@ test_teardown_skips_gracefully_when_dir_missing() {
   pass "fm-teardown skips gracefully when tasktmp= points to a nonexistent dir"
 }
 
+test_teardown_preserves_tasktmp_recorded_for_another_task() {
+  local id=td-shared-z5 other=td-other-z5
+  local task_tmp="$TMP_ROOT/fm-$id"
+  mkdir -p "$task_tmp/gotmp"
+  local fake
+  fake=$(make_fake_root "$id" "$task_tmp")
+  cat > "$fake/state/$other.meta" <<META
+window=fakeses:fm-$other
+worktree=$TMP_ROOT/nonexistent-worktree-$other
+project=$TMP_ROOT/nonexistent-project-$other
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+tasktmp=$task_tmp
+META
+  FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >"$TMP_ROOT/shared.out" 2>"$TMP_ROOT/shared.err" \
+    || fail "a shared tasktmp must not abort teardown"$'\n'"$(cat "$TMP_ROOT/shared.err")"
+  [ -d "$task_tmp" ] || fail "teardown removed a tasktmp still recorded for another task"
+  grep -F "also recorded for task $other" "$TMP_ROOT/shared.err" >/dev/null \
+    || fail "teardown did not explain the shared tasktmp refusal"
+  # The refusal must skip ONLY the shared directory: the task itself is fully
+  # released, so neither task is stranded in the fleet by the other's record.
+  assert_absent "$fake/state/$id.meta" "the released task's meta survived a shared-tasktmp refusal"
+  assert_present "$fake/state/$other.meta" "the other live task's meta was removed"
+  grep -F "teardown $id complete" "$TMP_ROOT/shared.out" >/dev/null \
+    || fail "teardown did not report completion after skipping the shared tasktmp"
+  pass "fm-teardown preserves a shared tasktmp and still releases the task completely"
+}
+
 test_teardown_removes_tasktmp_dir
 test_teardown_skips_gracefully_without_tasktmp
 test_teardown_skips_gracefully_when_dir_missing
+test_teardown_preserves_tasktmp_recorded_for_another_task

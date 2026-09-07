@@ -24,6 +24,9 @@
 # flag and verifies the default fleet session is unchanged after teardown.
 set -u
 
+# shellcheck source=tests/lib.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -46,10 +49,9 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 # the terminal this suite was started in must not leak into any of them.
 herdr_forget_inherited_pane
 
-TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-launcher-e2e.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-herdr-launcher-e2e
 HERDR_LAB_HELPER="$ROOT/bin/fm-herdr-lab.sh"
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-herdr-launcher-ws) || {
-  rm -rf "$TMP_ROOT"
   printf 'not ok - could not generate an isolated Herdr lab session name\n' >&2
   exit 1
 }
@@ -69,10 +71,9 @@ cleanup_all() {
   done
   WORKTREES=()
   "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || status=$?
-  rm -rf "$TMP_ROOT"
   return "$status"
 }
-trap cleanup_all EXIT
+fm_test_at_exit cleanup_all
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
 
 lab() { "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"; }
@@ -421,9 +422,7 @@ lab pane get "$UNIQB_PANE" >/dev/null 2>&1 || fail "teardown closed an unrelated
 pass "real herdr E2E: teardown closes only the worker's own pane and leaves the launcher, its workspace, and the same-labeled sibling intact"
 
 if ! cleanup_all; then
-  trap - EXIT
   printf 'not ok - isolated Herdr lab teardown failed or the default fleet session changed\n' >&2
   exit 1
 fi
-trap - EXIT
 pass "real herdr E2E: isolated lab session removed and default fleet session unchanged"

@@ -18,7 +18,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-brief)
+fm_test_tmproot TMP_ROOT fm-brief
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
 

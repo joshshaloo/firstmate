@@ -33,7 +33,7 @@ done
 
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 SESSION=$("$LAB_HELPER" name fm-send-secondmate-marker-v7)
-TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-send-marker-herdr-e2e.XXXXXX")
+fm_test_tmproot TMP_ROOT fm-send-marker-herdr-e2e
 SENDER_HOME="$TMP_ROOT/sender-home"
 SECOND_HOME="$TMP_ROOT/secondmate-home"
 CAPTURE="$TMP_ROOT/pi-before-agent.jsonl"
@@ -45,15 +45,11 @@ REQUEST='FM_MARKER_HERDR_E2E exact-id request'
 DIRECT='FM_MARKER_HERDR_DIRECT captain input'
 
 cleanup() {
-  local rc=$?
-  trap - EXIT
   if ! "$LAB_HELPER" teardown "$SESSION"; then
-    rc=1
+    FM_TEST_EXIT_STATUS=1
   fi
-  rm -rf "$TMP_ROOT"
-  exit "$rc"
 }
-trap cleanup EXIT
+fm_test_at_exit cleanup
 
 mkdir -p "$SENDER_HOME/state" "$SENDER_HOME/data" "$SENDER_HOME/config" "$SENDER_HOME/projects" "$FAKEBIN"
 

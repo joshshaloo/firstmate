@@ -7,7 +7,7 @@ set -u
 
 unset NO_MISTAKES_GATE
 
-TMP_ROOT=$(fm_test_tmproot fm-sessionstart-nudge)
+fm_test_tmproot TMP_ROOT fm-sessionstart-nudge
 NUDGE="$ROOT/bin/fm-sessionstart-nudge.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-operational-input.sh"

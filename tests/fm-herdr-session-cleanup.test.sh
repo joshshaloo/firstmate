@@ -7,9 +7,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-herdr-session-cleanup)
-FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
-trap fm_test_cleanup EXIT
+fm_test_tmproot TMP_ROOT fm-herdr-session-cleanup
 
 export FM_HOME="$TMP_ROOT/home"
 export FM_STATE_OVERRIDE="$FM_HOME/state"

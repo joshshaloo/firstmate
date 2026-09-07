@@ -111,6 +111,45 @@ record_pi_busy() {  # <state-dir> <id>
 
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
+legacy_status_open_decisions() {  # <status-file>
+  local f=$1 line verb key note resolve held open='' stripped
+  [ -f "$f" ] || return 0
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  legacy_drop_decision() {  # <open-set> <key>
+    local set=$1 drop_key=$2 record out=''
+    while IFS= read -r record; do
+      [ -n "$record" ] || continue
+      case "$record" in
+        "$drop_key"$'\t'*) : ;;
+        *) out="${out}${record}"$'\n' ;;
+      esac
+    done <<EOF
+$set
+EOF
+    printf '%s' "$out"
+  }
+  while IFS= read -r line || [ -n "$line" ]; do
+    stripped=${line//[[:space:]]/}
+    [ -n "$stripped" ] || continue
+    verb=$(status_line_verb "$line")
+    key=$(_fm_decision_key "$line") || continue
+    case "$verb" in
+      needs-decision|blocked)
+        note=$(status_line_note "$line")
+        open=$(legacy_drop_decision "$open" "$key")
+        [ -n "$open" ] && open="${open}"$'\n'
+        open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
+        ;;
+      "$resolve"|"$held")
+        open=$(legacy_drop_decision "$open" "$key")
+        [ -n "$open" ] && open="${open}"$'\n'
+        ;;
+    esac
+  done < "$f"
+  printf '%s' "$open"
+}
+
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
 test_signal_reason_is_actionable_classifier() {
@@ -222,6 +261,72 @@ EOF
   [ -z "$(status_open_activities "$state/legacy-activity.status")" ] \
     || fail "a legacy terminal event did not supersede the default working phase"
   pass "classifier primitives: keyed decisions and activity phases, captain relevance, window-to-task, and overrides"
+}
+
+test_open_decision_fold_matches_legacy_fixtures() {
+  local dir state f old new
+  dir=$(make_case decision-fold-differential); state="$dir/state"
+  cat > "$state/masked.status" <<'EOF'
+needs-decision [key=race]: fix the reconcile-before-subscribe race
+working: implementing an unrelated subsystem
+done: an unrelated subtask finished
+EOF
+  cat > "$state/resolved.status" <<'EOF'
+needs-decision [key=race]: fix the reconcile-before-subscribe race
+done: an unrelated subtask finished
+resolved [key=race]: captain chose subscribe-then-reconcile
+EOF
+  cat > "$state/transferred.status" <<'EOF'
+needs-decision [key=route]: choose a sample route
+captain-held [key=route]: tracked by transferred-decision-route
+EOF
+  cat > "$state/multi.status" <<'EOF'
+needs-decision [key=route]: choose route north or route south
+needs-decision [key=access]: choose open or restricted sample access
+done: report and visual review complete
+blocked [key=vendor-release]: waiting for vendor release
+resolved [key=access]: picked open access
+needs-decision [key=route]: choose revised route east or west
+EOF
+  cat > "$state/legacy.status" <<'EOF'
+needs-decision: default route A or B
+blocked [key=custom]: explicit blocker
+resolved: default was answered
+needs-decision [key=custom]: blocker became a choice with latest note
+needs-decision [key=bad key]: malformed key is ignored
+EOF
+  cat > "$state/malformed.status" <<'EOF'
+needs-decision [key=race: unterminated key token folds under default
+resolved: default was answered
+blocked [key=]: empty key is ignored
+blocked [key=bad key]: invalid characters are ignored
+needs-decision [key=route: second unterminated token reopens default
+captain-held [key=hold: unterminated token closes default
+needs-decision [key=stale: unterminated token opens default again
+EOF
+  for f in "$state"/*.status; do
+    old=$(legacy_status_open_decisions "$f"; printf 'X')
+    new=$(status_open_decisions "$f"; printf 'X')
+    [ "$new" = "$old" ] || fail "new open-decision fold diverged from legacy fold for $f: old=[$old] new=[$new]"
+  done
+  pass "status_open_decisions matches the legacy fold on keyed, resolved, held, multi, malformed, and legacy fixtures"
+}
+
+test_open_decision_fold_500_entry_timing_guard() {
+  local dir state pad i open elapsed
+  dir=$(make_case decision-fold-timing); state="$dir/state"
+  pad=01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+  i=1
+  while [ "$i" -le 500 ]; do
+    printf 'needs-decision [key=topic-%04d]: note-%04d-%s\n' "$i" "$i" "$pad" >> "$state/large.status"
+    i=$((i + 1))
+  done
+  SECONDS=0
+  open=$(status_open_decisions "$state/large.status")
+  elapsed=$SECONDS
+  [ "$elapsed" -le 5 ] || fail "500-entry open-decision fold took ${elapsed}s"
+  [ "$(printf '%s\n' "$open" | grep -c '^topic-')" -eq 500 ] || fail "500-entry open-decision fold returned the wrong entry count"
+  pass "status_open_decisions folds 500 keyed decisions within the timing guard"
 }
 
 # crew_is_provably_working: the absorb-only-when-provably-working predicate. It is
@@ -1556,6 +1661,8 @@ test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
+test_open_decision_fold_matches_legacy_fixtures
+test_open_decision_fold_500_entry_timing_guard
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier

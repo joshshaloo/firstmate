@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tests/fm-backend-herdr-respawn-idem-e2e.test.sh - isolated real-herdr
 # regression test for firstmate-restart idempotency against herdr's
-# restored-layout husks (docs/herdr-backend.md "Known gaps" / "ID stability
-# across a server restart").
+# restored-layout husks (docs/herdr-backend.md "Restart and liveness
+# behavior" / "Active limits").
 #
 # herdr persists its whole session layout (workspaces/tabs/panes) and
 # restores it after a server restart, including a reboot. A restored fm-<id>
@@ -10,7 +10,8 @@
 # saved cwd - never the crewmate that used to be there.
 #
 # This test drives a REAL `herdr session stop` + fresh `herdr server` restart
-# (the same "ID stability" mechanism docs/herdr-backend.md already documents:
+# (the same id-stability mechanism docs/herdr-backend.md "Restart and
+# liveness behavior" already documents:
 # the pane survives alive, but agent_status resets and nothing is registered
 # in it - exactly the restored-plain-shell husk shape), then proves
 # fm_backend_herdr_create_task refuses the duplicate tab and leaves it intact
@@ -103,7 +104,7 @@ pass "repro setup: two real fm-<id> task tabs exist (crewmate-shaped and secondm
 
 # --- 2. a REAL herdr session restart - the actual root cause -----------------
 # `session stop` + fresh `herdr server` for the SAME named session: verified
-# in docs/herdr-backend.md "ID stability across a server restart" to preserve
+# in docs/herdr-backend.md "Restart and liveness behavior" to preserve
 # every workspace/tab/pane id and label, while resetting each pane's
 # underlying process (a fresh shell) and its agent_status to unknown - the
 # exact husk shape a restored task tab comes back in.

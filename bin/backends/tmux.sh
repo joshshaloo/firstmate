@@ -68,7 +68,10 @@ fm_backend_tmux_container_ensure() {
 }
 
 # fm_backend_tmux_create_task: create the task's window in <proj-abs>,
-# refusing an existing <window-name> in <session>. Mirrors fm-spawn.sh's
+# refusing an existing <window-name> in <session>. Same-id recovery that has
+# already proven an existing window is a dead shell reuses that endpoint in
+# fm-spawn.sh before this create path is called, so this helper keeps the
+# ordinary duplicate-window refusal. Mirrors fm-spawn.sh's
 # duplicate-check-then-new-window sequence, including the exact error text
 # (session:window, matching how fm-spawn.sh composed its own $T). Prints the
 # created window's stable window id on stdout for the caller to target.

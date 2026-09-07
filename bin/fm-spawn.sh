@@ -98,10 +98,13 @@
 #   already records as its worktree=. Those records are authoritative occupancy and
 #   outrank treehouse's process-based detection, which goes stale whenever a live
 #   crewmate's shell sits outside its worktree and is cleared entirely by a reboot.
-#   A refused slot is re-requested up to FM_SPAWN_WORKTREE_ATTEMPTS times (default 3,
-#   with FM_SPAWN_WORKTREE_POLLS/FM_SPAWN_WORKTREE_POLL_INTERVAL bounding each
-#   attempt's settle wait); an exhausted pool fails the spawn with every claiming task
-#   named. A claim whose task is no longer running is named the same way and is never
+#   Before any treehouse get, spawn starts short-lived cwd guards in every recorded
+#   worktree so treehouse cannot reset a slot this home already records as claimed.
+#   A same-id relaunch whose recorded endpoint is missing, or whose tmux endpoint is
+#   a dead shell, reuses its recorded worktree directly without treehouse get; a
+#   missing recorded worktree or conflicting claim refuses instead of allocating a
+#   fresh slot. An exhausted pool fails the spawn with every claiming task named. A
+#   claim whose task is no longer running is named the same way and is never
 #   discarded here - only fm-teardown.sh releases a claim.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
@@ -278,6 +281,8 @@ SPAWN_TASK_LOCK=
 SPAWN_TASK_LOCK_HELD=0
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+WT_GUARDS_STARTED=0
+T=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -347,6 +352,9 @@ spawn_abort_cleanup() {
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
     fm_lock_release "$SPAWN_TASK_LOCK" || true
+  fi
+  if [ "$WT_GUARDS_STARTED" = 1 ] && [ -n "${T:-}" ]; then
+    spawn_cleanup_worktree_record_guards || true
   fi
   if [ "$CONFIG_INHERIT_LOCK_HELD" = 1 ]; then
     CONFIG_INHERIT_LOCK_HELD=0
@@ -970,6 +978,86 @@ EOF
   printf '  claimed by %s (%s): %s\n' "$claim_id" "$note" "$claim_path"
 }
 
+# A same-id relaunch is recovery, not a fresh allocation. When task metadata
+# already records a treehouse-backed worktree and the old endpoint no longer has
+# a live agent, reuse that worktree directly and never call `treehouse get`.
+REUSE_RECORDED_WORKTREE=0
+REUSE_RECORDED_ENDPOINT=0
+RECORDED_RELAUNCH_TARGET=
+prepare_recorded_worktree_relaunch() {
+  local meta="$STATE/$ID.meta" old_kind recorded recorded_real recorded_project recorded_project_real claim
+  local old_backend old_target old_state
+  [ "$KIND" != secondmate ] || return 0
+  [ "$BACKEND" != orca ] || return 0
+  [ -e "$meta" ] || [ -L "$meta" ] || return 0
+  [ -f "$meta" ] && [ ! -L "$meta" ] || {
+    echo "error: existing metadata for $ID is not a regular file; refusing same-id relaunch" >&2
+    return 1
+  }
+  old_kind=$(fm_meta_get "$meta" kind)
+  [ "$old_kind" = "$KIND" ] || {
+    echo "error: existing metadata for $ID records kind=${old_kind:-unknown}, not $KIND; refusing same-id relaunch" >&2
+    return 1
+  }
+  recorded_project=$(fm_meta_get "$meta" project)
+  if [ -n "$recorded_project" ]; then
+    recorded_project_real=$(real_path_or_raw "$recorded_project")
+    [ "$recorded_project_real" = "$PROJ_ABS_REAL" ] || {
+      echo "error: existing metadata for $ID records project=$recorded_project, not $PROJ_ABS; refusing same-id relaunch" >&2
+      return 1
+    }
+  fi
+  recorded=$(fm_meta_get "$meta" worktree)
+  [ -n "$recorded" ] || {
+    echo "error: existing metadata for $ID has no worktree=; refusing same-id relaunch instead of allocating a fresh slot" >&2
+    return 1
+  }
+  [ -d "$recorded" ] || {
+    echo "error: existing metadata for $ID records missing worktree=$recorded; refusing same-id relaunch instead of allocating a fresh slot" >&2
+    return 1
+  }
+  recorded_real=$(real_path_or_raw "$recorded")
+  claim=$(worktree_meta_claim "$recorded_real") || claim=
+  if [ -n "$claim" ]; then
+    {
+      printf 'error: existing metadata for %s records worktree=%s, but another task record claims that same path; refusing same-id relaunch instead of allocating a fresh slot.\n' "$ID" "$recorded"
+      worktree_claim_line "$claim"
+    } >&2
+    return 1
+  fi
+  old_backend=$(fm_backend_of_meta "$meta")
+  old_target=$(fm_backend_target_of_meta "$meta")
+  [ -n "$old_target" ] || {
+    echo "error: existing metadata for $ID has no endpoint; refusing same-id relaunch instead of allocating a fresh slot" >&2
+    return 1
+  }
+  old_state=$(fm_backend_agent_state "$old_backend" "$old_target" 2>/dev/null || printf 'unreadable')
+  case "$old_state" in
+    missing)
+      ;;
+    dead)
+      if [ "$old_backend" = tmux ] && [ "$BACKEND" = tmux ]; then
+        REUSE_RECORDED_ENDPOINT=1
+      else
+        echo "error: existing $old_backend endpoint for $ID is still present without a live agent; refusing duplicate launch until that endpoint is reconciled" >&2
+        return 1
+      fi
+      ;;
+    alive)
+      echo "error: existing $old_backend endpoint for $ID still has a live agent; refusing duplicate launch" >&2
+      return 1
+      ;;
+    *)
+      echo "error: existing $old_backend endpoint for $ID is $old_state; refusing same-id relaunch because duplicate-agent absence is not proven" >&2
+      return 1
+      ;;
+  esac
+  WT=$recorded
+  validate_spawn_worktree "recorded metadata" "$old_target"
+  REUSE_RECORDED_WORKTREE=1
+  RECORDED_RELAUNCH_TARGET=$old_target
+}
+
 herdr_projection_meta_field_exact() {  # <meta> <key>
   local meta=$1 key=$2 count
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
@@ -1046,19 +1134,27 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
   esac
 }
 
+prepare_recorded_worktree_relaunch || exit 1
+
 W="fm-$ID"
 case "$BACKEND" in
   tmux)
-    SES=$(fm_backend_tmux_container_ensure)
-    T="$SES:$W"
-    # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
-    # id and pins the window name (automatic-rename/allow-rename off) so a captain's
-    # non-default tmux config cannot rename the window away from fm-<id> once
-    # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
-    # rename-critical worktree-detection steps below; the persisted window= handle
-    # stays $T (the name form), which is safe now that rename is disabled.
-    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
-    WT_TARGET="$WID"
+    if [ "$REUSE_RECORDED_ENDPOINT" = 1 ]; then
+      T=$RECORDED_RELAUNCH_TARGET
+      SES=${T%%:*}
+      WT_TARGET=$T
+    else
+      SES=$(fm_backend_tmux_container_ensure)
+      T="$SES:$W"
+      # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
+      # id and pins the window name (automatic-rename/allow-rename off) so a captain's
+      # non-default tmux config cannot rename the window away from fm-<id> once
+      # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
+      # rename-critical worktree-detection steps below; the persisted window= handle
+      # stays $T (the name form), which is safe now that rename is disabled.
+      WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
+      WT_TARGET="$WID"
+    fi
     ;;
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
@@ -1316,6 +1412,65 @@ spawn_send_key() {  # <target> <key>
   esac
 }
 
+spawn_start_worktree_record_guards() {
+  local meta recorded recorded_real recorded_project recorded_project_real same_project quoted_paths guard_cmd claim
+  [ "$KIND" != secondmate ] || return 0
+  [ "$BACKEND" != orca ] || return 0
+  [ -d "$STATE" ] || return 0
+  quoted_paths=
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+    recorded=$(fm_meta_get "$meta" worktree)
+    [ -n "$recorded" ] || continue
+    [ -d "$recorded" ] || continue
+    recorded_real=$(real_path_or_raw "$recorded")
+    quoted_paths="${quoted_paths} $(shell_quote "$recorded_real")"
+    same_project=0
+    recorded_project=$(fm_meta_get "$meta" project)
+    if [ -n "$recorded_project" ]; then
+      recorded_project_real=$(real_path_or_raw "$recorded_project")
+      [ "$recorded_project_real" = "$PROJ_ABS_REAL" ] && same_project=1
+    fi
+    [ "$same_project" = 1 ] || continue
+    WT_REFUSED_PATHS="${WT_REFUSED_PATHS}${recorded_real}"$'\n'
+    claim=$(worktree_meta_claim "$recorded_real") || claim=
+    [ -n "$claim" ] || continue
+    WT_REFUSED_REPORT="${WT_REFUSED_REPORT}$(worktree_claim_line "$claim")"$'\n'
+  done
+  [ -n "$quoted_paths" ] || return 0
+  guard_cmd="__fm_spawn_guard_pids=''; for __fm_spawn_guard_dir in$quoted_paths; do (cd \"\$__fm_spawn_guard_dir\" && sleep \"\${FM_SPAWN_WORKTREE_GUARD_SECS:-600}\") & __fm_spawn_guard_pids=\"\$__fm_spawn_guard_pids \$!\"; done; export __fm_spawn_guard_pids; unset __fm_spawn_guard_dir"
+  spawn_send_text_line "$WT_TARGET" "$guard_cmd"
+  WT_GUARDS_STARTED=1
+}
+
+spawn_cleanup_worktree_record_guards() {
+  [ "$WT_GUARDS_STARTED" = 1 ] || return 0
+  WT_GUARDS_STARTED=0
+  # shellcheck disable=SC2016  # expands in the worker pane, not in fm-spawn.
+  spawn_send_text_line "$WT_TARGET" 'if [ -n "${__fm_spawn_guard_pids:-}" ]; then kill $__fm_spawn_guard_pids 2>/dev/null || true; wait $__fm_spawn_guard_pids 2>/dev/null || true; unset __fm_spawn_guard_pids; fi'
+}
+
+enter_recorded_worktree() {
+  local wt_real p p_real i max interval
+  wt_real=$(real_path_or_raw "$WT")
+  spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$WT")"
+  max=${FM_SPAWN_WORKTREE_POLLS:-60}
+  interval=${FM_SPAWN_WORKTREE_POLL_INTERVAL:-1}
+  i=0
+  while [ "$i" -lt "$max" ]; do
+    p=$(spawn_current_path "$WT_TARGET" || true)
+    p_real=
+    if [ -n "$p" ]; then
+      p_real=$(real_path_or_raw "$p")
+    fi
+    [ "$p_real" = "$wt_real" ] && return 0
+    i=$((i + 1))
+    [ "$i" -ge "$max" ] || sleep "$interval"
+  done
+  echo "error: recorded worktree relaunch did not enter $WT within $max polls; inspect target $T" >&2
+  return 1
+}
+
 kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
@@ -1367,13 +1522,17 @@ kimi_spawn_fail() {  # <detail>
   echo "error: $1; inspect window $T" >&2
 }
 
-if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] && [ "$REUSE_RECORDED_WORKTREE" = 1 ]; then
+  enter_recorded_worktree || exit 1
+elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # Bounded re-acquire: a slot refused by the occupancy check below is asked for
-  # again rather than accepted or silently retargeted. The refused subshell is
-  # deliberately left in place while retrying, so treehouse's own process check
-  # now sees that slot as busy and offers a different one; the whole stack is
-  # released when the window dies. Polls stay per-attempt so a genuinely
-  # exhausted pool fails within a bounded time with the claimants named.
+  # again rather than accepted or silently retargeted. Recorded worktrees are
+  # held by short-lived guard processes before the first `treehouse get`, so
+  # treehouse's process-based detector cannot reset a slot that this home's
+  # metadata already owns. A refused subshell is exited before retrying; the
+  # record guards keep the refused slot protected without leaking nested
+  # interactive shells. Polls stay per-attempt so a genuinely exhausted pool
+  # fails within a bounded time with the claimants named.
   WT_ATTEMPTS=${FM_SPAWN_WORKTREE_ATTEMPTS:-3}
   WT_POLLS=${FM_SPAWN_WORKTREE_POLLS:-60}
   WT_POLL_INTERVAL=${FM_SPAWN_WORKTREE_POLL_INTERVAL:-1}
@@ -1388,12 +1547,14 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   wt_claim_refuse() {  # <why>
     {
-      printf "error: refusing to launch %s: %s, and every worktree treehouse offered is already claimed by this home's task records.\n" "$ID" "$1"
+      printf "error: refusing to launch %s: %s; this home's task records already claim the protected worktree(s) below.\n" "$ID" "$1"
       printf '%s' "$WT_REFUSED_REPORT"
       printf 'Those records are authoritative occupancy regardless of treehouse process detection, and spawn never discards one.\n'
       printf 'Recover or tear down the named task(s) to release their worktrees, or widen the pool. Inspect target %s.\n' "$T"
     } >&2
   }
+
+  spawn_start_worktree_record_guards
 
   while :; do
     wt_attempt=$((wt_attempt + 1))
@@ -1445,9 +1606,11 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       # With claims already refused this spawn, a settle timeout is the pool telling
       # us it has nothing else to offer - report it as the claim refusal it is.
       if [ -n "$WT_REFUSED_REPORT" ]; then
+        spawn_cleanup_worktree_record_guards
         wt_claim_refuse "treehouse offered no further worktree"
         exit 1
       fi
+      spawn_cleanup_worktree_record_guards
       echo "error: treehouse get did not enter a worktree within $WT_POLLS polls; inspect window $T" >&2
       exit 1
     fi
@@ -1459,13 +1622,16 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     wt_claim=$(worktree_meta_claim "$wt_real") || break
     WT_REFUSED_PATHS="${WT_REFUSED_PATHS}${wt_real}"$'\n'
     WT_REFUSED_REPORT="${WT_REFUSED_REPORT}$(worktree_claim_line "$wt_claim")"$'\n'
+    spawn_send_text_line "$WT_TARGET" 'exit'
     if [ "$wt_attempt" -ge "$WT_ATTEMPTS" ]; then
+      spawn_cleanup_worktree_record_guards
       wt_claim_refuse "$WT_ATTEMPTS attempt(s) exhausted"
       exit 1
     fi
     echo "warning: treehouse offered ${wt_real}, already recorded as another task's worktree; asking for a different slot (attempt $wt_attempt of $WT_ATTEMPTS)" >&2
     WT=""
   done
+  spawn_cleanup_worktree_record_guards
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't

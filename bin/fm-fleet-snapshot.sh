@@ -417,7 +417,7 @@ task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects backend target status_log report_path
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
-  local open_decisions_tsv open_decisions_json
+  local open_decisions_tsv open_decisions_json open_decisions_file
 
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
@@ -480,6 +480,7 @@ task_json_lines() {
       [ splits("\n") | select(length > 0)
         | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
         | select(. != null) ]')
+    open_decisions_file=$(printf '%s' "$open_decisions_json" | snapshot_json_file open-decisions)
     pending_decision=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "needs-decision") then 1 else 0 end')
     blocked_event=$(printf '%s' "$open_decisions_json" | jq 'if any(.[]; .verb == "blocked") then 1 else 0 end')
 
@@ -527,11 +528,12 @@ task_json_lines() {
       --argjson worktree_path "$worktree_json" \
       --argjson home_path "$home_json" \
       --argjson endpoint_exists "$endpoint_exists" \
-      --argjson open_decisions "$open_decisions_json" \
+      --slurpfile open_decisions "$open_decisions_file" \
       --argjson pending_decision "$(bool_json "$pending_decision")" \
       --argjson blocked_event "$(bool_json "$blocked_event")" \
       --argjson report_present "$(bool_json "$report_present")" \
-      '{
+      '($open_decisions[0]) as $open_decisions
+      | {
         id:$id,
         kind:$kind,
         harness:($harness // ""),
@@ -1030,9 +1032,11 @@ terminal_evidence_json() {  # <parent-task-json> <event-note> <evidence-contradi
     '{provenance:"parent-direct-report-terminal",trust:"untrusted-supplement",captured:true,observed_at:$observed,freshness:"fresh",reason:null,lines:$lines,bytes:$bytes,event_note_seen:$seen,contradiction:$contradiction}'
 }
 
-parent_evidence_reconciliation_json() {  # <summary-json> <activities-json> <decisions-json>
-  jq -n --argjson summary "$1" --argjson activities "$2" --argjson decisions "$3" '
-    def keyed: . != null and . != "" and . != "default";
+parent_evidence_reconciliation_json() {  # <summary-json-file> <activities-json> <decisions-json-file>
+  jq -n --slurpfile summary "$1" --argjson activities "$2" --slurpfile decisions "$3" '
+    ($summary[0]) as $summary
+    | ($decisions[0]) as $decisions
+    | def keyed: . != null and . != "" and . != "default";
     def result($e; $matches; $complete; $surface):
       $e + {
         verdict:(if ($e.key | keyed | not) then "inconclusive"
@@ -1093,8 +1097,9 @@ parent_evidence_reconciliation_json() {  # <summary-json> <activities-json> <dec
 secondmate_current_json() {  # <parent-tasks-json-file>
   local tasks_file=$1 registry union rows total_registered total shown truncated
   local row id home registered registry_error task status_file event_raw event_note event_epoch event_age
-  local activity_scan activities decisions reconciliation provenance freshness reason summary summary_rc summary_bytes summary_valid summary_reason summary_invalidity state current_reason terminal terminal_contradiction contradiction
-  local records='[]' seen_homes=''
+  local activity_scan activities decisions reconciliation provenance freshness reason summary summary_file summary_rc decisions_file summary_bytes summary_valid summary_reason summary_invalidity state current_reason terminal terminal_contradiction contradiction
+  local records_file="$SNAPSHOT_TMPDIR/secondmate-records.jsonl" seen_homes=''
+  : > "$records_file" || return 1
   registry=$(registry_secondmates_json) || return 1
   union=$(jq -n --argjson registry "$registry" --slurpfile tasks "$tasks_file" '
     ($tasks[0]) as $tasks
@@ -1131,6 +1136,7 @@ secondmate_current_json() {  # <parent-tasks-json-file>
     activity_scan=$(bounded_parent_activities_json "$status_file")
     activities=$(printf '%s' "$activity_scan" | jq -c '.records')
     decisions=$(printf '%s' "$task" | jq -c '.hints.open_decisions // []')
+    decisions_file=$(printf '%s' "$decisions" | snapshot_json_file secondmate-decisions) || return 1
     event_epoch=$(file_mtime_epoch "$status_file")
     event_age=null
     if [ -n "$event_epoch" ]; then
@@ -1205,12 +1211,13 @@ secondmate_current_json() {  # <parent-tasks-json-file>
     fi
 
     if [ -z "$reason" ]; then
+      summary_file=$(printf '%s' "$summary" | snapshot_json_file secondmate-summary) || return 1
       state=$(printf '%s' "$summary" | jq -r '.state')
       current_reason=
       if [ "$summary_valid" != true ]; then
         current_reason="structured home state invalid: $(printf '%s' "$summary" | jq -r '.reason // "unknown reason"')"
       fi
-      reconciliation=$(parent_evidence_reconciliation_json "$summary" "$activities" "$decisions")
+      reconciliation=$(parent_evidence_reconciliation_json "$summary_file" "$activities" "$decisions_file")
       contradiction=$(printf '%s' "$reconciliation" | jq -r '.contradiction')
       terminal_contradiction=$(printf '%s' "$reconciliation" | jq -r --arg note "$event_note" '
         any(.activities[]; .verdict == "contradicts" and .summary == $note)')
@@ -1223,11 +1230,13 @@ secondmate_current_json() {  # <parent-tasks-json-file>
       if printf '%s' "$terminal" | jq -e '.contradiction == true' >/dev/null; then contradiction=true; fi
       record=$(jq -n \
         --arg id "$id" --arg home "$home" --arg state "$state" --arg current_reason "$current_reason" --arg observed "$SNAPSHOT_NOW" \
-        --argjson registered "$registered" --argjson summary "$summary" --argjson summary_valid "$summary_valid" --argjson decisions "$decisions" \
+        --argjson registered "$registered" --slurpfile summary "$summary_file" --argjson summary_valid "$summary_valid" --slurpfile decisions "$decisions_file" \
         --argjson activities "$activities" --argjson activity_scan "$activity_scan" \
         --argjson reconciliation "$reconciliation" --argjson terminal "$terminal" --argjson contradiction "$contradiction" \
         --arg event_raw "$event_raw" --arg event_note "$event_note" --argjson event_age "$event_age" '
-        {id:$id,home:$home,registered:$registered,
+        ($summary[0]) as $summary
+        | ($decisions[0]) as $decisions
+        | {id:$id,home:$home,registered:$registered,
          current:{state:$state,reason:($current_reason | if . == "" then null else . end)},invalidity:$summary.invalidity,
          provenance:{selected:"structured-home",structured_home:$home,summary_valid:$summary_valid,
            trust:(if $summary_valid then "complete" else "partial-structured" end),parent_event_role:"historical-only"},
@@ -1255,8 +1264,9 @@ secondmate_current_json() {  # <parent-tasks-json-file>
         --arg id "$id" --arg home "$home" --arg reason "$reason" --arg observed "$SNAPSHOT_NOW" \
         --arg provenance "$provenance" --arg freshness "$freshness" --arg event_raw "$event_raw" --arg event_note "$event_note" \
         --argjson registered "$registered" --argjson event_age "$event_age" --argjson activities "$activities" --argjson activity_scan "$activity_scan" \
-        --argjson decisions "$decisions" --argjson terminal "$terminal" '
-        {id:$id,home:($home | if . == "" then null else . end),registered:$registered,
+        --slurpfile decisions "$decisions_file" --argjson terminal "$terminal" '
+        ($decisions[0]) as $decisions
+        | {id:$id,home:($home | if . == "" then null else . end),registered:$registered,
          current:{state:"unknown",reason:$reason},invalidity:null,
          provenance:{selected:$provenance,structured_home:($home | if . == "" then null else . end),parent_event_role:"fallback-only-not-current"},
          freshness:{status:$freshness,observed_at:$observed,age_seconds:$event_age},
@@ -1264,13 +1274,13 @@ secondmate_current_json() {  # <parent-tasks-json-file>
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan},
          terminal_evidence:$terminal,contradiction:false}')
     fi
-    records=$(jq -n --argjson records "$records" --argjson record "$record" '$records + [$record]')
+    printf '%s\n' "$record" >> "$records_file" || return 1
   done <<EOF
 $rows
 EOF
   jq -n \
     --argjson registry "$(printf '%s' "$union" | jq '.registry')" \
-    --argjson records "$records" \
+    --slurpfile records "$records_file" \
     --argjson total_registered "$total_registered" \
     --argjson total "$total" \
     --argjson shown "$shown" \

@@ -105,9 +105,9 @@ Recovery is deliberately conservative and presentation-only.
 An existing journal suppresses another projected create.
 Before any recovery decision, Firstmate holds the task spawn lock and, when presentation inspection or a focus-preserving pane close is needed, the named-session presentation lock.
 A same-identity version 2 binding no longer replaces a restored task tab in place.
-If the recorded Herdr endpoint is present without a registered agent, same-id relaunch asks the Herdr backend to close only that exact pane - through the same focus-preserving close owner every other Herdr close uses, and only after the idle-shell process proof succeeds and that pane is proven to be its own tab's last pane - then creates a new endpoint in the ordinary flat workspace using the recorded worktree.
+If the recorded Herdr endpoint is present without a registered agent, same-id relaunch reconciles only that exact pane through the backend's recorded-endpoint recovery path under this same presentation lock, then creates a new endpoint in the ordinary flat workspace using the recorded worktree; [Restart and liveness behavior](#restart-and-liveness-behavior) owns that path's proof and refusals.
 Version 1 journals, missing panes, duplicate or absent tokens, renamed or detached spaces, cross-home mismatches, inconsistent endpoint bindings, active target tabs, and ambiguous identity or focus fall back flat without mutating the old projection when duplicate-agent risk is positively absent.
-A live, unknown, unreadable, token-matched, not-provably-idle, active-tab, or still-shared-tab recorded endpoint refuses duplicate launch, as does a same-id relaunch onto any backend other than herdr.
+A token-matched recorded endpoint refuses duplicate launch, as does every endpoint that recovery path refuses.
 
 Locked session start has one narrower cleanup for a restored projected child that is no longer current task state.
 It runs only when the current home has at least one ordinary presentation journal and considers only that home; a primary never recursively sweeps a secondmate home.
@@ -116,8 +116,7 @@ The title must contain exactly one token occurrence across the named-session sna
 The task's ordinary metadata must be absent, and the candidate must have exactly one tab and exactly one pane.
 Before cleanup, Firstmate acquires the existing task-id spawn lock and then the shared named-session presentation lock.
 Inside both locks it takes one exact snapshot, requires one unambiguous non-target focus and the exact title, token, tab, and pane shape, positively confirms no registered agent, and reads Herdr's process information for the exact named-session pane.
-The process proof requires one recognized idle shell as both the shell process and the sole foreground process-group member, an operating-system process-table row for that shell, no child process, and a sleeping or idle shell state.
-Any foreground command, child process, active shell job, unknown shell, unreadable process table, missing field, or API error preserves the pane.
+That pane must satisfy the one shared idle-shell process proof owned by [Restart and liveness behavior](#restart-and-liveness-behavior); anything short of it preserves the pane.
 Firstmate immediately revalidates the same journal, metadata absence, workspace title and token uniqueness, one-tab and one-pane topology, exact pane relationship, absent agent, process proof, and non-target focus before calling the existing exact-pane focus-preserving close helper.
 It closes only that pane, never a workspace.
 The matching journal is retired only after the exact pane is positively confirmed gone; an unconfirmed close retains the journal, while a confirmed close may retire it even when focus restoration reported an error after the close.
@@ -219,7 +218,9 @@ Stopping and restarting a named Herdr server preserves workspace, tab, pane, and
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
 Task creation refuses any existing same-labeled tab, including a husk, so relaunch cannot create a second Herdr tab for one task while the old tab still needs reconciliation.
 During same-id relaunch, `fm-spawn.sh` reuses the recorded worktree directly when the recorded Herdr endpoint is structurally gone.
-When the recorded Herdr endpoint is still present with no registered agent, `fm-spawn.sh` closes only that exact pane after the Herdr backend proves it is one recognized idle shell with no foreground job and no child process, and that it is the only pane of its `fm-<id>` tab so the close actually frees the label the create path checks.
+When the recorded Herdr endpoint is still present with no registered agent, `fm-spawn.sh` closes only that exact pane after the backend's idle-shell process proof succeeds and that pane is proven to be the only pane of its `fm-<id>` tab, so the close actually frees the label the create path checks.
+That proof is the one Herdr requires before closing any restored shell, here and in the session-start projection cleanup: one recognized idle shell as both the shell process and the sole foreground process-group member, an operating-system process-table row for that shell, no child process, and a sleeping or idle shell state.
+Any foreground command, child process, active shell job, unknown shell, unreadable process table, missing field, or API error preserves the pane.
 That close goes through the shared focus-preserving close owner, so it restores the captain's exact pre-close workspace and tab and refuses outright when the husk is the active tab.
 It adopts that owner's serialization precondition too: the relaunch holds the shared named-session presentation lock across the focus snapshot, the close, and the restore, on the same bounded retry teardown and session cleanup use, and refuses the relaunch untouched when the lock is unavailable rather than snapshotting a concurrent operation's transient focus.
 The reconcile's verdict comes from a post-close pane read rather than the close status alone, so a husk that vanished under the close is reported gone instead of left untouched, and every refusal names its own reason.

@@ -165,6 +165,16 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantee: a pre-existing captain-owned workspace with a seed-shaped tab was adopted for routing but its tab was never eligible for prune because the current create call did not return that seed id.
 
+Adapter-level restart-husk create refusal is owned by:
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/fm-backend-herdr-respawn-idem-e2e.test.sh
+```
+
+Observed guarantee: after a real named-session stop and restart, `fm_backend_herdr_create_task` refused every same-labeled restored tab - crewmate-shaped husk, secondmate-shaped husk, and one hosting a genuinely live registered agent - and left each pane and the workspace's tab set untouched.
+Spawn-level reconciliation of the recorded endpoint is owned by the next entry.
+
 Same-id Herdr relaunch recovery is owned by:
 
 ```sh

@@ -98,8 +98,10 @@
 #   already records as its worktree=. Those records are authoritative occupancy and
 #   outrank treehouse's process-based detection, which goes stale whenever a live
 #   crewmate's shell sits outside its worktree and is cleared entirely by a reboot.
-#   Before any treehouse get, spawn starts short-lived cwd guards in every recorded
-#   worktree so treehouse cannot reset a slot this home already records as claimed.
+#   Before any treehouse get, spawn forks short-lived cwd guards of its own into every
+#   recorded worktree so treehouse cannot reset a slot this home already records as
+#   claimed, and refuses the launch outright unless every one of those guards proves
+#   it entered its worktree and is still running.
 #   A same-id relaunch whose recorded endpoint is missing, or whose tmux endpoint is
 #   a dead shell, reuses its recorded worktree directly without treehouse get; a
 #   missing recorded worktree or conflicting claim refuses instead of allocating a
@@ -282,6 +284,9 @@ SPAWN_TASK_LOCK_HELD=0
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 WT_GUARDS_STARTED=0
+WT_GUARD_PIDS=
+WT_GUARD_MARKER=
+WT_PROTECTED_REPORT=""
 T=
 
 parse_orca_worktree_result() {
@@ -353,7 +358,7 @@ spawn_abort_cleanup() {
     SPAWN_TASK_LOCK_HELD=0
     fm_lock_release "$SPAWN_TASK_LOCK" || true
   fi
-  if [ "$WT_GUARDS_STARTED" = 1 ] && [ -n "${T:-}" ]; then
+  if [ "$WT_GUARDS_STARTED" = 1 ]; then
     spawn_cleanup_worktree_record_guards || true
   fi
   if [ "$CONFIG_INHERIT_LOCK_HELD" = 1 ]; then
@@ -1142,7 +1147,15 @@ case "$BACKEND" in
     if [ "$REUSE_RECORDED_ENDPOINT" = 1 ]; then
       T=$RECORDED_RELAUNCH_TARGET
       SES=${T%%:*}
-      WT_TARGET=$T
+      # Same reason the create path returns a window id: the rename-critical
+      # step below (enter_recorded_worktree's cd-and-poll) must target the
+      # window itself, not a name tmux can silently resolve to the active
+      # client's window. Adopting also re-pins the name on a window that
+      # predates that pinning.
+      WT_TARGET=$(fm_backend_tmux_adopt_task "$T") || {
+        echo "error: could not resolve recorded tmux endpoint $T to a stable window id; refusing same-id relaunch" >&2
+        exit 1
+      }
     else
       SES=$(fm_backend_tmux_container_ensure)
       T="$SES:$W"
@@ -1412,19 +1425,28 @@ spawn_send_key() {  # <target> <key>
   esac
 }
 
+# The guards are the ONLY thing standing between `treehouse get` and an
+# irreversible reset of a worktree another task's record owns, so they are
+# spawn's own processes, not typed into the crewmate's pane: a login shell that
+# cannot parse the guard line (fish), or one not yet reading the pty, must never
+# be what stands between a recorded worktree and a reset. Owning the forks also
+# makes the invariant provable - each guard reports the worktree it actually
+# entered and must still be running - so a spawn that cannot prove protection
+# refuses before any `treehouse get` instead of proceeding on an assumption.
 spawn_start_worktree_record_guards() {
-  local meta recorded recorded_real recorded_project recorded_project_real same_project quoted_paths guard_cmd claim
+  local meta recorded recorded_real recorded_project recorded_project_real same_project claim
+  local guard_paths marker secs pid running max interval i missing dead p
   [ "$KIND" != secondmate ] || return 0
   [ "$BACKEND" != orca ] || return 0
   [ -d "$STATE" ] || return 0
-  quoted_paths=
+  guard_paths=
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] && [ ! -L "$meta" ] || continue
     recorded=$(fm_meta_get "$meta" worktree)
     [ -n "$recorded" ] || continue
     [ -d "$recorded" ] || continue
     recorded_real=$(real_path_or_raw "$recorded")
-    quoted_paths="${quoted_paths} $(shell_quote "$recorded_real")"
+    guard_paths="${guard_paths}${recorded_real}"$'\n'
     same_project=0
     recorded_project=$(fm_meta_get "$meta" project)
     if [ -n "$recorded_project" ]; then
@@ -1432,22 +1454,77 @@ spawn_start_worktree_record_guards() {
       [ "$recorded_project_real" = "$PROJ_ABS_REAL" ] && same_project=1
     fi
     [ "$same_project" = 1 ] || continue
-    WT_REFUSED_PATHS="${WT_REFUSED_PATHS}${recorded_real}"$'\n'
     claim=$(worktree_meta_claim "$recorded_real") || claim=
     [ -n "$claim" ] || continue
-    WT_REFUSED_REPORT="${WT_REFUSED_REPORT}$(worktree_claim_line "$claim")"$'\n'
+    WT_PROTECTED_REPORT="${WT_PROTECTED_REPORT}$(worktree_claim_line "$claim")"$'\n'
   done
-  [ -n "$quoted_paths" ] || return 0
-  guard_cmd="__fm_spawn_guard_pids=''; for __fm_spawn_guard_dir in$quoted_paths; do (cd \"\$__fm_spawn_guard_dir\" && sleep \"\${FM_SPAWN_WORKTREE_GUARD_SECS:-600}\") & __fm_spawn_guard_pids=\"\$__fm_spawn_guard_pids \$!\"; done; export __fm_spawn_guard_pids; unset __fm_spawn_guard_dir"
-  spawn_send_text_line "$WT_TARGET" "$guard_cmd"
-  WT_GUARDS_STARTED=1
+  [ -n "$guard_paths" ] || return 0
+  marker="$STATE/$ID.wtguard"
+  rm -f "$marker" 2>/dev/null || true
+  WT_GUARD_MARKER=$marker
+  secs=${FM_SPAWN_WORKTREE_GUARD_SECS:-600}
+  # Detached stdio: a guard that inherited spawn's stdout would hold the pipe of
+  # any `out=$(fm-spawn.sh ...)` caller open for its whole lifetime.
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    ( cd "$p" && pwd -P >> "$marker" && exec sleep "$secs" ) </dev/null >/dev/null 2>&1 &
+    WT_GUARD_PIDS="${WT_GUARD_PIDS}${WT_GUARD_PIDS:+ }$!"
+    WT_GUARDS_STARTED=1
+  done <<EOF
+$guard_paths
+EOF
+  max=${FM_SPAWN_WORKTREE_POLLS:-60}
+  interval=${FM_SPAWN_WORKTREE_POLL_INTERVAL:-1}
+  i=0
+  while :; do
+    missing=
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      grep -Fqx -- "$p" "$marker" 2>/dev/null || { missing=$p; break; }
+    done <<EOF
+$guard_paths
+EOF
+    [ -n "$missing" ] || break
+    i=$((i + 1))
+    if [ "$i" -ge "$max" ]; then
+      spawn_refuse_unguarded "guard for $missing never entered it (within $max polls)"
+      return 1
+    fi
+    sleep "$interval"
+  done
+  # `jobs -r` lists only still-running jobs, so an exited guard cannot pass this
+  # as a not-yet-reaped zombie would under a bare `kill -0`.
+  running=$(jobs -r -p 2>/dev/null || true)
+  dead=
+  for pid in $WT_GUARD_PIDS; do
+    printf '%s\n' "$running" | grep -Fqx -- "$pid" || { dead=$pid; break; }
+  done
+  [ -z "$dead" ] || {
+    spawn_refuse_unguarded "guard process $dead is no longer running"
+    return 1
+  }
+}
+
+spawn_refuse_unguarded() {  # <detail>
+  {
+    printf 'error: refusing to launch %s: the recorded-worktree guards could not be proven live - %s.\n' "$ID" "$1"
+    printf "Without a live guard in every recorded worktree, treehouse get can hand out and RESET a worktree this home's task records already own, destroying that task's unlanded work.\n"
+    printf 'Check that every worktree named in state/*.meta under this home is still readable, then retry.\n'
+  } >&2
+  spawn_cleanup_worktree_record_guards
 }
 
 spawn_cleanup_worktree_record_guards() {
   [ "$WT_GUARDS_STARTED" = 1 ] || return 0
   WT_GUARDS_STARTED=0
-  # shellcheck disable=SC2016  # expands in the worker pane, not in fm-spawn.
-  spawn_send_text_line "$WT_TARGET" 'if [ -n "${__fm_spawn_guard_pids:-}" ]; then kill $__fm_spawn_guard_pids 2>/dev/null || true; wait $__fm_spawn_guard_pids 2>/dev/null || true; unset __fm_spawn_guard_pids; fi'
+  if [ -n "$WT_GUARD_PIDS" ]; then
+    # shellcheck disable=SC2086  # deliberate word split: one kill for every guard pid.
+    kill $WT_GUARD_PIDS 2>/dev/null || true
+    # shellcheck disable=SC2086
+    wait $WT_GUARD_PIDS 2>/dev/null || true
+    WT_GUARD_PIDS=
+  fi
+  [ -z "$WT_GUARD_MARKER" ] || rm -f "$WT_GUARD_MARKER" 2>/dev/null || true
 }
 
 enter_recorded_worktree() {
@@ -1527,12 +1604,16 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] && [ "$REUSE_RECORDED_WOR
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # Bounded re-acquire: a slot refused by the occupancy check below is asked for
   # again rather than accepted or silently retargeted. Recorded worktrees are
-  # held by short-lived guard processes before the first `treehouse get`, so
+  # held by verified guard processes before the first `treehouse get`, so
   # treehouse's process-based detector cannot reset a slot that this home's
-  # metadata already owns. A refused subshell is exited before retrying; the
-  # record guards keep the refused slot protected without leaking nested
-  # interactive shells. Polls stay per-attempt so a genuinely exhausted pool
-  # fails within a bounded time with the claimants named.
+  # metadata already owns. The guards are protection, not a substitute for the
+  # occupancy check: a treehouse that hands out a protected slot anyway is still
+  # caught below, refused, exited, and re-asked, so the retry ladder stays
+  # reachable. WT_PROTECTED_REPORT (what the guards hold) and WT_REFUSED_REPORT
+  # (what this spawn was actually offered and refused) are kept apart so a
+  # failure is never blamed on records that were never in the way. Polls stay
+  # per-attempt so a genuinely exhausted pool fails within a bounded time with
+  # the claimants named.
   WT_ATTEMPTS=${FM_SPAWN_WORKTREE_ATTEMPTS:-3}
   WT_POLLS=${FM_SPAWN_WORKTREE_POLLS:-60}
   WT_POLL_INTERVAL=${FM_SPAWN_WORKTREE_POLL_INTERVAL:-1}
@@ -1547,14 +1628,14 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   wt_claim_refuse() {  # <why>
     {
-      printf "error: refusing to launch %s: %s; this home's task records already claim the protected worktree(s) below.\n" "$ID" "$1"
+      printf "error: refusing to launch %s: %s, and every worktree treehouse offered this spawn is already claimed by this home's task records.\n" "$ID" "$1"
       printf '%s' "$WT_REFUSED_REPORT"
       printf 'Those records are authoritative occupancy regardless of treehouse process detection, and spawn never discards one.\n'
       printf 'Recover or tear down the named task(s) to release their worktrees, or widen the pool. Inspect target %s.\n' "$T"
     } >&2
   }
 
-  spawn_start_worktree_record_guards
+  spawn_start_worktree_record_guards || exit 1
 
   while :; do
     wt_attempt=$((wt_attempt + 1))
@@ -1603,14 +1684,26 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       sleep "$WT_POLL_INTERVAL"
     done
     if [ -z "$WT" ]; then
-      # With claims already refused this spawn, a settle timeout is the pool telling
-      # us it has nothing else to offer - report it as the claim refusal it is.
+      # A slot this spawn was actually offered and refused proves the pool is out
+      # of anything else to hand us - report that as the claim refusal it is. A
+      # timeout with nothing refused proves no such thing: treehouse may be
+      # missing, broken, or simply out of slots, so the protected records are
+      # named as context only, never as the diagnosed cause.
+      spawn_cleanup_worktree_record_guards
       if [ -n "$WT_REFUSED_REPORT" ]; then
-        spawn_cleanup_worktree_record_guards
         wt_claim_refuse "treehouse offered no further worktree"
         exit 1
       fi
-      spawn_cleanup_worktree_record_guards
+      if [ -n "$WT_PROTECTED_REPORT" ]; then
+        {
+          printf 'error: refusing to launch %s: treehouse get did not enter a worktree within %s polls, so this spawn never got an unprotected slot.\n' "$ID" "$WT_POLLS"
+          printf "This home's task records protect the worktree(s) below from reuse, so an exhausted pool is one likely cause:\n"
+          printf '%s' "$WT_PROTECTED_REPORT"
+          printf 'Those records are authoritative occupancy regardless of treehouse process detection, and spawn never discards one.\n'
+          printf 'Recover or tear down the named task(s) to release their worktrees, widen the pool, or check that treehouse itself is working. Inspect target %s.\n' "$T"
+        } >&2
+        exit 1
+      fi
       echo "error: treehouse get did not enter a worktree within $WT_POLLS polls; inspect window $T" >&2
       exit 1
     fi

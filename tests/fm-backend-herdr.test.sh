@@ -541,145 +541,42 @@ test_container_ensure_reuses_existing_workspace() {
   pass "fm_backend_herdr_container_ensure: reuses an existing firstmate workspace without recreating it, and reports no seeded default tab (adopted, not created)"
 }
 
-test_create_task_refuses_duplicate_label() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/dup-task"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-dup1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-dup1 /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task should refuse an existing tab label (herdr itself does not enforce uniqueness)"
-  assert_contains "$out" "already exists" "create_task did not report the duplicate label"
-  pass "fm_backend_herdr_create_task: refuses a duplicate tab label (herdr's own tab create has no uniqueness check)"
-}
-
 # --- restored-layout duplicate refusal --------------------------------------
 #
-# Herdr persists and restores its whole session layout across a server restart.
-# A restored fm-<id> task tab can be a husk, but create_task now refuses every
-# same-labeled tab without trying to classify or replace it.
-# Relaunch must reconcile that old tab explicitly instead of creating another
-# task tab that relies on later cleanup.
-
-test_create_task_refuses_duplicate_label_when_agent_live() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/dup-live"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-dup1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-dup1 /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task should refuse when a duplicate tab label exists"
-  assert_contains "$out" "already exists" "create_task did not report the duplicate label"
-  assert_not_contains "$(cat "$log")" $'\x1f''pane' "create_task must not inspect duplicate panes before refusing"
-  assert_not_contains "$(cat "$log")" $'\x1f''agent' "create_task must not inspect duplicate agents before refusing"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not create a replacement tab when a duplicate exists"
-  pass "fm_backend_herdr_create_task: a same-labeled tab with a live agent refuses before replacement"
-}
-
-test_create_task_refuses_when_any_duplicate_label_is_live() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/dup-mixed-live"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-mixed1","workspace_id":"w1"},{"tab_id":"w1:t3","label":"fm-mixed1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-mixed1 /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task must refuse when any same-labeled tab exists"
-  assert_contains "$out" "already exists" "create_task did not report the duplicate label"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not create a replacement tab when duplicates exist"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' "create_task must not close duplicate tabs"
-  pass "fm_backend_herdr_create_task: multiple same-labeled tabs refuse without replacement"
-}
-
-test_create_task_refuses_dead_pane_husk() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/husk-dead"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-husk1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-husk1 /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task should refuse a dead-pane husk instead of replacing it"
-  assert_contains "$out" "already exists" "create_task did not report the duplicate husk tab"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not create a replacement for a husk"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' "create_task must not close a husk tab"
-  pass "fm_backend_herdr_create_task: refuses a same-labeled dead-pane husk without replacement"
-}
-
-test_create_task_refuses_no_agent_husk() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/husk-no-agent"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-husk2","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-husk2 /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task should refuse a no-agent husk instead of replacing it"
-  assert_contains "$out" "already exists" "create_task did not report the duplicate husk tab"
-  assert_not_contains "$(cat "$log")" $'\x1f''agent' "create_task must not inspect agent state before refusing duplicate tabs"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not create a replacement for a no-agent husk"
-  pass "fm_backend_herdr_create_task: refuses a same-labeled no-agent husk without replacement"
-}
-
-test_create_task_refuses_all_duplicate_husks() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/husk-multiple"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-husk-many","workspace_id":"w1"},{"tab_id":"w1:t3","label":"fm-husk-many","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-husk-many /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task should refuse multiple husk tabs instead of replacing them"
-  assert_contains "$out" "already exists" "create_task did not report multiple duplicate husk tabs"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not create a replacement when duplicate husks exist"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' "create_task must not close duplicate husks"
-  pass "fm_backend_herdr_create_task: refuses multiple same-labeled husks without replacement"
-}
-
-test_create_task_refuses_when_preexisting_husk_tab_remains() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/husk-close-fails"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-stale-husk","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-stale-husk /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task must fail when a preexisting same-labeled husk remains"
-  assert_contains "$out" "already exists" "create_task did not report the stale preexisting husk tab"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' "create_task must not try to close a stale husk by tab id"
-  pass "fm_backend_herdr_create_task: refuses success while a preexisting husk tab remains"
-}
-
-test_create_task_refuses_when_agent_state_ambiguous() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/husk-ambiguous"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-ambig1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-ambig1 /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task must refuse when agent state would be ambiguous"
-  assert_contains "$out" "already exists" "create_task did not report the duplicate label"
-  assert_not_contains "$(cat "$log")" $'\x1f''agent' "create_task must not inspect ambiguous agent state before refusing duplicate tabs"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not create a replacement tab on an ambiguous read"
-  pass "fm_backend_herdr_create_task: refuses duplicate labels before any ambiguous agent-state read"
-}
-
-test_create_task_duplicate_husk_refusal_has_no_replacement_side_effects() {
-  local dir log resp fb out status
-  dir="$TMP_ROOT/husk-order"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-order1","workspace_id":"w1"}]}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-order1 /tmp/proj' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "create_task should refuse instead of entering replacement ordering"
-  assert_contains "$out" "already exists" "create_task did not report the duplicate label"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' "create_task must not create before refusing a duplicate"
-  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' "create_task must not close after refusing a duplicate"
-  pass "fm_backend_herdr_create_task: duplicate husk refusal has no replacement ordering side effects"
+# Herdr does not enforce tab-label uniqueness itself (verified: two tabs can
+# share a label), so the duplicate check is ours, mirroring tmux's manual one.
+# Herdr also persists and restores its whole session layout across a server restart,
+# so a restored fm-<id> task tab can be a husk: a dead pane, or an agent-less
+# shell in the saved cwd. create_task no longer classifies or replaces any of
+# them - every same-labeled tab refuses, before any pane or agent read, and a
+# relaunch reconciles that old tab explicitly instead of creating a second one.
+# The only input that genuinely varies is how many same-labeled tabs exist, so
+# this is one table over that, asserting the full no-side-effects contract.
+test_create_task_refuses_every_same_labeled_tab_without_inspection() {
+  local dir log resp fb out status label tabs_json case_name
+  while IFS='|' read -r case_name label tabs_json; do
+    [ -n "$case_name" ] || continue
+    dir="$TMP_ROOT/dup-$case_name"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+    printf '%s\n' "$tabs_json" > "$resp/1.out"
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 "$1" /tmp/proj' "$ROOT" "$label" 2>&1 </dev/null )
+    status=$?
+    [ "$status" -ne 0 ] || fail "create_task should refuse a same-labeled tab ($case_name)"
+    assert_contains "$out" "already exists" "create_task did not report the duplicate label ($case_name)"
+    assert_not_contains "$(cat "$log")" $'\x1f''pane' \
+      "create_task must not inspect duplicate panes before refusing ($case_name)"
+    assert_not_contains "$(cat "$log")" $'\x1f''agent' \
+      "create_task must not inspect duplicate agent state before refusing ($case_name)"
+    assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' \
+      "create_task must not create a replacement tab when a duplicate exists ($case_name)"
+    assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close' \
+      "create_task must not close a duplicate tab ($case_name)"
+  done <<'EOF'
+single|fm-dup1|{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-dup1","workspace_id":"w1"}]}}
+multiple|fm-mixed1|{"result":{"tabs":[{"tab_id":"w1:t2","label":"fm-mixed1","workspace_id":"w1"},{"tab_id":"w1:t3","label":"fm-mixed1","workspace_id":"w1"}]}}
+EOF
+  pass "fm_backend_herdr_create_task: every same-labeled tab refuses before any pane/agent read, with no create or close side effects"
 }
 
 test_create_task_creates_and_parses_ids() {
@@ -3032,15 +2929,7 @@ test_repeated_cycles_reuse_one_workspace_no_orphans
 test_adopted_workspace_never_prunes_default_tab
 test_label_collision_startup_workspace_leaves_live_tab_alone
 test_prune_refuses_a_working_agent_pane_defense_in_depth
-test_create_task_refuses_duplicate_label
-test_create_task_refuses_duplicate_label_when_agent_live
-test_create_task_refuses_when_any_duplicate_label_is_live
-test_create_task_refuses_dead_pane_husk
-test_create_task_refuses_no_agent_husk
-test_create_task_refuses_all_duplicate_husks
-test_create_task_refuses_when_preexisting_husk_tab_remains
-test_create_task_refuses_when_agent_state_ambiguous
-test_create_task_duplicate_husk_refusal_has_no_replacement_side_effects
+test_create_task_refuses_every_same_labeled_tab_without_inspection
 test_create_task_creates_and_parses_ids
 test_create_task_creates_with_no_focus_flag
 test_projection_journal_is_atomic_and_uses_128_bit_token

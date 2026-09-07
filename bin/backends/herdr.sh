@@ -1228,13 +1228,13 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-
 #   live     - `agent get` succeeds and reports a real agent_status (working,
 #              idle, done, or blocked - any registered value). An idle or
 #              blocked agent is still a genuine, still-registered agent, not
-#              a restored husk, so it is never a close-and-replace candidate.
+#              a restored husk.
 #   unknown  - anything else: an unparseable/unexpected response from either
 #              call, or a `pane get` success whose own echoed pane_id does not
 #              round-trip (guards against misreading a herdr response shape
-#              change as "the pane exists"). The caller must fail safe toward
+#              change as "the pane exists"). Callers must fail safe toward
 #              refusal here, never toward closing - this is the conservative
-#              backstop the husk check depends on.
+#              backstop the recovery classifier depends on.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out code pid status
   # 2>&1, not 2>/dev/null: verified empirically that real herdr 0.7.1 writes
@@ -1269,21 +1269,9 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
   esac
 }
 
-# fm_backend_herdr_tab_is_husk: true (0) only for the two conservative husk
-# states (dead, no-agent) fm_backend_herdr_pane_agent_state can positively
-# confirm; live and unknown both refuse (1), so an inconclusive read never
-# licenses closing anything. Restored-layout recovery depends on this
-# fail-safe-toward-refusal behavior.
-fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
-  case "$(fm_backend_herdr_pane_agent_state "$1" "$2")" in
-    dead|no-agent) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # fm_backend_herdr_agent_state: recovery-grade state for the same session-start
-# sweep as the tmux classifier. It reuses the husk classifier rather than
-# creating a second Herdr state machine: a structurally gone pane is `missing`,
+# sweep as the tmux classifier. It reuses fm_backend_herdr_pane_agent_state
+# rather than creating a second Herdr state machine: a structurally gone pane is `missing`,
 # a confirmed agent-less pane is `dead`, a registered agent is `alive`, and an
 # unexpected or failed API read is `unreadable`.
 fm_backend_herdr_agent_state() {  # <target>

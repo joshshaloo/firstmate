@@ -73,6 +73,29 @@ if fm_backend_tmux_create_task "$SESSION" "$WINDOW" "$HOME" 2>/dev/null; then
 fi
 pass "real tmux: fm_backend_tmux_create_task creates a window and refuses a duplicate"
 
+# --- adopt an existing window (same-id relaunch) ------------------------------
+#
+# A same-id relaunch reuses the recorded name-form endpoint, so adopt must hand
+# back the STABLE window id for the rename-critical steps and re-pin the name.
+# A name tmux cannot resolve must fail rather than silently resolve to the
+# active client's window.
+ADOPTED=$(fm_backend_tmux_adopt_task "$TARGET") \
+  || fail "fm_backend_tmux_adopt_task failed to adopt the existing task window"
+case "$ADOPTED" in
+  @*) ;;
+  *) fail "adopt_task should return a stable window id, got '$ADOPTED'" ;;
+esac
+[ "$(tmux display-message -p -t "$ADOPTED" '#{window_name}')" = "$WINDOW" ] \
+  || fail "adopt_task returned an id that is not the task window"
+[ "$(tmux show-window-options -t "$ADOPTED" automatic-rename)" = "automatic-rename off" ] \
+  || fail "adopt_task did not re-pin automatic-rename off"
+[ "$(tmux show-window-options -t "$ADOPTED" allow-rename)" = "allow-rename off" ] \
+  || fail "adopt_task did not re-pin allow-rename off"
+if fm_backend_tmux_adopt_task "$SESSION:fm-not-a-window" 2>/dev/null; then
+  fail "adopt_task must refuse a window name that does not exist, never fall back to the active window"
+fi
+pass "real tmux: fm_backend_tmux_adopt_task returns the stable window id, re-pins the name, and refuses an absent window"
+
 # --- send text + Enter -------------------------------------------------------
 
 # A newly-created interactive shell can exist before its startup files and line

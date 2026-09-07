@@ -26,13 +26,15 @@
 # ordering, so a superseded or stopped train never carries credit for work only a
 # later successful train shipped. Every path that cannot answer degrades to
 # `unknown` plus an omitted[] disclosure - an unreadable source, an unfetched
-# clone, a run whose branch cannot be determined, no declared production deploy
-# step for the repository, unreadable or unparsed steps, a deploy step that did
-# not finish, a log that records no production head - so this reader can only
-# ever under-claim, never report an unproved ship. `no` is a firm negative and is
-# therefore also proof-bearing: a truncated run list, a step probe that did not
-# reach every candidate, a spent deploy budget, or a head that is not in the
-# local copy, downgrades to `unknown` rather than calling work undeployed. A run
+# clone, a listing that nominated no run to examine, a run whose branch cannot
+# be determined, no declared production deploy step for the repository,
+# unreadable or unparsed steps, a deploy step that did not finish, a log that
+# records no production head - so this reader can only ever under-claim, never
+# report an unproved ship. `no` is a firm negative and is therefore also
+# proof-bearing: it requires a declared production deploy step AND at least one
+# candidate run examined against it, and a truncated run list, a step probe that
+# did not reach every candidate, a spent deploy budget, or a head that is not in
+# the local copy, downgrades to `unknown` rather than calling work undeployed. A run
 # whose steps PARSED and did not contain the DECLARED production deploy step is a
 # known fact rather than a gap, so it can support an honest `no`; a repository
 # with no declaration stays unknown because the step was not recognized here.
@@ -360,6 +362,7 @@ DEPLOY_BUDGET_EXHAUSTED=0
 DEPLOY_PROBE_START=""
 DEPLOY_IDENTITY_UNCONFIGURED=0
 DEPLOY_IDENTITY_DUPLICATE=0
+DEPLOY_NO_CANDIDATES=0
 
 # One owner for the per-project declaration of which pipeline step is the
 # production deploy. The file is local and gitignored because project deploy
@@ -443,6 +446,26 @@ deploy_step_identity() {  # <steps-payload-json> <declared-step-name>
 }
 DEPLOY_BRANCHLESS=0
 DEPLOY_PARTIAL=0
+
+# The evidence this reader goes looking for on every deploy read, named once so
+# the ledger asks the same question of every project and every run.
+DEPLOY_EVIDENCE_SOUGHT="declared production deploy step; deploy step outcome; recorded production head"
+
+# THE SINGLE OWNER of a ledger row that belongs to the whole project rather than
+# to one run: a deploy source that is not wired, a reader that is not installed,
+# a spent budget, a listing that could not be read or nominated nothing, and a
+# repository with no usable declared production deploy step all land here. Every
+# such row carries the same columns as a per-run row so the ledger reads as one
+# table, and every one of them is an evidence gap, never a verdict.
+deploy_project_row() {  # <project> <source> <step> <result> <counted> <sought> <found> <unavailable>
+  DEPLOY_ROWS=$(printf '%s' "$DEPLOY_ROWS" | jq -c \
+    --arg project "$1" --arg source "$2" --arg step "$3" --arg result "$4" \
+    --arg counted "$5" --arg sought "$6" --arg found "$7" --arg unavailable "$8" \
+    '. + [{project:$project,source:$source,run:"-",result:$result,branch:"-",
+           deploy_step:$step,deploy_step_outcome:"-",head:"-",head_from:"-",when:"-",
+           counted:$counted,evidence_sought:$sought,evidence_found:$found,
+           evidence_unavailable:$unavailable}]')
+}
 FORGE_UNAVAILABLE=0
 FORGE_ACTIVITY_TIMED=0
 
@@ -571,42 +594,32 @@ for id in $PROJECT_IDS; do
   # --- deploy train (opt-in, network) ---------------------------------------
   [ "$INCLUDE_DEPLOY" = 1 ] || continue
   if [ "$forge" != bitbucket ] || [ -z "$slug" ]; then
-    DEPLOY_ROWS=$(printf '%s' "$DEPLOY_ROWS" | jq -c --arg project "$id" \
-      '. + [{project:$project,source:"none",run:"-",result:"no wired deploy train",
-             branch:"-",deploy_step:"-",head:"-",head_from:"-",when:"-",counted:"-",
-             evidence_sought:"deploy train for this project",evidence_found:"-",
-             evidence_unavailable:"no wired deploy train for this forge"}]')
+    deploy_project_row "$id" none "$deploy_step_name" "no wired deploy train" "-" \
+      "deploy train for this project" "-" "no wired deploy train for this forge"
     DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
     continue
   fi
   if ! command -v bkt >/dev/null 2>&1; then
-    DEPLOY_ROWS=$(printf '%s' "$DEPLOY_ROWS" | jq -c --arg project "$id" \
-      '. + [{project:$project,source:"bkt",run:"-",result:"unavailable (bkt not found)",
-             branch:"-",deploy_step:"-",head:"-",head_from:"-",when:"-",counted:"-",
-             evidence_sought:"deploy train for this project",evidence_found:"-",
-             evidence_unavailable:"the deploy reader is not installed"}]')
+    deploy_project_row "$id" bkt "$deploy_step_name" "unavailable (bkt not found)" "-" \
+      "deploy train for this project" "-" "the deploy reader is not installed"
     DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
     continue
   fi
   workspace=${slug%%/*}
   repo=${slug#*/}
   if ! deploy_budget_left; then
-    DEPLOY_ROWS=$(printf '%s' "$DEPLOY_ROWS" | jq -c --arg project "$id" \
-      '. + [{project:$project,source:"bkt",run:"-",result:"unavailable (deploy budget spent before this train was read)",
-             branch:"-",deploy_step:"-",head:"-",head_from:"-",when:"-",counted:"-",
-             evidence_sought:"deploy train for this project",evidence_found:"-",
-             evidence_unavailable:"the deploy read ran out of time before this project was checked"}]')
+    deploy_project_row "$id" bkt "$deploy_step_name" \
+      "unavailable (deploy budget spent before this train was read)" "-" \
+      "deploy train for this project" "-" \
+      "the deploy read ran out of time before this project was checked"
     DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
     continue
   fi
   DEPLOY_PROBE_CALLS=$((DEPLOY_PROBE_CALLS + 1))
   if ! runs=$(fm_run_timed "$FM_STANDUP_NET_TIMEOUT" bkt pipeline list --json \
       --workspace "$workspace" --repo "$repo" --limit "$FM_STANDUP_DEPLOY_RUNS" 2>/dev/null); then
-    DEPLOY_ROWS=$(printf '%s' "$DEPLOY_ROWS" | jq -c --arg project "$id" \
-      '. + [{project:$project,source:"bkt",run:"-",result:"unavailable (deploy train read failed)",
-             branch:"-",deploy_step:"-",head:"-",head_from:"-",when:"-",counted:"-",
-             evidence_sought:"deploy train for this project",evidence_found:"-",
-             evidence_unavailable:"the deploy train could not be read"}]')
+    deploy_project_row "$id" bkt "$deploy_step_name" "unavailable (deploy train read failed)" "-" \
+      "deploy train for this project" "-" "the deploy train could not be read"
     DEPLOY_UNAVAILABLE=$((DEPLOY_UNAVAILABLE + 1))
     continue
   fi
@@ -624,6 +637,11 @@ for id in $PROJECT_IDS; do
            result:result_of,
            branch:(branch_of // "-"),
            when:((.completed_on? // .created_on? // "-") | tostring)} ]' 2>/dev/null) || ok_runs='[]'
+  # jq consumes no input and emits nothing when the listing is empty, so it exits
+  # 0 and the fallback above never fires. An unset listing is still a listing
+  # that nominated nothing, and it has to reach the ledger as that rather than as
+  # an empty string every later reader would trip over.
+  case "$ok_runs" in ''|null) ok_runs='[]' ;; esac
   runs_read=$(printf '%s' "$ok_runs" | jq 'length')
   branchless=$(printf '%s' "$ok_runs" | jq \
     '[ .[] | select(.result == "SUCCESSFUL" and .branch == "-") ] | length')
@@ -645,141 +663,159 @@ for id in $PROJECT_IDS; do
   head_gaps=0
   probed=0
   STEP_ROWS='[]'
+  # Two facts belong to the REPOSITORY rather than to any one run, and both are
+  # settled here, before a single run is examined, so that neither can be decided
+  # by a loop that never ran. Which step is the production deploy is a per-project
+  # declaration: without a usable one there is nothing to examine a run against.
+  # And a listing that nominated no candidate run examined no evidence at all -
+  # whether it came back empty, did not parse, or carried only other branches -
+  # so it cannot support a firm negative either. Each records its own gap, and a
+  # gap can only ever withhold the verdict.
+  if [ "$deploy_step_status" != configured ]; then
+    gap_counted="no declared production deploy step for this project"
+    gap_unavailable="no declared production deploy step for this project in config/standup-deploy-steps"
+    case "$deploy_step_status" in
+      duplicate)
+        DEPLOY_IDENTITY_DUPLICATE=$((DEPLOY_IDENTITY_DUPLICATE + 1))
+        gap_counted="more than one production deploy step is declared for this project"
+        gap_unavailable="more than one production deploy step is declared for this project"
+        ;;
+      blank)
+        gap_counted="the declared production deploy step is blank"
+        gap_unavailable="the declared production deploy step is blank"
+        ;;
+      unreadable)
+        gap_counted="the production deploy step configuration could not be read"
+        gap_unavailable="config/standup-deploy-steps could not be read"
+        ;;
+    esac
+    deploy_project_row "$id" bkt "$deploy_step_name" \
+      "unavailable (no usable declared production deploy step)" "$gap_counted" \
+      "$DEPLOY_EVIDENCE_SOUGHT" "-" "$gap_unavailable"
+    DEPLOY_IDENTITY_UNCONFIGURED=$((DEPLOY_IDENTITY_UNCONFIGURED + 1))
+    head_gaps=$((head_gaps + 1))
+    candidate_runs=""
+  elif [ "$candidate_n" -eq 0 ]; then
+    deploy_project_row "$id" bkt "$deploy_step_name" \
+      "unavailable (no candidate deploy run to examine)" \
+      "no run on the default branch was examined" \
+      "$DEPLOY_EVIDENCE_SOUGHT" "declared production deploy step '$deploy_step_name'" \
+      "the deploy train listing nominated no successful run on the default branch, so no run was examined"
+    DEPLOY_NO_CANDIDATES=$((DEPLOY_NO_CANDIDATES + 1))
+    head_gaps=$((head_gaps + 1))
+  fi
   while IFS= read -r run_id; do
     [ -n "$run_id" ] && [ "$run_id" != "-" ] || continue
     [ "$probed" -lt "$FM_STANDUP_DEPLOY_STEPS" ] || break
     head=-; head_from=-; counted=""; step_state=-
-    evidence_sought="declared production deploy step; deploy step outcome; recorded production head"
+    evidence_sought="$DEPLOY_EVIDENCE_SOUGHT"
     evidence_found="-"
     evidence_unavailable="-"
 
-    if [ "$deploy_step_status" != configured ]; then
-      probed=$((probed + 1))
-      counted="no declared production deploy step for this project"
-      evidence_unavailable="no declared production deploy step for this project in config/standup-deploy-steps"
-      case "$deploy_step_status" in
-        duplicate)
-          DEPLOY_IDENTITY_DUPLICATE=$((DEPLOY_IDENTITY_DUPLICATE + 1))
-          counted="more than one production deploy step is declared for this project"
-          evidence_unavailable="more than one production deploy step is declared for this project"
-          ;;
-        blank)
-          counted="the declared production deploy step is blank"
-          evidence_unavailable="the declared production deploy step is blank"
-          ;;
-        unreadable)
-          counted="the production deploy step configuration could not be read"
-          evidence_unavailable="config/standup-deploy-steps could not be read"
-          ;;
-      esac
-      DEPLOY_IDENTITY_UNCONFIGURED=$((DEPLOY_IDENTITY_UNCONFIGURED + 1))
+    deploy_budget_left || break
+    probed=$((probed + 1))
+    DEPLOY_PROBE_CALLS=$((DEPLOY_PROBE_CALLS + 1))
+    if ! steps=$(fm_run_timed "$FM_STANDUP_NET_TIMEOUT" bkt pipeline view "$run_id" --json \
+        --workspace "$workspace" --repo "$repo" 2>/dev/null); then
+      steps=""
+    fi
+    evidence_found="declared production deploy step '$deploy_step_name'"
+    if [ -z "$steps" ]; then
+      counted="steps could not be read"
+      evidence_unavailable="the run's steps could not be read, so the deploy step outcome and production head were not available"
       head_gaps=$((head_gaps + 1))
     else
-      deploy_budget_left || break
-      probed=$((probed + 1))
-      DEPLOY_PROBE_CALLS=$((DEPLOY_PROBE_CALLS + 1))
-      if ! steps=$(fm_run_timed "$FM_STANDUP_NET_TIMEOUT" bkt pipeline view "$run_id" --json \
-          --workspace "$workspace" --repo "$repo" 2>/dev/null); then
-        steps=""
-      fi
-      evidence_found="declared production deploy step '$deploy_step_name'"
-      if [ -z "$steps" ]; then
-        counted="steps could not be read"
-        evidence_unavailable="the run's steps could not be read, so the deploy step outcome and production head were not available"
+      identity=$(deploy_step_identity "$steps" "$deploy_step_name")
+      identification=$(printf '%s' "$identity" | jq -r '.identification')
+      step_state=$(printf '%s' "$identity" | jq -r '.state')
+      [ "$identification" = ambiguous ] && DEPLOY_AMBIGUOUS=$((DEPLOY_AMBIGUOUS + 1))
+      if [ "$identification" = unparsed ]; then
+        counted="the run's steps did not parse, so the declared deploy step could not be checked"
+        evidence_unavailable="the run's steps did not parse, so the declared deploy step could not be checked"
+        DEPLOY_UNPARSED=$((DEPLOY_UNPARSED + 1))
+        head_gaps=$((head_gaps + 1))
+      elif [ "$identification" = absent ]; then
+        counted="the declared deploy step is not in this run"
+        evidence_found="declared production deploy step '$deploy_step_name'; the run's steps were read"
+        evidence_unavailable="that declared step was not present in this run"
+      elif [ "$identification" = ambiguous ]; then
+        counted="the declared deploy step appears more than once in this run"
+        evidence_unavailable="the declared deploy step appeared more than once, so the production step was not unique"
+        head_gaps=$((head_gaps + 1))
+      elif [ "$(printf '%s' "$identity" | jq '.unfinished')" -gt 0 ]; then
+        counted="a deploy step in this run did not complete successfully"
+        evidence_found="declared production deploy step '$deploy_step_name'; deploy step outcome $step_state"
+        evidence_unavailable="the deploy step did not complete successfully, so no production head was accepted"
+        DEPLOY_REFUSED=$((DEPLOY_REFUSED + 1))
         head_gaps=$((head_gaps + 1))
       else
-        identity=$(deploy_step_identity "$steps" "$deploy_step_name")
-        identification=$(printf '%s' "$identity" | jq -r '.identification')
-        step_state=$(printf '%s' "$identity" | jq -r '.state')
-        [ "$identification" = ambiguous ] && DEPLOY_AMBIGUOUS=$((DEPLOY_AMBIGUOUS + 1))
-        if [ "$identification" = unparsed ]; then
-          counted="the run's steps did not parse, so the declared deploy step could not be checked"
-          evidence_unavailable="the run's steps did not parse, so the declared deploy step could not be checked"
-          DEPLOY_UNPARSED=$((DEPLOY_UNPARSED + 1))
-          head_gaps=$((head_gaps + 1))
-        elif [ "$identification" = absent ]; then
-          counted="the declared deploy step is not in this run"
-          evidence_found="declared production deploy step '$deploy_step_name'; the run's steps were read"
-          evidence_unavailable="that declared step was not present in this run"
-        elif [ "$identification" = ambiguous ]; then
-          counted="the declared deploy step appears more than once in this run"
-          evidence_unavailable="the declared deploy step appeared more than once, so the production step was not unique"
-          head_gaps=$((head_gaps + 1))
-        elif [ "$(printf '%s' "$identity" | jq '.unfinished')" -gt 0 ]; then
-          counted="a deploy step in this run did not complete successfully"
-          evidence_found="declared production deploy step '$deploy_step_name'; deploy step outcome $step_state"
-          evidence_unavailable="the deploy step did not complete successfully, so no production head was accepted"
-          DEPLOY_REFUSED=$((DEPLOY_REFUSED + 1))
-          head_gaps=$((head_gaps + 1))
-        else
-          counted="the deploy log records no production head"
-          evidence_found="declared production deploy step '$deploy_step_name'; deploy step outcome $step_state"
-          evidence_unavailable="the deploy log records no production head"
-          while IFS= read -r step_uuid; do
-            [ -n "$step_uuid" ] && [ "$step_uuid" != "-" ] || continue
-            if ! deploy_budget_left; then
-              counted="the deploy log was not read within the deploy budget"
-              evidence_unavailable="the deploy log was not read within the deploy budget"
-              break
-            fi
-            DEPLOY_PROBE_CALLS=$((DEPLOY_PROBE_CALLS + 1))
-            # Only as much of the log as the recorded line can hide in, streamed
-            # through head rather than slurped: a deploy log runs to megabytes. The
-            # sentinel carries the pipeline's own status out past the trailing
-            # newlines command substitution would otherwise strip.
-            log_head=$( { set -o pipefail
-              fm_run_timed "$FM_STANDUP_NET_TIMEOUT" bkt pipeline logs "$run_id" \
-                --step "$step_uuid" --workspace "$workspace" --repo "$repo" 2>/dev/null \
-              | head -c "$FM_STANDUP_DEPLOY_LOG_BYTES"; } ; printf '\037%s' "$?" )
-            log_rc=${log_head##*$'\037'}
-            log_head=${log_head%$'\037'*}
-            # head -c cuts BYTES, so the truncation test must count bytes too: a
-            # multibyte log yields fewer characters than bytes and would otherwise
-            # be misreported as unreadable.
-            log_bytes=$(printf '%s' "$log_head" | LC_ALL=C wc -c | tr -cd '0-9')
-            log_truncated=0
-            if [ "${log_bytes:-0}" -ge "$FM_STANDUP_DEPLOY_LOG_BYTES" ]; then
-              log_truncated=1
-            fi
-            recorded=$(printf '%s' "$log_head" \
-              | sed -n 's/.*production is now recorded at \([0-9a-f][0-9a-f]*\).*/\1/p' | tail -1)
-            if [ -n "$recorded" ]; then
-              head=$recorded
-              head_from="recorded in the deploy log"
-              counted="deploy head recorded in the log"
-              evidence_found="declared production deploy step '$deploy_step_name'; deploy step outcome $step_state; recorded production head $recorded"
-              evidence_unavailable="-"
-              break
-            fi
-            if [ "$log_truncated" = 1 ]; then
-              counted="the deploy log was truncated before any recorded production head"
-              evidence_unavailable="the deploy log was truncated before any recorded production head"
-            elif [ "$log_rc" != 0 ]; then
-              counted="the deploy log could not be read"
-              evidence_unavailable="the deploy log could not be read"
-            fi
-          done <<STEPS
+        counted="the deploy log records no production head"
+        evidence_found="declared production deploy step '$deploy_step_name'; deploy step outcome $step_state"
+        evidence_unavailable="the deploy log records no production head"
+        while IFS= read -r step_uuid; do
+          [ -n "$step_uuid" ] && [ "$step_uuid" != "-" ] || continue
+          if ! deploy_budget_left; then
+            counted="the deploy log was not read within the deploy budget"
+            evidence_unavailable="the deploy log was not read within the deploy budget"
+            break
+          fi
+          DEPLOY_PROBE_CALLS=$((DEPLOY_PROBE_CALLS + 1))
+          # Only as much of the log as the recorded line can hide in, streamed
+          # through head rather than slurped: a deploy log runs to megabytes. The
+          # sentinel carries the pipeline's own status out past the trailing
+          # newlines command substitution would otherwise strip.
+          log_head=$( { set -o pipefail
+            fm_run_timed "$FM_STANDUP_NET_TIMEOUT" bkt pipeline logs "$run_id" \
+              --step "$step_uuid" --workspace "$workspace" --repo "$repo" 2>/dev/null \
+            | head -c "$FM_STANDUP_DEPLOY_LOG_BYTES"; } ; printf '\037%s' "$?" )
+          log_rc=${log_head##*$'\037'}
+          log_head=${log_head%$'\037'*}
+          # head -c cuts BYTES, so the truncation test must count bytes too: a
+          # multibyte log yields fewer characters than bytes and would otherwise
+          # be misreported as unreadable.
+          log_bytes=$(printf '%s' "$log_head" | LC_ALL=C wc -c | tr -cd '0-9')
+          log_truncated=0
+          if [ "${log_bytes:-0}" -ge "$FM_STANDUP_DEPLOY_LOG_BYTES" ]; then
+            log_truncated=1
+          fi
+          recorded=$(printf '%s' "$log_head" \
+            | sed -n 's/.*production is now recorded at \([0-9a-f][0-9a-f]*\).*/\1/p' | tail -1)
+          if [ -n "$recorded" ]; then
+            head=$recorded
+            head_from="recorded in the deploy log"
+            counted="deploy head recorded in the log"
+            evidence_found="declared production deploy step '$deploy_step_name'; deploy step outcome $step_state; recorded production head $recorded"
+            evidence_unavailable="-"
+            break
+          fi
+          if [ "$log_truncated" = 1 ]; then
+            counted="the deploy log was truncated before any recorded production head"
+            evidence_unavailable="the deploy log was truncated before any recorded production head"
+          elif [ "$log_rc" != 0 ]; then
+            counted="the deploy log could not be read"
+            evidence_unavailable="the deploy log could not be read"
+          fi
+        done <<STEPS
 $(printf '%s' "$identity" | jq -r '.steps[] | .uuid')
 STEPS
-          if [ "$head" = "-" ]; then
-            DEPLOY_LOG_UNREAD=$((DEPLOY_LOG_UNREAD + 1))
-            head_gaps=$((head_gaps + 1))
-          elif ! git -C "$path" rev-parse --verify -q "$head^{commit}" >/dev/null 2>&1; then
-            counted="head not in the local copy"
-            evidence_unavailable="the recorded production head is not in the local copy"
-            head_gaps=$((head_gaps + 1))
-          else
-            heads="$heads $head"
-          fi
+        if [ "$head" = "-" ]; then
+          DEPLOY_LOG_UNREAD=$((DEPLOY_LOG_UNREAD + 1))
+          head_gaps=$((head_gaps + 1))
+        elif ! git -C "$path" rev-parse --verify -q "$head^{commit}" >/dev/null 2>&1; then
+          counted="head not in the local copy"
+          evidence_unavailable="the recorded production head is not in the local copy"
+          head_gaps=$((head_gaps + 1))
+        else
+          heads="$heads $head"
         fi
       fi
     fi
     STEP_ROWS=$(printf '%s' "$STEP_ROWS" | jq -c \
-      --arg run "$run_id" --arg step "$step_state" \
+      --arg run "$run_id" --arg step "$deploy_step_name" --arg outcome "$step_state" \
       --arg head "$head" --arg head_from "$head_from" --arg counted "$counted" \
       --arg sought "$evidence_sought" --arg found "$evidence_found" \
       --arg unavailable "$evidence_unavailable" \
-      '. + [{run:$run,deploy_step:$step,head:$head,
+      '. + [{run:$run,deploy_step:$step,deploy_step_outcome:$outcome,head:$head,
              head_from:$head_from,counted:$counted,
              evidence_sought:$sought,evidence_found:$found,
              evidence_unavailable:$unavailable}]')
@@ -796,13 +832,15 @@ EOF
   fi
   DEPLOY_ROWS=$(printf '%s\n%s\n%s' "$DEPLOY_ROWS" "$ok_runs" "$STEP_ROWS" | jq -sc \
     --arg project "$id" --arg b "${branch#origin/}" --arg unprobed "$unprobed" \
+    --arg step "$deploy_step_name" --arg sought "$DEPLOY_EVIDENCE_SOUGHT" \
     '(.[2] | map({key:.run, value:.}) | from_entries) as $probe
      | .[0] + [ .[1][]
                 | . as $run
                 | ($probe[$run.run] // null) as $p
                 | {project:$project,source:"bkt",run:$run.run,result:$run.result,
                    branch:$run.branch,
-                   deploy_step:($p.deploy_step // "-"),
+                   deploy_step:($p.deploy_step // $step),
+                   deploy_step_outcome:($p.deploy_step_outcome // "-"),
                    head:($p.head // "-"),
                    head_from:($p.head_from // "-"),
                    when:$run.when,
@@ -811,7 +849,7 @@ EOF
                             elif $run.branch == "-" then "branch undetermined"
                             elif $run.branch != $b then "another branch"
                             else $unprobed end),
-                   evidence_sought:($p.evidence_sought // "deploy train for this project"),
+                   evidence_sought:($p.evidence_sought // $sought),
                    evidence_found:($p.evidence_found // "-"),
                    evidence_unavailable:($p.evidence_unavailable //
                      (if $run.result != "SUCCESSFUL" then "the run did not succeed"
@@ -1012,6 +1050,7 @@ MODEL=$(jq -n \
   --argjson unparsed_steps "$DEPLOY_UNPARSED" \
   --argjson identity_unconfigured "$DEPLOY_IDENTITY_UNCONFIGURED" \
   --argjson identity_duplicate "$DEPLOY_IDENTITY_DUPLICATE" \
+  --argjson no_candidates "$DEPLOY_NO_CANDIDATES" \
   --argjson ambiguous "$DEPLOY_AMBIGUOUS" \
   --argjson activity_timed "$FORGE_ACTIVITY_TIMED" \
   --argjson mate_registry_unfollowed "$SECONDMATE_REGISTRY_UNFOLLOWED" \
@@ -1047,10 +1086,11 @@ MODEL=$(jq -n \
         (if $scan_capped > 0 then {surface:("projects whose mainline read hit its bound of \($scan_bound) commits: \($scan_capped); older merges in the window were not read"), reveal:"raise FM_STANDUP_MERGE_SCAN, or narrow --window"} else empty end),
         (if $undated > 0 then {surface:("closed records carrying no close date, so they cannot be placed in any window: \($undated)"), reveal:"add a close date to those backlog rows"} else empty end),
         (if $include_deploy == 1 and $deploy_gaps > 0 then {surface:("projects with no usable deployed head: \($deploy_gaps); their merges stay unconfirmed, never deployed"), reveal:"see deploys[].result"} else empty end),
-        (if $include_deploy == 1 and $no_deployment > 0 then {surface:("projects where no run recorded a production head: \($no_deployment); a pipeline listing carries build, test, and custom runs, and neither CI-green nor a step named deploy is a deploy"), reveal:"see deploys[].counted and deploys[].deploy_step"} else empty end),
+        (if $include_deploy == 1 and $no_deployment > 0 then {surface:("projects where no run recorded a production head: \($no_deployment); a pipeline listing carries build, test, and custom runs, and neither CI-green nor a step named deploy is a deploy"), reveal:"see deploys[].counted and deploys[].deploy_step_outcome"} else empty end),
         (if $include_deploy == 1 and $refused > 0 then {surface:("runs refused because a deploy step in them did not complete successfully: \($refused); a successful staging deploy beside a failed production one is not a ship"), reveal:"see deploys[].counted"} else empty end),
-        (if $include_deploy == 1 and $identity_unconfigured > 0 then {surface:("runs whose project has no usable declared production deploy step: \($identity_unconfigured); their deploy step was not recognized here, so the verdict stays unknown"), reveal:"set config/standup-deploy-steps for that project"} else empty end),
-        (if $include_deploy == 1 and $identity_duplicate > 0 then {surface:("runs whose project declares more than one production deploy step: \($identity_duplicate); the production step is not unique"), reveal:"keep one line for the project in config/standup-deploy-steps"} else empty end),
+        (if $include_deploy == 1 and $identity_unconfigured > 0 then {surface:("projects with no usable declared production deploy step: \($identity_unconfigured); their deploy step was not recognized here, so the verdict stays unknown"), reveal:"set config/standup-deploy-steps for that project"} else empty end),
+        (if $include_deploy == 1 and $identity_duplicate > 0 then {surface:("projects declaring more than one production deploy step: \($identity_duplicate); the production step is not unique"), reveal:"keep one line for the project in config/standup-deploy-steps"} else empty end),
+        (if $include_deploy == 1 and $no_candidates > 0 then {surface:("projects whose deploy train listing nominated no run to examine: \($no_candidates); no deploy evidence was examined at all, so their merges stay unconfirmed rather than being called undeployed"), reveal:"see deploys[].evidence_unavailable"} else empty end),
         (if $include_deploy == 1 and $ambiguous > 0 then {surface:("runs where the declared production deploy step appears more than once, so the production step is not unique: \($ambiguous)"), reveal:"see deploys[].evidence_unavailable; only a recorded production head from a unique declared step settles it"} else empty end),
         (if $include_deploy == 1 and $unparsed_steps > 0 then {surface:("runs whose step payload parsed to nothing, so a deploy step could neither be found nor ruled out: \($unparsed_steps)"), reveal:"see deploys[].counted"} else empty end),
         (if $include_deploy == 1 and $log_unread > 0 then {surface:("successful deploys whose recorded production head could not be read: \($log_unread); the deploy ran, what it served is unproved, and neither is a ship"), reveal:"see deploys[].counted for whether the log was unreadable, truncated, or simply silent"} else empty end),

@@ -79,7 +79,7 @@ case "${2:-}" in
     v="FAKE_BKT_LOG_$run"
     printf '%s\n' "${!v:-${FAKE_BKT_LOG:-}}"
     ;;
-  *) printf '%s\n' "${FAKE_BKT_RUNS:-{\"values\":[]\}}" ;;
+  *) printf '%s' "${FAKE_BKT_RUNS-{\"values\":[]\}}" ;;
 esac
 SH
   cat > "$fb/curl" <<'SH'
@@ -259,8 +259,8 @@ grep -q "bkt pipeline view 1042" "$HOME_A/net.log" \
 res=$(printf '%s' "$json" | jq -r '[.deploys[] | "\(.run)=\(.result)"] | sort | join(" ")')
 assert_contains "$res" "1042=FAILED" "a stopped run stays visible as evidence"
 assert_contains "$res" "1041=SUCCESSFUL" "the successful run is the one that grants containment"
-row=$(printf '%s' "$json" | jq -r '.deploys[] | select(.run == "1041") | "\(.deploy_step) \(.head) \(.head_from)"')
-assert_contains "$row" "COMPLETED/SUCCESSFUL" "the deploy step's own state is reported"
+row=$(printf '%s' "$json" | jq -r '.deploys[] | select(.run == "1041") | "\(.deploy_step) \(.deploy_step_outcome) \(.head) \(.head_from)"')
+assert_contains "$row" "COMPLETED/SUCCESSFUL" "the deploy step's own outcome is reported"
 assert_contains "$row" "$head_shipped" "the recorded head is the one reported"
 assert_contains "$row" "recorded in the deploy log" "the row says where its head came from"
 
@@ -417,6 +417,72 @@ v11=$(printf '%s' "$json" | jq -r '.merges[] | select(.title | test("#11")) | .d
 [ "$v11" = unknown ]   || fail "a non-unique production step must not grant a recorded head, got: $v11"
 
 pass "the evidence ledger separates configured, unrecognized, absent, and ambiguous deploy steps"
+
+# --- a listing that examined no run can never harden into a firm negative ----
+#
+# `no` is a claim too, and the ledger has to be able to point at the evidence
+# behind it: a declared production deploy step AND at least one candidate run
+# actually examined against it. A listing that came back empty, one that did not
+# parse, and one that nominated only other branches each examined nothing at
+# all, so each is an evidence gap - never "merged, not yet deployed".
+
+: > "$HOME_A/config/standup-deploy-steps"
+set_deploy_step "$HOME_A" alpha "Deploy to production"
+otherbranch=$(jq -nc '{values:[{build_number:4001, state:{result:{name:"SUCCESSFUL"}},
+                                target:{ref_name:"release"}, created_on:"2026-08-28T10:00:00Z"}]}')
+while IFS='|' read -r label listing; do
+  [ -n "$label" ] || continue
+  case "$listing" in EMPTY) listing="" ;; OTHERBRANCH) listing=$otherbranch ;; esac
+  : > "$HOME_A/net.log"
+  json=$(FAKE_BKT_RUNS="$listing" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+    FAKE_BKT_LOG="$(recorded_log "$head_shipped")" \
+    run "$HOME_A" "$FB_A" --window 72h --include-deploy --json) \
+    || fail "$label listing aborted the report instead of reporting a gap"
+  deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+  [ "$deployed" = unknown ] \
+    || fail "$label listing examined no run, so it must leave merges unknown, got: $deployed"
+  assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].evidence_unavailable')" \
+    "nominated no successful run on the default branch" \
+    "$label listing names the missing candidate instead of pretending nothing deployed"
+  assert_contains "$(printf '%s' "$json" | jq -r '.omitted[].surface')" \
+    "nominated no run to examine" "$label listing is disclosed to the captain"
+  grep -q "bkt pipeline view" "$HOME_A/net.log" \
+    && fail "$label listing must not have produced a run to probe"
+done <<'LISTINGS'
+an empty|EMPTY
+an unparseable|not json at all
+an off-branch|OTHERBRANCH
+LISTINGS
+
+# The same holds when the repository has no declaration at all: with no run
+# nominated and no declared step, there are two reasons to withhold and none to
+# call the work undeployed.
+: > "$HOME_A/config/standup-deploy-steps"
+json=$(FAKE_BKT_RUNS="" run "$HOME_A" "$FB_A" --window 72h --include-deploy --json) \
+  || fail "an undeclared repository with an empty listing aborted the report"
+deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')
+[ "$deployed" = unknown ] \
+  || fail "an undeclared repository must stay unknown even with no candidate run, got: $deployed"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].evidence_unavailable')" \
+  "no declared production deploy step" \
+  "the undeclared repository names its missing declaration"
+: > "$HOME_A/config/standup-deploy-steps"
+set_deploy_step "$HOME_A" alpha "Deploy to production"
+
+pass "a deploy read that examined no run withholds the verdict instead of denying it"
+
+# --- the ledger names the declared step and its outcome in separate columns --
+
+json=$(FAKE_BKT_RUNS="$runs" FAKE_BKT_STEPS="$(steps_json COMPLETED SUCCESSFUL)" \
+  FAKE_BKT_LOG="$(recorded_log "$head_shipped")" \
+  run "$HOME_A" "$FB_A" --window 72h --include-deploy --json)
+step=$(printf '%s' "$json" | jq -r '[.deploys[].deploy_step] | unique | join(",")')
+[ "$step" = "Deploy to production" ] \
+  || fail "deploys[].deploy_step must carry the declared step name, got: $step"
+assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].deploy_step_outcome')" "COMPLETED/SUCCESSFUL" \
+  "deploys[].deploy_step_outcome carries how that step ended"
+
+pass "the declared deploy step and its outcome are separate ledger columns"
 
 # --- steps that could not be read differ from a run with no deploy step -----
 #
@@ -659,12 +725,12 @@ pass "merged pull requests are opt-in, window-filtered, and disclosed when unrea
 
 # --- a project on a forge with no wired deploy train -------------------------
 
-HOME_B=$(make_home home-b)
-FB_B=$(make_fakebin "$HOME_B")
-printf -- '- gamma [no-mistakes +yolo] - GitHub fixture (cloned 2026-08-01)\n' > "$HOME_B/data/projects.md"
-make_project "$HOME_B" gamma "git@github.com:acme/gamma.git" >/dev/null
+HOME_F=$(make_home home-f)
+FB_F=$(make_fakebin "$HOME_F")
+printf -- '- gamma [no-mistakes +yolo] - GitHub fixture (cloned 2026-08-01)\n' > "$HOME_F/data/projects.md"
+make_project "$HOME_F" gamma "git@github.com:acme/gamma.git" >/dev/null
 
-json=$(run "$HOME_B" "$FB_B" --window 72h --include-deploy --json)
+json=$(run "$HOME_F" "$FB_F" --window 72h --include-deploy --json)
 assert_contains "$(printf '%s' "$json" | jq -r '.deploys[].result')" "no wired deploy train" \
   "a project without a wired deploy train says so"
 deployed=$(printf '%s' "$json" | jq -r '[.merges[].deployed] | unique | join(",")')

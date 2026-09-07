@@ -54,6 +54,8 @@ Each non-empty, non-comment line is `<project><TAB><exact step name>`.
 Project names match `data/projects.md`; step names may contain spaces but not tabs.
 A missing, duplicate, blank, or unreadable declaration is recorded in the standup evidence ledger and leaves that repository's deployed verdict unknown.
 A declaration that is present but absent from a parsed run is different: that run is known not to contain the production deploy step, so it can support a firm merged-but-not-deployed verdict when the rest of the deploy read is complete.
+A firm merged-but-not-deployed verdict needs both halves of that evidence, so a deploy train that nominated no run to examine at all leaves the verdict unknown as well.
+In the ledger the declared name appears as `deploys[].deploy_step` and how that step ended in a run as `deploys[].deploy_step_outcome`.
 
 ## Runtime backend (config/backend / FM_BACKEND)
 

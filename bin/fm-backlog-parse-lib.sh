@@ -198,7 +198,7 @@ fm_backlog_json() {  # <backlog-path> [<today>]
                else "done" end)
           | .requires_child_metadata = (.current_role == "worker")
           | .captain_actionable =
-              (.state == "queued" and .hold_kind == "captain"
+              (.state == "queued" and .kind == "captain" and .hold_kind == "captain"
                and .hold_reason != null and (.unresolved_blocker_ids | length) == 0
                and (.hold_until == null or .hold_until <= $today))
           | .deferred_marker =

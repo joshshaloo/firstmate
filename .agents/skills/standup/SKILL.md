@@ -77,6 +77,8 @@ The shipped verdict comes from the reader's per-run evidence ledger.
 That ledger names what was sought, what was found, and what could not be read: the repository's declared production deploy step, the step outcome, and the recorded production head.
 A run whose steps were read and did not contain the declared production deploy step can support "merged, not yet deployed".
 A repository with no declared production deploy step is different: the deploy step was not recognized here, so say we could not tell rather than saying it did not ship.
+So is a repository whose deploy train nominated no run to examine at all: nothing was checked, so there is nothing to call undeployed.
+`deploys[].deploy_step` is the repository's declared production deploy step and `deploys[].deploy_step_outcome` is how that step ended in that run; they are different columns and different sentences.
 
 Rules that keep this honest:
 
@@ -96,7 +98,7 @@ Rules that keep this honest:
   Say the missing piece in the captain's words: no declared production deploy step for that repository, a step not present in that run, a step that did not complete successfully, unreadable steps, an unreadable log, or no recorded production head.
 - The reasons a deploy proved nothing are different sentences, and the reader keeps them apart.
   A run refused because one of its deploy steps failed, a log that could not be read, a log cut short, a log that recorded nothing, a step payload that did not parse, and an identification the payload could not settle are distinct facts.
-  Read `deploys[].counted` and say the one that applies; never flatten them into "not deployed".
+  Read `deploys[].counted` and `deploys[].deploy_step_outcome` and say the one that applies; never flatten them into "not deployed".
 - A deploy that ran but proved nothing is not a failed deploy.
   Say "it deployed, we could not confirm what it put live" rather than implying the deploy broke.
 - A revert is not a ship, and a number in a subject line is not a merge.

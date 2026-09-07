@@ -87,7 +87,7 @@ fm_run_bash_timeout() {
 }
 
 fm_run_external_timeout() {
-  local runner=$1 seconds=$2 status_file runner_pid runner_rc command_rc
+  local runner=$1 seconds=$2 status_file runner_pid runner_rc command_rc grace
   shift 2
   status_file=$(mktemp "${TMPDIR:-/tmp}/fm-timeout-status.XXXXXX" 2>/dev/null) || return 124
   # Run timeout asynchronously so its pid - also the process-group id created
@@ -118,6 +118,17 @@ fm_run_external_timeout() {
   esac
   case "$runner_rc" in
     124|137)
+      # The wrapper dies on TERM before a descendant running an EXIT trap does,
+      # so the runner can report the bound was hit while a release, an unlink, or
+      # a lock cleanup is still in flight. That grace between TERM and KILL is
+      # exactly what `-k` buys, and reaping the group the instant the runner
+      # returns would spend it: wait the same window out first, and force-kill
+      # only what is still there when it closes.
+      grace=10
+      while [ "$grace" -gt 0 ] && kill -0 -- "-$runner_pid" 2>/dev/null; do
+        sleep 0.1
+        grace=$((grace - 1))
+      done
       kill -KILL -- "-$runner_pid" 2>/dev/null || true
       return 124
       ;;

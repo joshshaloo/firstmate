@@ -781,6 +781,76 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
   pass "bootstrap surfaces active crew-dispatch rules only as verbose BOOTSTRAP_INFO"
 }
 
+test_bootstrap_reports_decision_answer_reconciliation() {
+  local case_dir fakebin real_tasks out hold
+  real_tasks=$(command -v tasks-axi 2>/dev/null) || { echo "skip: tasks-axi not found"; return 0; }
+  case_dir="$TMP_ROOT/decision-reconcile-bootstrap"
+  mkdir -p "$case_dir/home/data/captain-decisions" "$case_dir/home/state" "$case_dir/home/config" "$case_dir/home/projects"
+  cp "$ROOT/.tasks.toml" "$case_dir/home/.tasks.toml"
+  cat > "$case_dir/home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+
+## Done
+EOF
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/tasks-axi" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --version ]; then
+  printf '%s\n' '0.2.5'
+  exit 0
+fi
+if [ "\${1:-}" = update ] && [ "\${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi update <id> [flags]'
+  printf '%s\n' '  --body-file <path>'
+  printf '%s\n' '  --archive-body'
+  exit 0
+fi
+if [ "\${1:-}" = mv ] && [ "\${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>'
+  exit 0
+fi
+if [ "\${1:-}" = hold ] && [ "\${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi hold <id> --reason <reason> --kind captain'
+  exit 0
+fi
+exec '$real_tasks' "\$@"
+EOF
+  chmod +x "$fakebin/tasks-axi"
+  (cd "$case_dir/home" && tasks-axi add sample-origin "Review sample" --kind scout --repo sample --start) >/dev/null \
+    || fail "could not create bootstrap reconcile origin"
+  fm_write_meta "$case_dir/home/state/sample-origin.meta" \
+    "window=firstmate:fm-sample-origin" \
+    "worktree=$case_dir/home/projects/missing-sample-origin" \
+    "project=$case_dir/home/projects/sample" \
+    "harness=codex" \
+    "kind=scout" \
+    "mode=scout"
+  printf 'done: report complete\n' > "$case_dir/home/state/sample-origin.status"
+  mkdir -p "$case_dir/home/data/sample-origin"
+  printf '# Sample origin\n' > "$case_dir/home/data/sample-origin/report.md"
+  hold=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_STATE_OVERRIDE="$case_dir/home/state" \
+    FM_DATA_OVERRIDE="$case_dir/home/data" "$ROOT/bin/fm-decision-hold.sh" hold sample-origin route \
+    --title "Choose route" --reason "captain route pending" --repo sample) \
+    || fail "could not create bootstrap reconciliation hold"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_STATE_OVERRIDE="$case_dir/home/state" \
+    FM_DATA_OVERRIDE="$case_dir/home/data" "$ROOT/bin/fm-decision-hold.sh" complete sample-origin route >/dev/null \
+    || fail "could not complete bootstrap reconciliation inventory"
+  cat > "$case_dir/home/data/captain-decisions/$hold.md" <<EOF
+Origin: sample-origin
+Decision key: route
+Hold: $hold
+
+Use the bootstrap route.
+EOF
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "DECISION_HOLD: ANSWER_FILE_OPEN_HOLD: $case_dir/home/data/captain-decisions/$hold.md -> $hold" \
+    "bootstrap did not surface answer-file reconciliation diagnostics"
+  pass "bootstrap reports decision answer reconciliation diagnostics"
+}
+
 test_crew_dispatch_validation() {
   local label body expect mode case_dir fakebin out n
   n=0
@@ -852,4 +922,5 @@ test_fleet_sync_timeout_is_computed_before_launch
 test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
+test_bootstrap_reports_decision_answer_reconciliation
 test_crew_dispatch_validation

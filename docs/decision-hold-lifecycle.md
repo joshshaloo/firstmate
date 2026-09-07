@@ -23,10 +23,15 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
-The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
-It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
-An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
-A failed intermediate step leaves the hold open.
+The `resolve` subcommand requires an answer source file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
+It is the only command that writes canonical `data/captain-decisions/` answer files.
+It writes that answer file, records the decision digest and routed task identities in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done as one rollback-protected action.
+A failed step restores the prior backlog and answer-file state, leaving the hold open and routed work still blocked.
+A changed decision or routed-task set on retry is rejected.
+
+The `reconcile-answers` subcommand is read-only apart from temporary files.
+It reports every canonical answer file whose decision record is still open and every open captain decision whose key appears in a canonical answer file.
+Session-start bootstrap runs that check as a detect-only diagnostic and prefixes every report line with `DECISION_HOLD:`.
 
 ## Structured read surfaces
 
@@ -43,6 +48,7 @@ The projection remains read-only and does not inspect historical prose.
 Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
+Atomic answer-recording and reconciliation verification date: 2026-09-07.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -61,6 +67,7 @@ ok - ended visual review follows the same decision-hold completion owner
 ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
+ok - reconciliation reports answer files and same-key open captain holds
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
 
 $ bash tests/fm-fleet-snapshot-view.test.sh

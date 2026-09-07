@@ -230,24 +230,15 @@ EOF
   show=$(tasks_in "$home" show "$route_hold" --full)
   assert_contains "$show" "state: queued" "partial routing failure closed the hold"
   show=$(tasks_in "$home" show sample-route-followup --full)
-  assert_contains "$show" "blocked: no" "partial routing fixture did not release its first dependent"
+  assert_contains "$show" "blocked: yes" "atomic routing failure released its first dependent"
   show=$(tasks_in "$home" show sample-route-implementation --full)
-  assert_contains "$show" "blocked: yes" "partial routing fixture unexpectedly released its second dependent"
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
-    --routed-to sample-route-followup > "$home/reduced-retry.out" 2> "$home/reduced-retry.err"; then
-    fail "partial resolution retry accepted a reduced routed task set"
-  fi
+  assert_contains "$show" "blocked: yes" "atomic routing failure released its second dependent"
+  assert_absent "$home/data/captain-decisions/$route_hold.md" \
+    "atomic routing failure left an answer file behind"
   printf 'Use route south for the sample system.\n' > "$home/changed-route-decision.txt"
-  if run_decisions "$home" resolve "$id" route --decision-file "$home/changed-route-decision.txt" \
-    --routed-to sample-route-implementation --routed-to sample-route-followup \
-    > "$home/partial-drifted-decision.out" 2> "$home/partial-drifted-decision.err"; then
-    fail "partial resolution retry accepted a different captain decision"
-  fi
-  tasks_in "$home" "done" sample-route-followup >/dev/null \
-    || fail "could not complete already-routed dependent work"
   run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
     --routed-to sample-route-implementation --routed-to sample-route-followup >/dev/null \
-    || fail "could not resume and complete partial decision routing"
+    || fail "could not complete atomic decision routing after a transient failure"
   run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
     --routed-to sample-route-implementation --routed-to sample-route-followup >/dev/null \
     || fail "identical resolution retry was not idempotent"
@@ -264,6 +255,8 @@ EOF
   show=$(tasks_in "$home" show "$route_hold" --full)
   assert_contains "$show" "state: done" "resolved hold did not close"
   assert_contains "$show" "Resolution recorded by fm-decision-hold" "resolved hold lost the decision record"
+  assert_grep "Decision key: route" "$home/data/captain-decisions/$route_hold.md" \
+    "resolve did not write the canonical captain answer file"
   show=$(tasks_in "$home" show sample-route-implementation --full)
   assert_contains "$show" "blocked: no" "recorded decision did not release dependent work"
   json=$(run_bearings "$home") || fail "Bearings failed after decision resolution"
@@ -455,6 +448,58 @@ EOF
   pass "main-home and secondmate-home captain holds remain correctly routed"
 }
 
+test_reconcile_answers_reports_open_answered_holds() {
+  local home origin hold other out rc
+  home=$(make_home reconcile-answers)
+  origin=sample-reconcile-review
+  mkdir -p "$home/data/$origin" "$home/data/captain-decisions"
+  tasks_in "$home" add "$origin" "Reconcile answer files" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create reconcile origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Reconcile review\n\nA route answer was recorded elsewhere.\n' > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" route \
+    --title "Choose the reconcile route" --reason "captain route pending" --repo sample) \
+    || fail "could not register reconcile hold"
+  run_decisions "$home" complete "$origin" route >/dev/null \
+    || fail "could not complete reconcile inventory"
+  cat > "$home/data/captain-decisions/$hold.md" <<EOF
+Origin: $origin
+Decision key: route
+Hold: $hold
+
+Use the recorded route.
+EOF
+  set +e
+  out=$(run_decisions "$home" reconcile-answers 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "reconcile-answers succeeded despite an open answered hold"
+  assert_contains "$out" "ANSWER_FILE_OPEN_HOLD: $home/data/captain-decisions/$hold.md -> $hold" \
+    "reconcile did not report the answer file whose hold is still open"
+  assert_contains "$out" "OPEN_HOLD_HAS_ANSWER_FILE_KEY: $hold -> $home/data/captain-decisions/$hold.md" \
+    "reconcile did not report the open hold whose key has an answer file"
+
+  other=sample-other-review
+  mkdir -p "$home/data/$other"
+  tasks_in "$home" add "$other" "Second reconcile answer" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create second reconcile origin"
+  write_origin_meta "$home" "$other"
+  printf 'done: report complete\n' > "$home/state/$other.status"
+  printf '# Second reconcile review\n' > "$home/data/$other/report.md"
+  run_decisions "$home" hold "$other" route \
+    --title "Choose another reconcile route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not register same-key reconcile hold"
+  set +e
+  out=$(run_decisions "$home" reconcile-answers 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "reconcile-answers missed a same-key open hold"
+  assert_contains "$out" "OPEN_HOLD_HAS_ANSWER_FILE_KEY: $other-decision-route -> $home/data/captain-decisions/$hold.md" \
+    "reconcile did not report every open hold with the answered key"
+  pass "reconciliation reports answer files and same-key open captain holds"
+}
+
 # tasks-axi quotes multi-entry blocked_by values as "a,b,c". resolve must strip
 # those surrounding quotes before comma-boundary membership so the first and last
 # list elements match, not only middle elements.
@@ -559,4 +604,5 @@ test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
+test_reconcile_answers_reports_open_answered_holds
 test_resolve_matches_quoted_blocked_by_edges

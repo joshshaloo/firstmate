@@ -43,7 +43,8 @@
 #   - no-mistakes + dirty worktree, even when work landed -> REFUSE (dirty wins)
 #   - no-mistakes + target content differs -> REFUSE (safety + files)
 #   - no-mistakes + target missing change -> REFUSE (safety + files)
-#   - no-mistakes + unknown explicit target -> REFUSE (fail-safe)
+#   - no-mistakes + unknown explicit target -> REFUSE (absent on origin)
+#   - no-mistakes + recorded target, origin unreachable -> REFUSE (unverified, not wrong)
 #   - no-mistakes + gh lookup errors + content not in target -> REFUSE (fail-safe)
 #   - no-mistakes + merged PR but HEAD moved afterward -> REFUSE (stale PR)
 #   - no-mistakes + stale origin/main but fetched content -> ALLOW  (fresh fetch)
@@ -678,7 +679,7 @@ test_local_only_recorded_remote_only_landing_branch_refuses() {
   set -e
 
   expect_code 1 "$rc" "local-only-recorded-remote-target: a remote-only recorded target must not fall back to the local default branch"
-  assert_grep "directed at landing branch release-Aug2026, which cannot be resolved" "$case_dir/stderr" \
+  assert_grep "directed at landing branch release-Aug2026, which has no local head" "$case_dir/stderr" \
     "local-only-recorded-remote-target: refusal did not name the recorded target"
   assert_grep "has no local head" "$case_dir/stderr" \
     "local-only-recorded-remote-target: refusal did not explain why the target is unresolvable"
@@ -1036,13 +1037,55 @@ test_unknown_landing_branch_refuses() {
 
   expect_code 1 "$rc" "unknown-release: teardown should refuse when the landing branch cannot be read"
   grep -q REFUSED "$case_dir/stderr" || fail "unknown-release: no REFUSED line in stderr"
-  assert_grep "directed at landing branch release-missing, which cannot be resolved" "$case_dir/stderr" \
-    "unknown-release: refusal did not name the unresolvable landing branch"
+  assert_grep "directed at landing branch release-missing, which does not exist on origin" "$case_dir/stderr" \
+    "unknown-release: refusal did not report the branch as absent from origin"
+  assert_grep "recorded landing branch release-missing does not exist on origin" "$case_dir/stderr" \
+    "unknown-release: refusal did not state the absent-branch fact"
   assert_grep "Record or pass the correct --landing-branch, or land the work on release-missing and rerun" "$case_dir/stderr" \
     "unknown-release: refusal did not name the two real exits"
   assert_grep "will not judge the work against a different branch" "$case_dir/stderr" \
     "unknown-release: refusal did not rule out a default-branch fallback"
-  pass "unresolvable recorded landing branch refuses and names the target"
+  assert_grep "Only with the captain's explicit OK to discard the work, --force." "$case_dir/stderr" \
+    "unknown-release: refusal did not end with the shared discard footer"
+  assert_not_contains "$(cat "$case_dir/stderr")" "origin was unreachable" \
+    "unknown-release: an absent branch must not be reported as an unreachable origin"
+  pass "a landing branch absent from origin refuses and names the target"
+}
+
+# An unreachable origin is a different fact from a wrong branch. The work here HAS
+# landed on main, so blaming the recorded branch would send the operator to fix
+# something that is already correct; teardown must say landing is unverified.
+test_unreachable_origin_refuses_without_blaming_the_branch() {
+  local case_dir rc stderr
+  case_dir=$(make_case origin-unreachable)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_on_origin_main "$case_dir" feature.txt hello
+  append_landing_branch_meta "$case_dir" main
+  git -C "$case_dir/project" remote set-url origin "$case_dir/gone.git"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  stderr=$(cat "$case_dir/stderr")
+
+  expect_code 1 "$rc" "origin-unreachable: teardown must fail closed when landing cannot be verified"
+  assert_grep "origin was unreachable" "$case_dir/stderr" \
+    "origin-unreachable: refusal did not report the unreachable origin"
+  assert_grep "could not reach or authenticate to origin to verify landing on main" "$case_dir/stderr" \
+    "origin-unreachable: refusal did not state the unverified-landing fact"
+  assert_grep "git fetch origin +refs/heads/main:refs/remotes/origin/main" "$case_dir/stderr" \
+    "origin-unreachable: refusal did not name the exact fetch that failed"
+  assert_grep "Restore access to origin and rerun teardown." "$case_dir/stderr" \
+    "origin-unreachable: refusal did not offer the restore-access exit"
+  assert_grep "Only with the captain's explicit OK to discard the work, --force." "$case_dir/stderr" \
+    "origin-unreachable: refusal did not end with the shared discard footer"
+  assert_not_contains "$stderr" "does not exist on origin" \
+    "origin-unreachable: an outage must never be reported as a wrong branch"
+  assert_not_contains "$stderr" "Record or pass the correct --landing-branch" \
+    "origin-unreachable: an outage must not tell the operator to re-record a correct branch"
+  pass "an unreachable origin refuses as unverified landing, never as a wrong branch"
 }
 
 # A squash landing followed by an unrelated later edit to the same file: the raw
@@ -1696,6 +1739,7 @@ test_explicit_non_default_landing_branch_allows
 test_landing_branch_content_differs_refuses_with_files
 test_landing_branch_missing_change_refuses_with_files
 test_unknown_landing_branch_refuses
+test_unreachable_origin_refuses_without_blaming_the_branch
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses

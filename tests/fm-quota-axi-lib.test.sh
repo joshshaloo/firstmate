@@ -82,6 +82,7 @@ check() {
   fi
   started=$SECONDS
   CHECK_RC=0
+  # shellcheck disable=SC2016 # The child shell expands its own positional parameters.
   env "PATH=$fakebin:$path" \
     FM_FAKE_QUOTA_LOG="$log" \
     FM_FAKE_QUOTA_VERSION="$version" \

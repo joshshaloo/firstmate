@@ -532,7 +532,7 @@ ROWS
 }
 
 test_fake_toolchain_base_path_does_not_leak_real_path_tools() {
-  local case_dir real_path fakebin old_real old_bin old_key old_real_set hermetic_path out
+  local case_dir real_path fakebin old_real old_base old_real_set old_base_set hermetic_path out
   case_dir="$TMP_ROOT/base-path-leak"
   real_path="$case_dir/real-path"
   mkdir -p "$case_dir/home/config" "$real_path"
@@ -545,25 +545,30 @@ SH
   chmod +x "$real_path/herdr"
   fakebin=$(make_fake_toolchain_no_tmux "$case_dir")
   old_real_set=0
+  old_base_set=0
+  old_real=
+  old_base=
   if [ -n "${FM_TEST_REAL_BASE_PATH+x}" ]; then
     old_real_set=1
     old_real=$FM_TEST_REAL_BASE_PATH
-  else
-    old_real=
   fi
-  old_bin=$FM_TEST_CORE_BIN
-  old_key=$FM_TEST_CORE_BIN_KEY
-  FM_TEST_REAL_BASE_PATH="$real_path:/usr/bin:/bin:/usr/sbin:/sbin"
-  FM_TEST_CORE_BIN=
-  FM_TEST_CORE_BIN_KEY=
+  if [ -n "${FM_TEST_BASE_PATH+x}" ]; then
+    old_base_set=1
+    old_base=$FM_TEST_BASE_PATH
+  fi
+  FM_TEST_REAL_BASE_PATH="$real_path:$FM_TEST_DEFAULT_REAL_BASE_PATH"
+  unset FM_TEST_BASE_PATH
   fm_test_set_base_path hermetic_path
   if [ "$old_real_set" -eq 1 ]; then
     FM_TEST_REAL_BASE_PATH=$old_real
   else
     unset FM_TEST_REAL_BASE_PATH
   fi
-  FM_TEST_CORE_BIN=$old_bin
-  FM_TEST_CORE_BIN_KEY=$old_key
+  if [ "$old_base_set" -eq 1 ]; then
+    FM_TEST_BASE_PATH=$old_base
+  else
+    unset FM_TEST_BASE_PATH
+  fi
   out=$(PATH="$fakebin:$hermetic_path" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
   assert_contains "$out" "MISSING_MANUAL: herdr (instructions: https://herdr.dev)" \

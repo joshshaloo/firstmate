@@ -120,7 +120,7 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 ## Herdr
 
 The compatibility floor is protocol 14.
-The latest active verification uses Herdr 0.7.5 protocol 17, most recently on Linux x86_64 with a nix-provided herdr for the restart-husk create refusal below; the section's earlier 0.7.5 protocol 17 evidence was observed on macOS aarch64 and still stands.
+The latest active verification uses Herdr 0.7.5 protocol 17, most recently on Linux x86_64 for the pane-disappearance and husk classification evidence below; the restart-husk create refusal was checked on Linux x86_64 with a nix-provided herdr, and the section's earlier 0.7.5 protocol 17 evidence was observed on macOS aarch64 and still stands.
 Earlier 0.7.4, protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 
@@ -201,7 +201,6 @@ ok - Herdr pane disappearance recipes use one classifier and map vanished panes 
 ```
 
 The shell-reap recipe kills only the lab pane's own shell pid after the backend's shared idle-shell proof succeeds.
-All lifecycle actions used the guarded non-default lab helper and left the default-session tripwire intact.
 
 ### Launcher workspace placement
 

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Isolated real-Herdr regression coverage for disappeared panes and restart husks.
-# Every lifecycle and task-specific Herdr CLI call goes through bin/fm-herdr-lab.sh.
+# Every lifecycle, destructive, and pane-setup Herdr CLI call goes through
+# bin/fm-herdr-lab.sh. The classifier reads are read-only calls made by their
+# owner, the herdr backend adapter in bin/backends/herdr.sh, always targeting the
+# lab session explicitly so nothing escapes the lab.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -13,6 +16,14 @@ pass() { printf 'ok - %s\n' "$1"; }
 
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
+
+# shellcheck source=tests/herdr-test-safety.sh
+. "$ROOT/tests/herdr-test-safety.sh"
+
+# This suite runs entirely against its own isolated lab session, so the Herdr
+# pane identity inherited from the terminal it was launched in must not follow
+# it in (tests/herdr-test-safety.sh owns that variable set).
+herdr_forget_inherited_pane
 
 HERDR_LAB_HELPER="$ROOT/bin/fm-herdr-lab.sh"
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name firstmate-herdr-pane-disappearance-lab) \
@@ -27,8 +38,6 @@ trap cleanup_all EXIT HUP INT TERM
 
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not provision isolated Herdr lab session"
-
-unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
@@ -79,11 +88,34 @@ assert_states() { # <recipe> <pane> <want-pane-agent-state> <want-agent-state>
   printf 'ok - %s: pane classifier=%s recovery mapping=%s\n' "$recipe" "$detail" "$mapping"
 }
 
-wait_for_pane_state() { # <pane> <want>
-  local pane=$1 want=$2 remaining=50 state
+wait_for_pane_state() { # <pane> <want> [<attempts>]
+  local pane=$1 want=$2 remaining=${3:-50} state
   while [ "$remaining" -gt 0 ]; do
     state=$(fm_backend_herdr_pane_agent_state "$HERDR_LAB_SESSION" "$pane")
     [ "$state" = "$want" ] && return 0
+    sleep 0.1
+    remaining=$((remaining - 1))
+  done
+  return 1
+}
+
+wait_for_idle_shell_proof() { # <pane>
+  local pane=$1 remaining=50
+  while [ "$remaining" -gt 0 ]; do
+    fm_backend_herdr_pane_process_is_idle_shell "$HERDR_LAB_SESSION" "$pane" && return 0
+    sleep 0.1
+    remaining=$((remaining - 1))
+  done
+  return 1
+}
+
+wait_for_lab_stopped() {
+  local remaining=50 running
+  while [ "$remaining" -gt 0 ]; do
+    running=$("$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" session list --json 2>/dev/null \
+      | jq -r --arg name "$HERDR_LAB_SESSION" \
+        '.sessions[]? | select(.name == $name) | .running' 2>/dev/null)
+    [ "$running" = false ] && return 0
     sleep 0.1
     remaining=$((remaining - 1))
   done
@@ -107,17 +139,13 @@ IFS=$'\t' read -r SHELL_TAB SHELL_PANE <<EOF
 $(create_pane fm-lab-shell-reap)
 EOF
 [ -n "$SHELL_TAB" ] || fail "shell-reap setup did not produce a tab id"
+wait_for_idle_shell_proof "$SHELL_PANE" \
+  || fail "pane $SHELL_PANE never satisfied the backend idle-shell proof; refusing to kill anything"
 INFO=$("$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane process-info --pane "$SHELL_PANE") \
   || fail "could not read process info for shell-reap pane"
 INFO_PANE=$(printf '%s' "$INFO" | jq -r '.result.process_info.pane_id // empty')
 SHELL_PID=$(printf '%s' "$INFO" | jq -r '.result.process_info.shell_pid // empty')
-FOREGROUND_PID=$(printf '%s' "$INFO" | jq -r '.result.process_info.foreground_processes[0].pid // empty')
-FOREGROUND_CWD=$(printf '%s' "$INFO" | jq -r '.result.process_info.foreground_processes[0].cwd // empty')
 [ "$INFO_PANE" = "$SHELL_PANE" ] || fail "process-info returned pane $INFO_PANE, expected $SHELL_PANE"
-[ "$SHELL_PID" = "$FOREGROUND_PID" ] || fail "shell pid $SHELL_PID is not the foreground pid $FOREGROUND_PID"
-if [ -n "$FOREGROUND_CWD" ] && [ "$FOREGROUND_CWD" != "$SCRATCH" ]; then
-  fail "refusing to kill shell pid $SHELL_PID because cwd $FOREGROUND_CWD is not the lab scratch $SCRATCH"
-fi
 case "$SHELL_PID" in ''|*[!0-9]*) fail "refusing to kill non-numeric shell pid '$SHELL_PID'" ;; esac
 kill -KILL "$SHELL_PID" || fail "could not kill lab pane shell pid $SHELL_PID"
 wait_for_pane_state "$SHELL_PANE" dead \
@@ -133,9 +161,12 @@ record_done_line "$HUSK_PANE"
 report_idle_agent "$HUSK_PANE" fm-lab-restart-husk-agent
 "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null \
   || fail "could not stop the isolated Herdr lab for the restart-husk recipe"
-sleep 0.5
+wait_for_lab_stopped \
+  || fail "the isolated Herdr lab did not report stopped before the restart-husk re-provision"
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not restart the isolated Herdr lab for the restart-husk recipe"
+wait_for_pane_state "$HUSK_PANE" no-agent 100 \
+  || fail "session restart did not restore pane $HUSK_PANE as an agent-less husk"
 assert_states "session restart husk" "$HUSK_PANE" no-agent dead
 
 pass "Herdr pane disappearance recipes use one classifier and map vanished panes to missing, husks to dead"

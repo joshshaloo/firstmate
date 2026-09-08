@@ -70,7 +70,7 @@ The tracked artifact records `summary.duration_ms` 1143564 for that single lane,
 | `portable-serial-2` (after) | 35 | 570767 ms (~9.5 min) | ~48% |
 | imbalance | | 13 ms | |
 
-The after figures are the shard sums generated from run 34169543250 durations, not a fresh measurement; the budget guard re-checks them against the real job duration on every run.
+The after figures are the shard sums generated from run 34169543250 durations, not a fresh measurement; the budget guard re-checks each shard's real measured duration against its budget on every run.
 
 ## Coverage guard
 
@@ -86,7 +86,7 @@ When the budget guard reports timing drift, or the serial shards have absorbed e
 
 1. Take a green main run and download its `fm-test-timing-portable-serial-1` and `fm-test-timing-portable-serial-2` artifacts.
 2. Merge them with `bin/fm-test-run.sh --aggregate-json <out>`, or run `bin/fm-test-run.sh --lane portable-serial --json <out>` locally for a single-lane artifact. Shard assignment reads only the `scripts[].path` and `scripts[].duration_ms` rows, so either shape works.
-3. Copy the result over [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json), commit it, and update the Verification inputs and Before and after tables above with the new run id and shard sums.
+3. Copy the result over [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json), commit it, and update the Verification inputs run id plus the after rows of the Before and after table with the new shard sums. The before row is the historical baseline for this split and stays as recorded.
 4. Confirm the reassignment with `bin/fm-test-run.sh --check-coverage`.
 
 ## Timing artifacts

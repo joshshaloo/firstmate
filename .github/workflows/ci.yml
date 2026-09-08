@@ -112,11 +112,10 @@ jobs:
   tests-portable-serial-1:
     name: Behavior portable serial 1
     runs-on: ubuntu-latest
-    # The unsplit serial remainder measured ~19.1 min wall (19m13s job) against
-    # this same 20m cap; each generated shard is now ~9.5 min. Cap is a hang
-    # tripwire above observed p99 script cost and suite wall, not the expected
-    # healthy end. docs/fm-test-portable-shards.md records the before/after
-    # numbers. bin/fm-ci-budget-guard.sh reads this timeout-minutes directly.
+    # Hang tripwire above observed p99 script cost and suite wall, not the
+    # expected healthy end. docs/fm-test-portable-shards.md owns the measured
+    # before/after shard durations. bin/fm-ci-budget-guard.sh reads this
+    # timeout-minutes directly, so raising it moves the guard threshold with it.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -159,11 +158,10 @@ jobs:
   tests-portable-serial-2:
     name: Behavior portable serial 2
     runs-on: ubuntu-latest
-    # The unsplit serial remainder measured ~19.1 min wall (19m13s job) against
-    # this same 20m cap; each generated shard is now ~9.5 min. Cap is a hang
-    # tripwire above observed p99 script cost and suite wall, not the expected
-    # healthy end. docs/fm-test-portable-shards.md records the before/after
-    # numbers. bin/fm-ci-budget-guard.sh reads this timeout-minutes directly.
+    # Hang tripwire above observed p99 script cost and suite wall, not the
+    # expected healthy end. docs/fm-test-portable-shards.md owns the measured
+    # before/after shard durations. bin/fm-ci-budget-guard.sh reads this
+    # timeout-minutes directly, so raising it moves the guard threshold with it.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6

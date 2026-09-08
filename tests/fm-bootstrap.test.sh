@@ -24,6 +24,37 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 fm_test_tmproot TMP_ROOT fm-bootstrap-tests
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
 
+# Hermetic tool detection. Every case here proves what bootstrap reports as
+# MISSING, and it does that by leaving a tool out of the fake toolchain. A
+# developer host that has one of those tools installed system-wide (tmux and
+# herdr are ordinary packages) would satisfy the lookup from BASE_PATH behind
+# the fake's back and silently turn a fail-closed assertion into a pass - or,
+# for the session-provider gates, into a spurious failure. Mirror BASE_PATH once
+# into a directory that shadows nothing but the tools these cases deliberately
+# withhold, so the fake toolchain is the only place they can come from. The case
+# at test_tasks_axi_real_cli that needs a REAL node resolves it from the ambient
+# PATH itself, so it is unaffected.
+FM_BOOTSTRAP_WITHHELD_TOOLS="tmux herdr zellij cmux orca node tasks-axi quota-axi"
+build_hermetic_base_path() {
+  local bin dir entry name
+  bin="$TMP_ROOT/hermetic-bin"
+  mkdir -p "$bin"
+  local IFS=:
+  for dir in $BASE_PATH; do
+    unset IFS
+    [ -d "$dir" ] || continue
+    for entry in "$dir"/*; do
+      name=${entry##*/}
+      case " $FM_BOOTSTRAP_WITHHELD_TOOLS " in *" $name "*) continue ;; esac
+      [ -e "$bin/$name" ] || ln -s "$entry" "$bin/$name" 2>/dev/null || true
+    done
+    IFS=:
+  done
+  unset IFS
+  printf '%s\n' "$bin"
+}
+BASE_PATH=$(build_hermetic_base_path)
+
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
 # config/backend; the dev shell's ambient runtime markers ($TMUX inside tmux,
 # HERDR_ENV inside herdr, CMUX_* inside a cmux terminal) must not leak into

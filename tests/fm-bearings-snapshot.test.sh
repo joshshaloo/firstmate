@@ -1097,14 +1097,16 @@ test_partial_github_failure_degrades() {
   pass "a partial GitHub failure degrades gracefully"
 }
 
-test_perl_fallback_bounds_github_call() {
+test_shared_timeout_fallback_bounds_github_call() {
   local home fakebin toolbin cmd json started elapsed
-  home=$(make_home perl-timeout); write_fixture "$home"
+  home=$(make_home shared-timeout); write_fixture "$home"
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  # timeout/gtimeout are deliberately absent: that absence is what forces the perl
-  # fallback this test exercises. awk is granted like its POSIX peers above, because
+  # timeout/gtimeout are deliberately absent, and FM_TIMEOUT_MECHANISM_OVERRIDE
+  # asks bin/fm-timeout-lib.sh - the owner of bounded execution - for its
+  # dependency-free fallback, so this covers a host with no coreutils bound at
+  # all. awk is granted like its POSIX peers above, because
   # fm-fleet-snapshot.sh already calls awk unguarded on this same snapshot path.
   for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp rm awk; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
@@ -2031,7 +2033,7 @@ test_report_pointers_surface
 test_superseded_queued_item_dropped_by_default
 test_include_prs_is_the_only_fetch_path
 test_partial_github_failure_degrades
-test_perl_fallback_bounds_github_call
+test_shared_timeout_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed

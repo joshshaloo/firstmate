@@ -1257,24 +1257,28 @@ test_secondmate_spawn_registry_resolution_matches_shared_parser() {
 
   # Rows the old permissive inline sed resolved but the shared parser refuses: an
   # unpadded added date, and a row carrying no " - <summary>" segment at all.
+  # Plus the remote row form: the shared parser understands it, but a remote home
+  # lives on another host, so spawn must keep refusing it exactly as it always has
+  # rather than launching against that path on this host.
   for row in \
     "- domain - domain work (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-6-22)" \
-    "- domain (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)"; do
+    "- domain (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
+    "- domain - domain work (host: elsewhere; root: /srv/fm; home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)"; do
     printf '%s\n' "$row" > "$home/data/secondmates.md"
     : > "$log"
     if bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
       _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1; then
-      fail "the shared registry parser resolved a home from a malformed row: $row"
+      fail "the shared registry parser resolved a home from a row spawn must refuse: $row"
     fi
     if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
       FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/spawn-registry-row-fake/pane.txt" \
       "$ROOT/bin/fm-spawn.sh" domain codex --secondmate >/dev/null 2>"$err"; then
-      fail "secondmate spawn resolved a home from a malformed registry row: $row"
+      fail "secondmate spawn resolved a home from a registry row it must refuse: $row"
     fi
     grep -F 'no firstmate home supplied or registered for domain' "$err" >/dev/null \
-      || fail "spawn refused the malformed row for the wrong reason: $row"
-    grep -F 'new-window' "$log" >/dev/null && fail "spawn created a window for a malformed registry row"
-    [ -e "$home/state/domain.meta" ] && fail "spawn wrote meta for a malformed registry row"
+      || fail "spawn refused the row for the wrong reason: $row"
+    grep -F 'new-window' "$log" >/dev/null && fail "spawn created a window for a registry row it must refuse"
+    [ -e "$home/state/domain.meta" ] && fail "spawn wrote meta for a registry row it must refuse"
   done
 
   # The canonical row still resolves, so the refusals above are about row syntax

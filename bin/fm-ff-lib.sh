@@ -234,6 +234,11 @@ dirty_status() {
   fi
 }
 
+# Resolve one field of a LOCAL secondmate row. The fields served here (home,
+# projects) name paths on this host, so only the local row form can answer them:
+# a remote row places its home on another host and is refused rather than read as
+# if it were a local path. Callers that understand remote placement parse rows
+# through the shared owner directly and branch on SECONDMATE_REGISTRY_REMOTE.
 secondmate_registry_field() {
   local reg=$1 id=$2 key=$3 line value
   [ -f "$reg" ] || return 1
@@ -241,6 +246,7 @@ secondmate_registry_field() {
   [ -n "$line" ] || return 1
   secondmate_registry_parse_line "$line" || return 1
   [ "$SECONDMATE_REGISTRY_ID" = "$id" ] || return 1
+  [ "$SECONDMATE_REGISTRY_REMOTE" -eq 0 ] || return 1
   case "$key" in
     home) value=$SECONDMATE_REGISTRY_HOME ;;
     projects) value=$SECONDMATE_REGISTRY_PROJECTS ;;

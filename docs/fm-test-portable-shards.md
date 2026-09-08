@@ -56,6 +56,8 @@ It keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap,
 CI runs that remainder as `portable-serial-1` and `portable-serial-2`.
 Those two lanes are generated with longest-processing-time assignment from [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json), not from hand-maintained lane lists.
 Assignment is pure `awk` over the artifact, so lane listing and the coverage guard stay portable on hosts without `python3`.
+That `awk` parser fails closed: it validates the whole document and refuses with exit 2 and a concrete reason instead of emitting a degraded partition unless the artifact is a top-level object with a non-empty top-level `scripts` array whose entries are flat objects carrying a string `path` and a numeric `duration_ms`.
+The coverage guard remains a second line of defense behind that refusal rather than the first one.
 New serial-remainder tests with no recorded duration still land automatically in one serial shard, and the budget guard catches timing drift after they run.
 
 ### Before and after
@@ -85,8 +87,8 @@ The after figures are the shard sums generated from run 34169543250 durations, n
 When the budget guard reports timing drift, or the serial shards have absorbed enough unmeasured tests to skew, replace the measured-duration input:
 
 1. Take a green main run and download its `fm-test-timing-portable-serial-1` and `fm-test-timing-portable-serial-2` artifacts.
-2. Merge them with `bin/fm-test-run.sh --aggregate-json <out>`, or run `bin/fm-test-run.sh --lane portable-serial --json <out>` locally for a single-lane artifact. Shard assignment reads only the `scripts[].path` and `scripts[].duration_ms` rows, so either shape works.
-   The parser validates the whole document, so an artifact that is malformed, reshaped away from a top-level `scripts` array, missing a `path` or numeric `duration_ms`, nesting a container inside a `scripts[]` entry, or carrying an empty script list makes lane listing and `--check-coverage` refuse with exit 2 and a concrete reason instead of silently producing a degraded partition.
+2. Merge them with `bin/fm-test-run.sh --aggregate-json <out>`, or run `bin/fm-test-run.sh --lane portable-serial --json <out>` locally for a single-lane artifact. Shard assignment uses only the `scripts[].path` and `scripts[].duration_ms` values, so either shape works.
+   Keep the generated two-space-indented layout with one field per line; the line-oriented parser refuses a reformatted or compacted artifact the same way it refuses any other unrecognized shape (see [Portable serial remainder](#portable-serial-remainder)).
 3. Copy the result over [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json), commit it, and update the Verification inputs run id plus the after rows of the Before and after table with the new shard sums. The before row is the historical baseline for this split and stays as recorded.
 4. Confirm the reassignment with `bin/fm-test-run.sh --check-coverage`.
 

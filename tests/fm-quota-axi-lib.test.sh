@@ -147,7 +147,38 @@ test_non_positive_bound_is_refused_without_calling() {
   pass "a zero or non-numeric bound is refused before quota-axi is called"
 }
 
+# The bound is owned in this library, not at its call sites, and follows the
+# sibling shape (FM_CREW_STATE_NM_TIMEOUT, FM_BEARINGS_PR_TIMEOUT): the default
+# is tunable per host, and a value that is not a deadline falls back to that
+# default rather than failing the probe - a bad override must never report a
+# healthy install as MISSING.
+bound_with() {  # <override|unset>
+  # shellcheck disable=SC2016 # The child shell expands its own positional parameters.
+  if [ "$1" = unset ]; then
+    env -u FM_QUOTA_AXI_VERSION_TIMEOUT \
+      bash -c '. "$1"; printf "%s\n" "$FM_QUOTA_AXI_VERSION_TIMEOUT"' _ "$LIB"
+  else
+    env "FM_QUOTA_AXI_VERSION_TIMEOUT=$1" \
+      bash -c '. "$1"; printf "%s\n" "$FM_QUOTA_AXI_VERSION_TIMEOUT"' _ "$LIB"
+  fi
+}
+
+test_version_bound_is_owned_with_a_safe_override() {
+  local default_bound value
+  default_bound=$(bound_with unset)
+  case "$default_bound" in
+    ''|*[!0-9]*|0) fail "the library must own a positive default version-probe bound, got '$default_bound'" ;;
+  esac
+  [ "$(bound_with 25)" = 25 ] || fail "a positive FM_QUOTA_AXI_VERSION_TIMEOUT must be honored"
+  for value in 0 abc 1.5 ''; do
+    [ "$(bound_with "$value")" = "$default_bound" ] \
+      || fail "override '$value' is not a deadline and must fall back to the default"
+  done
+  pass "the version-probe bound is owned here, overridable, and safe against a bad override"
+}
+
 test_hung_version_is_bounded_through_the_shared_owner
 test_floor_verdict_is_identical_bounded_and_unbounded
 test_non_positive_bound_is_refused_without_calling
+test_version_bound_is_owned_with_a_safe_override
 printf 'all fm-quota-axi-lib tests passed\n'

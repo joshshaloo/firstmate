@@ -69,15 +69,23 @@ sweep_live_secondmate_metas "$STATE" origin no
 
 # Registry backstop: a secondmate registered in data/secondmates.md but without
 # a live meta (e.g. between restarts) is still its persistent on-disk home.
+# Row syntax is read through its owner (bin/fm-secondmate-registry-lib.sh, reached
+# via fm-ff-lib.sh above), so this backstop accepts exactly the rows fm-spawn and
+# the ff sweep accept: a row the owner cannot read is never fast-forwarded here,
+# and a row placing its mate on another host is reported with the owner's refusal
+# rather than fast-forwarding whatever path this host happens to find at it.
 if [ -f "$SECONDMATES_MD" ]; then
   while IFS= read -r line; do
     case "$line" in
       "- "*) ;;
       *) continue ;;
     esac
-    id=$(printf '%s\n' "$line" | sed -n 's/^- \([^ ][^ ]*\) - .*/\1/p')
-    home=$(printf '%s\n' "$line" | sed -n 's/.*(home:[[:space:]]*\([^;]*\);.*/\1/p' | sed 's/[[:space:]]*$//')
-    process_secondmate "$id" "$home" "" origin no
+    secondmate_registry_parse_line "$line" || continue
+    if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+      process_secondmate "$SECONDMATE_REGISTRY_ID" "" "" origin no "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
+      continue
+    fi
+    process_secondmate "$SECONDMATE_REGISTRY_ID" "$SECONDMATE_REGISTRY_HOME" "" origin no
   done < "$SECONDMATES_MD"
 fi
 

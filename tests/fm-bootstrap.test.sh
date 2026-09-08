@@ -450,7 +450,10 @@ ROWS
 # hostage. Bootstrap passes the bound bin/fm-quota-axi-lib.sh owns, so a wedged
 # `quota-axi --version` becomes the same MISSING line an old build produces.
 # The bound runs through the shared timeout owner's dependency-free mechanism
-# here, so this also proves bootstrap reaches the delegated bounded path.
+# here, so this also proves bootstrap reaches the delegated bounded path. The
+# run uses the documented FM_QUOTA_AXI_VERSION_TIMEOUT override - read back from
+# the owner, never assumed - so the case stays fast and pins that the override
+# is what bootstrap actually waits on.
 test_quota_axi_hang_is_bounded_and_reported_missing() {
   local case_dir fakebin out missing bound started elapsed
   missing='MISSING: quota-axi (install: npm install -g quota-axi)'
@@ -459,11 +462,12 @@ test_quota_axi_hang_is_bounded_and_reported_missing() {
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
   fakebin=$(make_fake_toolchain "$case_dir")
   add_tasks_axi "$fakebin" "0.1.1"
-  # Read the bound from its owner so this case cannot drift from the value.
-  bound=$(bash -c '. "$1"; printf "%s\n" "$FM_QUOTA_AXI_VERSION_TIMEOUT"' _ "$ROOT/bin/fm-quota-axi-lib.sh")
-  case "$bound" in ''|*[!0-9]*|0) fail "fm-quota-axi-lib.sh must own a positive version-probe bound, got '$bound'" ;; esac
+  bound=$(FM_QUOTA_AXI_VERSION_TIMEOUT=3 bash -c '. "$1"; printf "%s\n" "$FM_QUOTA_AXI_VERSION_TIMEOUT"' \
+    _ "$ROOT/bin/fm-quota-axi-lib.sh")
+  [ "$bound" = 3 ] || fail "fm-quota-axi-lib.sh must honor FM_QUOTA_AXI_VERSION_TIMEOUT, got '$bound'"
   started=$(date +%s)
   out=$(FM_TIMEOUT_MECHANISM_OVERRIDE=bash PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_QUOTA_AXI_VERSION_TIMEOUT="$bound" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_QUOTA_AXI_HANG=1 "$ROOT/bin/fm-bootstrap.sh")
   elapsed=$(( $(date +%s) - started ))
   [ "$out" = "$missing" ] || fail "a hung quota-axi: expected '$missing', got: $out"

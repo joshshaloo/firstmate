@@ -16,8 +16,13 @@ FM_QUOTA_AXI_MIN=0.1.16
 # The bound every caller of the version probe uses, owned here beside the floor
 # it guards: a wedged `quota-axi --version` must surface as the MISSING
 # diagnostic rather than stalling the startup check that reports it.
+# FM_QUOTA_AXI_VERSION_TIMEOUT overrides the default for a slow host, matching
+# FM_CREW_STATE_NM_TIMEOUT and FM_BEARINGS_PR_TIMEOUT. A non-positive or
+# non-numeric value falls back to the default rather than failing the probe: a
+# bad override must not report a healthy install as MISSING.
 # shellcheck disable=SC2034 # Read by sourcing callers, not by this file.
-FM_QUOTA_AXI_VERSION_TIMEOUT=5
+FM_QUOTA_AXI_VERSION_TIMEOUT=${FM_QUOTA_AXI_VERSION_TIMEOUT:-10}
+case "$FM_QUOTA_AXI_VERSION_TIMEOUT" in ''|*[!0-9]*|0) FM_QUOTA_AXI_VERSION_TIMEOUT=10 ;; esac
 FM_QUOTA_AXI_LIB_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$FM_QUOTA_AXI_LIB_DIR/fm-timeout-lib.sh"

@@ -1283,8 +1283,10 @@ test_secondmate_spawn_registry_resolution_matches_shared_parser() {
 
   # The two refusals are not the same fact, so they do not share a status: a row
   # this home cannot serve because the mate lives on another host reports 2, and
-  # every unusable row reports 1. Callers that surface the reason depend on that
-  # split; callers that only want a value still see "non-zero means no value".
+  # a record this parser cannot read reports 3; and a line that is not a record
+  # at all - an ordinary bullet - reports 1, because there is nothing to report.
+  # Callers that surface a reason depend on that split; callers that only want a
+  # value still see "non-zero means no value".
   printf '%s\n' \
     "- domain - domain work (host: elsewhere; root: /srv/fm; home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
     > "$home/data/secondmates.md"
@@ -1297,7 +1299,12 @@ test_secondmate_spawn_registry_resolution_matches_shared_parser() {
   rc=0
   bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
     _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 || rc=$?
-  [ "$rc" -eq 1 ] || fail "an unusable row must report the plain no-value status, got $rc"
+  [ "$rc" -eq 3 ] || fail "an unreadable record must report the malformed refusal status, got $rc"
+  printf '%s\n' "- domain is away this week" > "$home/data/secondmates.md"
+  rc=0
+  bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 1 ] || fail "an ordinary bullet must report the plain no-value status, got $rc"
 
   # The canonical row still resolves, so the refusals above are about row syntax
   # and not about this home.
@@ -1313,6 +1320,19 @@ test_secondmate_spawn_registry_resolution_matches_shared_parser() {
     "$ROOT/bin/fm-spawn.sh" domain codex --secondmate >/dev/null 2>"$err" || true
   grep -F 'no firstmate home supplied or registered for domain' "$err" >/dev/null \
     && fail "spawn failed to resolve a home from the canonical registry row"
+
+  # The field delimiters permit padding before them, so a hand-written
+  # `home: /path ;` is the same route as the generated `home: /path;`. The owner
+  # trims it, exactly as every retired inline reader did.
+  local resolved
+  printf '%s\n' \
+    "- domain - domain work (home: $subhome_abs ; scope: domain scope; projects: alpha ; added 2026-06-22)" \
+    > "$home/data/secondmates.md"
+  resolved=$(bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" 2>/dev/null) \
+    || fail "the shared parser refused a row padded before its field delimiter"
+  [ "$resolved" = "$subhome_abs" ] \
+    || fail "the shared parser kept padding in the home field: [$resolved]"
   pass "secondmate spawn resolves registry rows through the shared parser"
 }
 

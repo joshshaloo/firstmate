@@ -74,14 +74,22 @@ sweep_live_secondmate_metas "$STATE" origin no
 # via fm-ff-lib.sh above), so this backstop accepts exactly the rows fm-spawn and
 # the ff sweep accept: a row the owner cannot read is never fast-forwarded here,
 # and a row placing its mate on another host is reported with the owner's refusal
-# rather than fast-forwarding whatever path this host happens to find at it.
+# rather than fast-forwarding whatever path this host happens to find at it. Each
+# refusal names its secondmate; an ordinary bullet that is not a record at all is
+# not a refusal and stays silent.
 if [ -f "$SECONDMATES_MD" ]; then
   while IFS= read -r line; do
     case "$line" in
       "- "*) ;;
       *) continue ;;
     esac
-    secondmate_registry_parse_line "$line" || continue
+    row_rc=0
+    secondmate_registry_parse_line "$line" || row_rc=$?
+    if [ "$row_rc" -eq 2 ]; then
+      process_secondmate "$SECONDMATE_REGISTRY_ID" "" "" origin no "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"
+      continue
+    fi
+    [ "$row_rc" -eq 0 ] || continue
     if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
       process_secondmate "$SECONDMATE_REGISTRY_ID" "" "" origin no "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
       continue

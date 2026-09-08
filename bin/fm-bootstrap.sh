@@ -295,7 +295,7 @@ secondmate_sync() {
   }
 
   secondmate_retry_pending_nudges() {
-    local marker id selector home commit message expected_marker meta meta_home home_real head registry_rc
+    local marker id selector home commit message expected_marker meta meta_home home_real head registry_rc registry_refusal
     [ -d "$SECOND_MATE_NUDGE_PENDING_DIR" ] || return 0
     for marker in "$SECOND_MATE_NUDGE_PENDING_DIR"/*.pending; do
       [ -f "$marker" ] || continue
@@ -331,8 +331,9 @@ secondmate_sync() {
         meta_home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home) || registry_rc=$?
         if [ "$registry_rc" -ne 0 ]; then
           meta_home=""
-          if [ "$registry_rc" -eq 2 ]; then
-            echo "NUDGE_SECONDMATES: secondmate $id: send failed: $SECONDMATE_REGISTRY_REMOTE_REFUSAL"
+          registry_refusal=$(secondmate_registry_field_refusal "$registry_rc")
+          if [ -n "$registry_refusal" ]; then
+            echo "NUDGE_SECONDMATES: secondmate $id: send failed: $registry_refusal"
             continue
           fi
         fi

@@ -721,6 +721,12 @@ SH
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
 }
 
+# One bounded watcher run. The alarm is a hang tripwire, not the expected
+# duration: a case passes as soon as the watcher emits and exits, so the bound
+# only has to outlast the slowest healthy cycle on a loaded CI runner rather
+# than a comfortable local one. Cases that need a different bound pass
+# FM_TEST_WATCH_TIMEOUT, like the FM_TEST_CHECK_INTERVAL and FM_TEST_WATCH_ROOT
+# seams beside it.
 run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
   local watch_timeout=${FM_TEST_WATCH_TIMEOUT:-30}

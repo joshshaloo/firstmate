@@ -703,9 +703,13 @@ registry_secondmates_json() {
     records_file=$(mktemp "${TMPDIR:-/tmp}/fm-snapshot-registry-records.XXXXXX") || exit 3
     : > "$records_file" || exit 3
     while IFS= read -r line; do
+      # Each pattern opens with a paren so the pair balances: this script is
+      # built inside a command substitution, and stock macOS Bash 3.2 scans that
+      # region for its closing paren without understanding case patterns, so a
+      # lone one would end the substitution early and break the whole file.
       case "$line" in
-        "- "*) ;;
-        *) continue ;;
+        ("- "*) ;;
+        (*) continue ;;
       esac
       row_rc=0
       secondmate_registry_parse_line "$line" || row_rc=$?

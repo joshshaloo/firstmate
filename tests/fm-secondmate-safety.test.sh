@@ -32,6 +32,8 @@ test_remote_registry_refusal_wording_is_parser_owned() {
   spellers=$(grep -rlF "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$ROOT/bin" | sort | tr '\n' ' ')
   [ "$spellers" = "$ROOT/bin/fm-secondmate-registry-lib.sh " ] \
     || fail "remote registry refusal wording is spelled outside the parser library: $spellers"
+  grep -qF "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$ROOT/.agents/skills/secondmate-provisioning/SKILL.md" \
+    || fail "secondmate-provisioning SKILL.md documents a refusal wording the parser library no longer emits"
   pass "remote registry refusal wording is owned by the parser library"
 }
 

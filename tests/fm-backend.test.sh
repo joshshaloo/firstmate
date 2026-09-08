@@ -141,21 +141,60 @@ resolve_permissive_tmux_kill_ref() {
 # hence the dispatcher is a copied sibling, while the tmux adapter is extracted
 # from BASE_REF so conformance tests retain the exact historical behavior even
 # when this branch changes tmux dispatch semantics.
-OLD_BIN_UNCHANGED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-decision-hold.sh fm-backend.sh fm-operational-input.sh fm-public-followup-lib.sh fm-x-lib.sh"
-# A pull-request merge may add a new main-only dependency that the branch's older baseline does not have yet.
-OLD_BIN_OPTIONAL_SIBLINGS="fm-pending-reply-lib.sh"
+# OLD_BIN_SEED_SIBLINGS names only the direct siblings; old_bin_close_siblings
+# derives the rest from the source graph so a library that gains a dependency
+# cannot leave this fixture with an unsatisfiable source.
+OLD_BIN_SEED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-decision-hold.sh fm-backend.sh fm-operational-input.sh fm-public-followup-lib.sh fm-x-lib.sh fm-timeout-lib.sh"
 OLD_BIN_REFACTORED="fm-send.sh fm-peek.sh fm-watch.sh fm-spawn.sh fm-teardown.sh fm-marker-lib.sh"
+
+# Sibling basenames a copied script sources through any of this repo's dir
+# variables ($SCRIPT_DIR, $FM_ROOT/bin, $FM_BACKEND_LIB_DIR, a BASH_SOURCE
+# subshell, ...). Only the basename matters: every one of those resolves inside
+# the synthetic bin/.
+old_bin_sibling_refs() {  # <file>
+  # Two stages so a path built inside a command substitution - which nests its
+  # own quotes, e.g. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-x.sh" -
+  # is still matched: select the source lines first, then take every sibling
+  # basename on them.
+  grep -hE '^[[:space:]]*(\.|source)[[:space:]]' "$1" 2>/dev/null |
+    grep -oE '/fm-[A-Za-z0-9_.-]+\.sh"' |
+    sed -E 's|^/||; s|"$||'
+}
+
+# Close the synthetic bin/ over its own source graph. A copied sibling may
+# source a sibling of its own, and a hand-maintained list of those transitive
+# edges silently rots the moment any library gains a dependency - producing a
+# bin/ whose scripts abort on a missing source under set -eu. The list above is
+# only a seed; everything reachable from it is derived here. A reference that no
+# longer exists in the working tree is taken from BASE_REF, so a since-deleted
+# dependency of a historical entrypoint still resolves.
+old_bin_close_siblings() {  # <bin dir>
+  local bin=$1 progress=1 f ref
+  while [ "$progress" -eq 1 ]; do
+    progress=0
+    for f in "$bin"/*.sh "$bin"/backends/*.sh; do
+      [ -f "$f" ] || continue
+      while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        [ -e "$bin/$ref" ] && continue
+        if [ -f "$ROOT/bin/$ref" ]; then
+          cp "$ROOT/bin/$ref" "$bin/$ref"
+        else
+          git -C "$ROOT" show "$BASE_REF:bin/$ref" > "$bin/$ref" 2>/dev/null \
+            || fail "old-bin fixture references bin/$ref, absent from both the working tree and $BASE_REF"
+        fi
+        progress=1
+      done < <(old_bin_sibling_refs "$f")
+    done
+  done
+}
 
 build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry point)
   local name=$1 root bin f
   root="$TMP_ROOT/$name"
   bin="$root/bin"
   mkdir -p "$bin"
-  for f in $OLD_BIN_UNCHANGED_SIBLINGS; do
-    cp "$ROOT/bin/$f" "$bin/$f"
-  done
-  for f in $OLD_BIN_OPTIONAL_SIBLINGS; do
-    [ -f "$ROOT/bin/$f" ] || continue
+  for f in $OLD_BIN_SEED_SIBLINGS; do
     cp "$ROOT/bin/$f" "$bin/$f"
   done
   cp -R "$ROOT/bin/backends" "$bin/backends"
@@ -164,6 +203,7 @@ build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry p
     git -C "$ROOT" show "$BASE_REF:bin/$f" > "$bin/$f"
     chmod +x "$bin/$f"
   done
+  old_bin_close_siblings "$bin"
   printf '%s\n' "$root"
 }
 

@@ -10,6 +10,16 @@
 # backlog mutations, but validated secondmate handoffs always use `tasks-axi mv`.
 # Absent or any other value keeps the default tasks-axi backend path, falling
 # back to manual mutation when the tool is not compatible.
+# The --version probe runs through fm-timeout-lib.sh's bounded runner, so a
+# present-but-hung tasks-axi is reported as incompatible rather than stalling
+# every caller. FM_TASKS_AXI_VERSION_TIMEOUT overrides the 5s bound; blank,
+# non-numeric, and 0 values fall back to it, because a zero bound is not a
+# bound. On a timeout, fm_tasks_axi_version_parts returns 1 and leaves the
+# concrete reason in FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC for callers that
+# report remediation; a probe that returns normally clears it.
+
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
 
 FM_TASKS_AXI_VERSION_TIMEOUT_DEFAULT=5
 FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC=${FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC:-}
@@ -24,14 +34,11 @@ fm_tasks_axi_version_timeout() {
 }
 
 fm_tasks_axi_version_parts() {
-  local output timeout rc script_dir
+  local output timeout rc
   FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC=
   FM_TASKS_AXI_VERSION_PARTS=
   command -v tasks-axi >/dev/null 2>&1 || return 1
   timeout=$(fm_tasks_axi_version_timeout)
-  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
-  . "$script_dir/fm-timeout-lib.sh"
   output=$(fm_run_timed "$timeout" tasks-axi --version 2>/dev/null </dev/null)
   rc=$?
   if [ "$rc" -eq 124 ]; then

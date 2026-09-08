@@ -50,6 +50,18 @@
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
 #          1.31.2.
+#          The no-mistakes and tasks-axi --version probes are bounded, so a
+#          present-but-hung tool cannot stall bootstrap - and therefore
+#          fm-session-start.sh - indefinitely. A probe that hits its bound
+#          reports "MISSING: <tool> (<tool> --version hung for <N>s)" instead of
+#          an install command, because reinstalling is not the remediation for a
+#          tool that is installed and not answering. The shared
+#          tool_version_at_least probe is bounded by
+#          FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT (default 5s); the tasks-axi probe
+#          by FM_TASKS_AXI_VERSION_TIMEOUT (default 5s, owned by
+#          fm-tasks-axi-lib.sh). Each falls back to its default when the
+#          override is blank, non-numeric, or zero, since a zero bound is not a
+#          bound.
 #          tasks-axi and quota-axi are required bootstrap tools (same class as
 #          lavish-axi). tasks-axi is also version and feature gated (0.1.1+
 #          with update --archive-body and mv [<id>...]); an installed but

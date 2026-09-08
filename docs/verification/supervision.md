@@ -86,6 +86,9 @@ Firstmate-written project hooks under `<worktree>/.codex/hooks.json` fired for n
 Codex also exposes no `StopFailure` hook, so an API-error turn end would need separate coverage even after hook discovery works.
 The app-server protocol schema does define the required lifecycle (`turn/started`, plus a `turn/completed` status of `completed`, `interrupted`, `failed`, or `inProgress`), so the gate is a reachability problem rather than a protocol gap.
 
+Pi's reload and session-replacement safety was live-verified on 2026-09-08 with Pi 0.85.1.
+`tests/fm-busy-adapter-wiring.test.sh` drives a real `pi -p --offline` session whose command context calls `ctx.reload()`, confirms Pi rejects the retained old context with its stale-context error, and still observes `idle source=pi-ext` afterwards; that case skips when no `pi` is on `PATH`.
+
 Deterministic entry points:
 
 ```sh

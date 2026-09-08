@@ -32,6 +32,8 @@ A remote row form with `host:` and `root:` fields is recognized by `bin/fm-secon
 No firstmate path provisions, spawns, or syncs a remote secondmate.
 `bin/fm-secondmate-registry-lib.sh` owns the single refusal wording for a local-home resolution attempt against such a row: `remote secondmate rows are parser-only tolerance; local home resolution is unsupported`.
 The `added` date must be zero-padded `YYYY-MM-DD`, and every reader refuses a row whose date is not.
+Spawn, backlog handoff, config push, the bootstrap sweep, and `/updatefirstmate` resolve rows through the one row parser (`bin/fm-secondmate-registry-lib.sh`) and refuse exactly the same rows: a row that parser cannot read, and a row placing its secondmate on another host, whose `home:` path this home never resolves as a local path.
+Readers that print a skip or a send failure name which of those two refusals applied instead of reporting an anonymous missing home.
 Migrating the remaining display-only resolvers and the seed validator onto the shared parser is tracked in `firstmate-registry-resolvers-adopt-shared-parser`.
 
 ## Charter and seed

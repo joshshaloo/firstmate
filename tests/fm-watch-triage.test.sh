@@ -363,6 +363,31 @@ test_crew_is_provably_working_classifier() {
   pass "crew_is_provably_working: only working+run-step/pane is provable; idle/finished/parked/failed/unknown surface"
 }
 
+# crew_run_step_activity_recent reads ONE authoritative liveness signal: the
+# trailing last_activity: segment fm-crew-state.sh republishes from the gate's
+# own axi status. It is default-closed - only an active run step with a
+# non-quiet reported value counts as alive.
+test_crew_run_step_activity_recent_classifier() {
+  local dir fakebin
+  dir=$(make_case run-step-activity); fakebin="$dir/fakebin"
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running) · last_activity: 4s'
+  crew_run_step_activity_recent a || fail "a reported non-quiet last_activity was not treated as alive"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running) · last_activity: quiet 12m'
+  ! crew_run_step_activity_recent a || fail "a quiet last_activity was treated as alive"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  ! crew_run_step_activity_recent a || fail "an absent last_activity was treated as alive"
+  FM_FAKE_CREW_STATE='state: working · source: pane · harness busy · last_activity: 4s'
+  ! crew_run_step_activity_recent a || fail "a busy pane was treated as run-step activity"
+  FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review · last_activity: 4s'
+  ! crew_run_step_activity_recent a || fail "a parked run was treated as run-step activity"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · x · last_activity: 4s'
+  ! crew_run_step_activity_recent "" || fail "empty id was treated as run-step activity"
+  unset FM_FAKE_CREW_STATE
+  pass "crew_run_step_activity_recent: only an active run step with a non-quiet reported last_activity is alive"
+}
+
 # status_is_paused: the shared pause verb test both consumers read (so neither
 # hardcodes the literal). Matches only the verb before the first colon, so a reason
 # that merely mentions "paused" does not false-match, and a genuine blocker stays a
@@ -832,14 +857,17 @@ test_declared_pause_status_change_wakes_immediately() {
   pass "a real status change on a declared pause wakes immediately"
 }
 
+# The wedge backstop's liveness input is the gate's OWN reading, republished by
+# fm-crew-state.sh as the trailing `last_activity:` detail segment - never a
+# worktree or log-directory mtime scan, which would read an editor scratch file
+# or build output as pipeline liveness. A value without the `quiet` prefix means
+# no-mistakes saw step activity inside its own step_quiet_warning window.
 test_recent_run_step_activity_resets_wedge_timer() {
   local dir state fakebin out capture_file window key pane_hash sig pid old_since new_since
   dir=$(make_case recent-run-step-activity); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-active-run"
-  mkdir -p "$dir/wt"
-  printf 'test worker activity\n' > "$dir/wt/recent.log"
   printf 'quiet pane while tests run\n' > "$capture_file"
-  printf 'window=%s\nkind=ship\nworktree=%s\n' "$window" "$dir/wt" > "$state/active-run.meta"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/active-run.meta"
   printf 'working: validation running\n' > "$state/active-run.status"
   sig=$(seen_sig "$state/active-run.status"); printf '%s' "$sig" > "$state/.seen-active-run_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -849,7 +877,7 @@ test_recent_run_step_activity_resets_wedge_timer() {
   printf '1\n' > "$state/.count-$key"
   old_since=$(( $(date +%s) - 500 ))
   printf '%s\n' "$old_since" > "$state/.stale-since-$key"
-  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running) · last_activity: 4s'
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
@@ -893,51 +921,76 @@ test_declared_pause_run_step_change_wakes_immediately() {
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after declared-pause run-step change failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "run-step change behind a pause was not queued"
   reap "$pid"
+  [ -e "$state/.paused-runstep-surfaced-$key" ] || fail "the surfaced run-step state was not recorded"
+
+  # The transition surfaces ONCE. wake() exits the watcher, so the relaunched
+  # watcher meets the identical unchanged hash, pause marker, and parked
+  # run-step. Relaunch with the recheck throttle wide open (so the authoritative
+  # re-read definitely runs again) and prove the one-shot marker - not the
+  # throttle - is what stops a second wake: the watcher must stay alive on the
+  # pause cadence instead of re-surfacing every poll.
+  : > "$out"
+  : > "$state/.wake-queue"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 \
+    FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 20; then
+    reap "$pid"; fail "an already-surfaced run-step state behind a pause re-woke every poll: $(cat "$out")"
+  fi
+  sleep 2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    reap "$pid"; fail "an already-surfaced run-step state behind a pause re-woke on a later poll: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "already-surfaced run-step state printed a second wake: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "already-surfaced run-step state enqueued a second wake"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "already-surfaced run-step state lost the pause cadence marker"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "already-surfaced run-step state started a wedge timer"; }
+  reap "$pid"
+
+  # A genuinely NEW run-step state re-arms the one shot and surfaces again.
+  : > "$out"
+  export FM_FAKE_CREW_STATE='state: failed · source: run-step · run failed'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 \
+    FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a new run-step state behind a declared pause did not re-arm the surface"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the new run-step state did not print a stale wake"
+  reap "$pid"
   unset FM_FAKE_CREW_STATE
-  pass "a run-step state change behind a declared pause wakes immediately"
+  pass "a run-step state change behind a declared pause wakes exactly once and re-arms on a new state"
 }
 
-test_recent_run_step_log_activity_resets_wedge_timer() {
-  local dir state fakebin out capture_file window key pane_hash sig pid old_since new_since nm_home
-  dir=$(make_case recent-run-step-log-activity); state="$dir/state"; fakebin="$dir/fakebin"
-  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-active-log-run"; nm_home="$dir/nm"
-  mkdir -p "$dir/wt" "$nm_home/logs/01RUN"
-  printf 'fresh no-mistakes log activity\n' > "$nm_home/logs/01RUN/test.log"
-  cat > "$fakebin/no-mistakes" <<'SH'
-#!/usr/bin/env bash
-set -u
-if [ "${1:-}" = axi ] && [ "${2:-}" = status ]; then
-  printf 'run:\n  id: "01RUN"\n'
-fi
-SH
-  chmod +x "$fakebin/no-mistakes"
+# The mirror image, and the reason the check is default-closed: no-mistakes
+# prefixes last_activity with `quiet` once its own step_quiet_warning window
+# passes with no step-log or native-agent activity. A quiet active step is NOT
+# liveness, so the wedge backstop still escalates a truly frozen run.
+test_quiet_run_step_activity_still_wedge_escalates() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case quiet-run-step-activity); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-quiet-run"
   printf 'quiet pane while tests run\n' > "$capture_file"
-  printf 'window=%s\nkind=ship\nworktree=%s\n' "$window" "$dir/wt" > "$state/active-log-run.meta"
-  printf 'working: validation running\n' > "$state/active-log-run.status"
-  sig=$(seen_sig "$state/active-log-run.status"); printf '%s' "$sig" > "$state/.seen-active-log-run_status"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/quiet-run.meta"
+  printf 'working: validation running\n' > "$state/quiet-run.status"
+  sig=$(seen_sig "$state/quiet-run.status"); printf '%s' "$sig" > "$state/.seen-quiet-run_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   pane_hash=$(hash_text "quiet pane while tests run")
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '%s' "$pane_hash" > "$state/.stale-$key"
   printf '1\n' > "$state/.count-$key"
-  old_since=$(( $(date +%s) - 500 ))
-  printf '%s\n' "$old_since" > "$state/.stale-since-$key"
-  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running) · last_activity: quiet 12m'
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" NO_MISTAKES_HOME="$nm_home" FM_STALE_ESCALATE_SECS=240 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  if ! wait_live "$pid" 30; then
-    reap "$pid"; fail "recent run-step log activity wedge-escalated on pane idleness: $(cat "$out")"
-  fi
-  new_since=$(cat "$state/.stale-since-$key" 2>/dev/null || true)
-  case "$new_since" in ''|*[!0-9]*) reap "$pid"; fail "recent run-step log activity did not leave a numeric timer" ;; esac
-  [ "$new_since" -gt "$old_since" ] || { reap "$pid"; fail "recent run-step log activity did not reset the stale timer"; }
-  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "recent run-step log activity enqueued a wake"; }
+  wait_for_exit "$pid" 40 || fail "a quiet active run step did not wedge-escalate past the threshold"
+  grep -F "possible wedge" "$out" >/dev/null || fail "quiet run-step escalation omitted its wedge reason"
   reap "$pid"
   unset FM_FAKE_CREW_STATE
-  pass "recent run-step log activity treats a quiet pane as alive instead of wedge-escalating"
+  pass "a quiet no-mistakes run step is not liveness and still wedge-escalates"
 }
 
 # A captain-held crew can leave a stable backend endpoint after its agent exits.
@@ -1806,6 +1859,7 @@ test_classifier_primitives
 test_open_decision_fold_matches_legacy_fixtures
 test_open_decision_fold_500_entry_timing_guard
 test_crew_is_provably_working_classifier
+test_crew_run_step_activity_recent_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
 test_signal_crew_provably_working_classifier
@@ -1831,7 +1885,7 @@ test_declared_pause_changed_hash_not_rewoken_inside_cadence
 test_declared_pause_status_change_wakes_immediately
 test_declared_pause_run_step_change_wakes_immediately
 test_recent_run_step_activity_resets_wedge_timer
-test_recent_run_step_log_activity_resets_wedge_timer
+test_quiet_run_step_activity_still_wedge_escalates
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed

@@ -18,6 +18,11 @@
 #
 #   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
 #
+# For a still-working run step, <detail> ends with the gate's own liveness read
+# republished as `last_activity: <value>` (see nm_active_step_activity): one
+# authoritative liveness source, so no supervisor has to reconstruct one from
+# file mtimes. bin/fm-classify-lib.sh owns that key name and reads it back.
+#
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
 #   2. Matching no-mistakes run for this crew's branch AND current code identity,
@@ -266,6 +271,57 @@ log_reports_ci_ready() {
     *PR*"checks green"*|*"checks green"*PR*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# The active run step's no-mistakes-reported liveness, for a running/fixing step.
+# `axi status` attaches an `active_steps` block to such a run whose
+# `last_activity` value it prefixes with `quiet` once no step log or native-agent
+# lifecycle activity has arrived within the gate's own `step_quiet_warning`
+# window (10m by default). That makes it the gate's authoritative answer to "is
+# this step still moving", so firstmate republishes it instead of reconstructing
+# liveness from file mtimes.
+#
+# Verified against the installed CLI (v1.41.2): the `last_activity` field name,
+# the `quiet` prefix, the `active_steps` block name, and the `step_quiet_warning`
+# setting that governs the prefix all exist in that binary and its generated
+# config, and the semantics are as documented in its SKILL.md. NOT verified: the
+# exact TOON shape the block renders in, since no active run was observable here.
+# Both shapes a TOON encoder can produce are therefore accepted - an indented
+# scalar `last_activity: <value>` line, and an `active_steps[N]{...}` table whose
+# header names the column - and an unrecognized shape simply reports nothing, so
+# a wrong guess degrades to "no liveness evidence" rather than to false liveness.
+nm_active_step_activity() {
+  local v
+  v=$(printf '%s\n' "$RUN_OUT" | sed -n 's/^[[:space:]]*last_activity:[[:space:]]*\(.*\)/\1/p' | head -1)
+  if [ -n "$v" ]; then
+    strip_quotes "$v"
+    return
+  fi
+  printf '%s\n' "$RUN_OUT" | awk '
+    !in_table && /^[[:space:]]*active_steps\[[0-9]+\]\{/ {
+      hdr = $0
+      sub(/^[^{]*\{/, "", hdr)
+      sub(/\}.*$/, "", hdr)
+      n = split(hdr, cols, ",")
+      for (i = 1; i <= n; i++) {
+        gsub(/[[:space:]"]/, "", cols[i])
+        if (cols[i] == "last_activity") idx = i
+      }
+      if (!idx) exit
+      in_table = 1
+      next
+    }
+    in_table {
+      if ($0 !~ /,/) exit
+      n = split($0, f, ",")
+      if (n < idx) exit
+      val = f[idx]
+      sub(/^[[:space:]]*"?/, "", val)
+      sub(/"?[[:space:]]*$/, "", val)
+      print val
+      exit
+    }
+  '
 }
 
 nm_ci_step_status() {
@@ -567,6 +623,21 @@ if [ "$HAVE_RUN" = 1 ]; then
       fi
       ;;
   esac
+
+  # Republish the gate's own liveness read for a still-working step, as the LAST
+  # detail segment so a caller can take everything after the key as the value.
+  # Only the full `axi status` path can carry it; the coarse runs-list fallback
+  # has no step detail at all, and a parked/done/failed run has no active step.
+  if [ "$RUN_STATE" = working ] && [ "$RUN_SOURCE" = full ]; then
+    RUN_ACTIVITY=$(nm_active_step_activity)
+    if [ -n "$RUN_ACTIVITY" ]; then
+      if [ -n "$RUN_DETAIL" ]; then
+        RUN_DETAIL="$RUN_DETAIL${SEP}$FM_CREW_STATE_ACTIVITY_KEY $RUN_ACTIVITY"
+      else
+        RUN_DETAIL="$FM_CREW_STATE_ACTIVITY_KEY $RUN_ACTIVITY"
+      fi
+    fi
+  fi
 
   emit "$RUN_STATE" run-step "$RUN_DETAIL"
 fi

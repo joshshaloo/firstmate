@@ -191,6 +191,40 @@ run:
 EOF
 }
 
+# Both TOON shapes an `active_steps` block can render in. The field name, the
+# `quiet` prefix, and the block name are confirmed in the installed CLI; the
+# exact rendering was not observable, so the reader accepts either and these
+# fixtures pin both.
+run_running_active_table() {  # <branch> <last-activity>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+  active_steps[1]{step,active_for,last_activity,agent_pid,round}:
+    test,4m12s,$2,41234,round 1
+EOF
+}
+
+run_running_active_scalar() {  # <branch> <last-activity>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+  active_steps:
+    step: test
+    active_for: 4m12s
+    last_activity: $2
+EOF
+}
+
 run_fixing() {  # <branch>
   cat <<EOF
 run:
@@ -356,6 +390,37 @@ test_active_run_is_authoritative() {
   assert_contains "$out" "source: run-step" "active run -> run-step source"
   assert_contains "$out" "validating (running)" "active run reports the step"
   pass "active run-step is authoritative"
+}
+
+# The gate's own liveness read is republished as the LAST detail segment, so a
+# supervisor can take everything after the key as the value and never has to
+# reconstruct liveness from worktree or log-directory mtimes.
+test_active_step_activity_is_republished() {
+  reset_fakes
+  local d out; d=$(new_case active-liveness)
+  make_repo_on_branch "$d/wt" fm/feat-act
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-act.meta" "window=fm:fm-feat-act" "worktree=$d/wt" "kind=ship"
+
+  FM_FAKE_AXI_STATUS="$(run_running_active_table fm/feat-act '4s')"
+  out=$(run_crew_state "$d" feat-act)
+  assert_contains "$out" "last_activity: 4s" "table-shaped active_steps last_activity republished"
+  case "$out" in *"last_activity: 4s") ;; *) fail "last_activity was not the final detail segment: $out" ;; esac
+
+  FM_FAKE_AXI_STATUS="$(run_running_active_table fm/feat-act 'quiet 12m')"
+  out=$(run_crew_state "$d" feat-act)
+  assert_contains "$out" "last_activity: quiet 12m" "the quiet prefix is preserved verbatim"
+
+  FM_FAKE_AXI_STATUS="$(run_running_active_scalar fm/feat-act '9s')"
+  out=$(run_crew_state "$d" feat-act)
+  assert_contains "$out" "last_activity: 9s" "scalar-shaped active_steps last_activity republished"
+
+  # No active_steps block at all: report nothing rather than guessing, so the
+  # supervisor's default-closed wedge check is unaffected.
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-act)"
+  out=$(run_crew_state "$d" feat-act)
+  case "$out" in *last_activity*) fail "an absent active_steps block invented a liveness value: $out" ;; esac
+  pass "the active run step's reported last_activity is republished as the trailing detail segment"
 }
 
 # (b) needs-decision log + a resumed (running/fixing) run = SUPERSEDED
@@ -1310,6 +1375,7 @@ test_missing_run_head_falls_back_to_current_state() {
 }
 
 test_active_run_is_authoritative
+test_active_step_activity_is_republished
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_genuine_parked_not_superseded

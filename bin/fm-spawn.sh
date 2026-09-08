@@ -1948,14 +1948,17 @@ EOF
 // Firstmate semantic busy-state events + turn-end notification; written by
 // fm-spawn under the contract owned by bin/fm-busy-lib.sh.
 // Semantic state: "agent_start" -> busy when a low-level agent run begins;
-// "agent_settled" -> idle only when ctx.isIdle() confirms Pi will not
-// continue automatically - auto-retries, auto-compaction retries, tool
-// loops, and queued continuations all keep the run un-settled, and a settle
-// that raced another extension's fresh run keeps state busy via isIdle().
+// "session_start" -> busy or idle from the fresh lifecycle context after Pi
+// startup, reload, or session replacement; "agent_settled" -> idle only when
+// ctx.isIdle() confirms Pi will not continue automatically. Auto-retries,
+// auto-compaction retries, tool loops, and queued continuations all keep the
+// run un-settled, and a settle that raced another extension's fresh run keeps
+// state busy via isIdle().
 // "turn_end" fires at every inner turn boundary (one LLM response plus its
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
 import { execFile } from "node:child_process";
+const STALE_CONTEXT_ERROR = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
     execFile("$FM_ROOT/bin/fm-busy-event.sh", [
@@ -1963,10 +1966,25 @@ const busyEvent = (state: string, event: string) =>
       "--gen", "$BUSY_GEN", "--source", "pi-ext", "--event", event,
     ], () => resolve());
   });
+const safeIsIdle = (ctx: any): true | false | undefined => {
+  if (!ctx || typeof ctx.isIdle !== "function") return true;
+  try {
+    return ctx.isIdle() ? true : false;
+  } catch (error: any) {
+    const message = String(error?.message ?? error);
+    if (message === STALE_CONTEXT_ERROR) return undefined;
+    throw error;
+  }
+};
 export default function (pi: any) {
+  pi.on("session_start", (_event: any, ctx: any) => {
+    const idle = safeIsIdle(ctx);
+    if (idle === undefined) return;
+    return busyEvent(idle ? "idle" : "busy", "session-start");
+  });
   pi.on("agent_start", () => busyEvent("busy", "agent-start"));
   pi.on("agent_settled", (_event: any, ctx: any) => {
-    if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
+    if (safeIsIdle(ctx) !== true) return;
     return busyEvent("idle", "agent-settled");
   });
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));

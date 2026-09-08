@@ -78,19 +78,27 @@ classify() {  # <harness> <id> <state-dir>
 }
 
 # drive_pi_ext <ext-path> <mode>: load the generated Pi extension in a plain
-# Node host and fire one lifecycle handler. Modes: agent-start, settle-idle,
-# settle-continuing, turn-end.
+# Node host and fire one lifecycle handler. Modes: agent-start, session-start-idle,
+# session-start-busy, settle-idle, settle-continuing, settle-stale, settle-throws,
+# settle-then-start, turn-end.
 drive_pi_ext() {
   EXT_PATH="$1" MODE="$2" node --input-type=module 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
 const handlers = {};
 mod.default({ on: (name, fn) => { handlers[name] = fn; } });
-const ctx = { isIdle: () => process.env.MODE !== "settle-continuing" };
+const staleMessage = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
+const ctx = { isIdle: () => process.env.MODE !== "settle-continuing" && process.env.MODE !== "session-start-busy" };
+const staleCtx = { isIdle: () => { throw new Error(staleMessage); } };
+const throwingCtx = { isIdle: () => { throw new Error("synthetic unrelated isIdle failure"); } };
 switch (process.env.MODE) {
   case "agent-start": await handlers["agent_start"]({}, ctx); break;
+  case "session-start-idle": await handlers["session_start"]({}, ctx); break;
+  case "session-start-busy": await handlers["session_start"]({}, ctx); break;
   case "settle-idle": await handlers["agent_settled"]({}, ctx); break;
   case "settle-continuing": await handlers["agent_settled"]({}, ctx); break;
+  case "settle-stale": await handlers["agent_settled"]({}, staleCtx); break;
+  case "settle-throws": await handlers["agent_settled"]({}, throwingCtx); break;
   case "settle-then-start":
     await handlers["agent_settled"]({}, ctx);
     await handlers["agent_start"]({}, ctx);
@@ -139,6 +147,51 @@ test_pi_extension_semantic_lifecycle() {
   out=$(classify pi "$id" "$state")
   [ "$out" = "idle pi-ext" ] || fail "the final settle must classify idle, got '$out'"
   pass "pi extension reports agent_start busy, settles idle only via ctx.isIdle(), and keeps turn_end a notification"
+}
+
+test_pi_extension_session_start_reestablishes_state() {
+  local rec id=busy-pi-session-start out state ext
+  rec=$(make_spawn_case pi-session-start pi "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "pi spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.pi-ext.ts"
+
+  out=$(drive_pi_ext "$ext" session-start-idle) || fail "idle session_start drive failed: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "idle pi-ext" ] || fail "fresh idle session_start must classify idle, got '$out'"
+
+  out=$(drive_pi_ext "$ext" session-start-busy) || fail "busy session_start drive failed: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "busy pi-ext" ] || fail "fresh busy session_start must classify busy, got '$out'"
+  pass "pi extension reestablishes semantic busy state from fresh session_start contexts"
+}
+
+test_pi_extension_stale_context_settle_is_safe() {
+  local rec id=busy-pi-stale-ctx out state ext
+  rec=$(make_spawn_case pi-stale-ctx pi "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "pi spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.pi-ext.ts"
+
+  out=$(drive_pi_ext "$ext" agent-start) || fail "agent_start drive failed: $out"
+  out=$(drive_pi_ext "$ext" settle-stale) || fail "stale settle must be skipped without throwing: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "busy pi-ext" ] || fail "stale settle must leave the busy record intact, got '$out'"
+
+  out=$(drive_pi_ext "$ext" session-start-idle) || fail "replacement session_start drive failed: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "idle pi-ext" ] || fail "fresh replacement session_start must repair idle, got '$out'"
+
+  if out=$(drive_pi_ext "$ext" settle-throws); then
+    fail "unrelated isIdle errors must not be swallowed"
+  fi
+  assert_contains "$out" "synthetic unrelated isIdle failure" \
+    "unrelated isIdle errors must keep their diagnostic"
+  pass "pi extension skips only the known stale-context settle and lets a fresh context repair state"
 }
 
 test_pi_extension_serializes_settle_before_next_start() {
@@ -323,6 +376,57 @@ test_codex_unverified_until_a_semantic_source_exists() {
   pass "codex classifies unknown until a semantic source is verified, never idle or footer-matched"
 }
 
+test_pi_extension_live_reload_writes_idle() {
+  command -v pi >/dev/null 2>&1 || { pass "live Pi reload regression skipped without pi"; return; }
+
+  local rec id=busy-pi-live-reload out state ext sessions work trigger status log
+  rec=$(make_spawn_case pi-live-reload pi "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "pi spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.pi-ext.ts"
+  sessions="$CASE_DIR/sessions"
+  work="$CASE_DIR/pi-work"
+  trigger="$CASE_DIR/stale-reload.ts"
+  log="$CASE_DIR/stale-reload.log"
+  mkdir -p "$sessions" "$work"
+
+  cat > "$trigger" <<'EOF'
+export default function (pi) {
+  pi.registerCommand("fm-stale-reload", {
+    description: "Reload Pi, then touch the old command ctx to reproduce stale contexts.",
+    handler: async (_args, ctx) => {
+      await ctx.reload();
+      try {
+        ctx.isIdle();
+      } catch (error) {
+        await import("node:fs").then(({ appendFileSync }) => {
+          appendFileSync(process.env.FM_STALE_RELOAD_LOG, String(error?.message ?? error) + "\n");
+        });
+      }
+    },
+  });
+}
+EOF
+
+  set +e
+  (
+    cd "$work" || exit 1
+    FM_STALE_RELOAD_LOG="$log" \
+      pi -p --session-dir "$sessions" --no-context-files --no-skills --no-themes \
+        --no-extensions -e "$ext" -e "$trigger" --offline /fm-stale-reload
+  ) >/"$CASE_DIR/pi.out" 2>/"$CASE_DIR/pi.err"
+  status=$?
+  set -e
+  expect_code 0 "$status" "live Pi stale-reload command should succeed: $(cat "$CASE_DIR/pi.out" "$CASE_DIR/pi.err")"
+  assert_contains "$(cat "$log")" "This extension ctx is stale after session replacement or reload" \
+    "live reproduction did not prove Pi rejected the old command ctx"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "idle pi-ext" ] || fail "generated extension did not write idle after live reload, got '$out'"
+  pass "generated Pi extension writes idle after a live reload despite stale old command contexts"
+}
+
 test_kimi_and_grok_install_no_unverified_wiring() {
   local state out
   state="$TMP_ROOT/gates/state"
@@ -339,8 +443,11 @@ test_kimi_and_grok_install_no_unverified_wiring() {
 }
 
 test_pi_extension_semantic_lifecycle
+test_pi_extension_session_start_reestablishes_state
+test_pi_extension_stale_context_settle_is_safe
 test_pi_extension_serializes_settle_before_next_start
 test_pi_extension_stale_incarnation_rejected
+test_pi_extension_live_reload_writes_idle
 test_kimi_and_grok_install_no_unverified_wiring
 test_opencode_plugin_semantic_lifecycle
 test_claude_hooks_semantic_lifecycle

@@ -29,6 +29,15 @@ wait_for_capture_text() {  # <target> <text> [samples]
   return 1
 }
 
+# True once the pane has drawn anything of its own (a prompt, or the line
+# editor's echo of what we typed). Both prove the shell is past startup and is
+# reading input interactively, which is what makes a clearing ^C safe to send.
+pane_has_drawn_output() {  # <target>
+  local target=$1 out
+  out=$(fm_backend_tmux_capture "$target" 50 2>/dev/null || true)
+  [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]
+}
+
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-backend-smoke-$$"
@@ -105,15 +114,26 @@ pass "real tmux: fm_backend_tmux_adopt_task returns the stable window id, re-pin
 # editor are ready to accept Enter. Prove command execution with an output token
 # that does not appear contiguously in the command, retrying the harmless probe
 # until the shell acknowledges it.
+#
+# The retry's line-clearing ^C is withheld until the pane has drawn output of
+# its own. ^C is a real SIGINT to the pane's foreground process group, and a
+# shell that has not yet installed its interactive SIGINT handling dies on it -
+# tmux then closes the window, so every later probe would talk to a target that
+# no longer exists. A pane that has drawn nothing has no half-typed line to
+# clear anyway, so nothing is lost by waiting.
 SHELL_READY=false
 for _ in $(seq 1 100); do
-  tmux send-keys -t "$TARGET" C-c
+  if pane_has_drawn_output "$TARGET"; then
+    tmux send-keys -t "$TARGET" C-c
+  fi
   tmux send-keys -t "$TARGET" -l "printf 'shell-%s\\n' ready"
   tmux send-keys -t "$TARGET" Enter
   if wait_for_capture_text "$TARGET" "shell-ready" 10; then
     SHELL_READY=true
     break
   fi
+  tmux display-message -p -t "$TARGET" '#{pane_id}' >/dev/null 2>&1 \
+    || fail "the tmux task window disappeared while waiting for its shell to become ready"
 done
 [ "$SHELL_READY" = true ] || fail "the tmux task shell did not become ready"
 

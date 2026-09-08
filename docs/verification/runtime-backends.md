@@ -120,7 +120,7 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 ## Herdr
 
 The compatibility floor is protocol 14.
-The latest active verification uses Herdr 0.7.5 protocol 17, most recently on Linux x86_64 with a nix-provided herdr for the restart-husk create refusal below; the section's earlier 0.7.5 protocol 17 evidence was observed on macOS aarch64 and still stands.
+The latest active verification uses Herdr 0.7.5 protocol 17, most recently on Linux x86_64 for the pane-disappearance and husk classification evidence below; the restart-husk create refusal was checked on Linux x86_64 with a nix-provided herdr, and the section's earlier 0.7.5 protocol 17 evidence was observed on macOS aarch64 and still stands.
 Earlier 0.7.4, protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 
@@ -184,6 +184,23 @@ tests/fm-spawn-worktree-claim.test.sh
 
 Observed guarantee on 2026-09-07 with the fake Herdr suite: a restored no-agent tab is closed only after the idle-shell process proof succeeds and the recorded pane is proven to be its tab's only pane, the close runs through the focus-preserving owner under the named-session presentation lock and restores the captain's exact pre-close tab before releasing it, and the recorded worktree is reused.
 Live, unverified, foreground-job, active-tab, tab-sharing, presentation-lock-contended, and cross-backend relaunches all refuse without treehouse allocation or pane closure, and a close whose pane is already gone is reported gone rather than left untouched.
+
+Pane-disappearance and husk classification is owned by:
+
+```sh
+tests/fm-backend-herdr-pane-disappearance-e2e.test.sh
+```
+
+Observed output on 2026-09-08 against Herdr 0.7.5 protocol 17 on Linux x86_64:
+
+```text
+ok - explicit pane close after done line: pane classifier=dead recovery mapping=missing
+ok - shell reap by killing own pane shell pid: pane classifier=dead recovery mapping=missing
+ok - session restart husk: pane classifier=no-agent recovery mapping=dead
+ok - Herdr pane disappearance recipes use one classifier and map vanished panes to missing, husks to dead
+```
+
+The shell-reap recipe kills only the lab pane's own shell pid after the backend's shared idle-shell proof succeeds.
 
 ### Launcher workspace placement
 

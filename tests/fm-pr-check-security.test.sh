@@ -749,15 +749,18 @@ test_rejected_metacharacter_bytes_are_inert() {
     [ "$rc" -ne 0 ] || fail "rejected metacharacter byte was accepted"
     [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "rejected input left a runnable task check"
     [ ! -e "$dir/home/state/task-a.pr-poll" ] || fail "rejected input left a sidecar"
-    fm_pr_poll_prepare "$dir/home/state" safe-check github https://github.com/o/r/pull/99 github.com o/r 99 "$POLL" \
-      || fail "could not prepare bounded watcher poll"
-    fm_pr_poll_publish_prepared || fail "could not publish bounded watcher poll"
+    # Same reason as test_static_poll_contract: the bounded watcher here is
+    # asserted on only for reaching the authenticated poll, so arm it with the
+    # migration markers already current instead of paying for a first-time
+    # migration whose failures are indistinguishable from a refused check.
+    seed_canonical_poll "$dir" safe-check https://github.com/o/r/pull/99
 
     set +e
     FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
     rc=$?
     set -e
-    [ "$rc" -eq 0 ] || fail "bounded watcher did not complete through the authenticated poll"
+    [ "$rc" -eq 0 ] \
+      || fail "bounded watcher did not complete through the authenticated poll (rc=$rc): $(cat "$dir/watch.err") | $(cat "$dir/watch.out")"
     rm -f "$dir/home/state/.last-check"
   done
 
@@ -829,16 +832,23 @@ test_static_poll_contract() {
   [ "$rc" -eq 0 ] || fail "watcher run_check timeout wrapper failed"
   [ -z "$out" ] || fail "timed-out static poll emitted output"
 
+  # The bounded watcher below is asserted on for one property only: the static
+  # poll surfaces exactly one merged wake. Arm it through seed_canonical_poll,
+  # the same helper every other bounded-watcher case here uses, so the migration
+  # markers are already current: an unseeded home makes the watcher run a
+  # first-time PR check migration - a second full program that takes and releases
+  # the watcher singleton lock and republishes two markers - inside the same
+  # bounded window, and bin/fm-watch.sh collapses any failure of it into a silent
+  # `exit 1` that this assertion cannot distinguish from a missed merged wake.
   write_poll_meta "$dir/home/state" task-a https://github.com/o/r/pull/1
-  fm_pr_poll_prepare "$dir/home/state" task-a github https://github.com/o/r/pull/1 github.com o/r 1 "$POLL" \
-    || fail "could not prepare authenticated watcher poll"
-  fm_pr_poll_publish_prepared || fail "could not publish authenticated watcher poll"
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
   rm -f "$dir/home/state/.last-check"
   set +e
   FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] || fail "watcher did not surface merged poll"
+  [ "$rc" -eq 0 ] \
+    || fail "watcher did not surface merged poll (rc=$rc): $(cat "$dir/watch.err") | $(cat "$dir/watch.out")"
   [ "$(grep -c '^check: .*: merged$' "$dir/watch.out")" -eq 1 ] || fail "watcher did not convert merged output into exactly one wake"
   pass "static poll is silent except for one merged line and remains watcher-bounded"
 }

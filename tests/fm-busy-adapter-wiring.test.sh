@@ -79,8 +79,9 @@ classify() {  # <harness> <id> <state-dir>
 
 # drive_pi_ext <ext-path> <mode>: load the generated Pi extension in a plain
 # Node host and fire one lifecycle handler. Modes: agent-start, session-start-idle,
-# session-start-busy, settle-idle, settle-continuing, settle-stale, settle-throws,
-# settle-then-start, turn-end.
+# session-start-busy, session-start-startup, session-start-unknown-reason,
+# settle-idle, settle-continuing, settle-stale, settle-throws, settle-then-start,
+# turn-end.
 drive_pi_ext() {
   EXT_PATH="$1" MODE="$2" node --input-type=module 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
@@ -93,8 +94,10 @@ const staleCtx = { isIdle: () => { throw new Error(staleMessage); } };
 const throwingCtx = { isIdle: () => { throw new Error("synthetic unrelated isIdle failure"); } };
 switch (process.env.MODE) {
   case "agent-start": await handlers["agent_start"]({}, ctx); break;
-  case "session-start-idle": await handlers["session_start"]({}, ctx); break;
-  case "session-start-busy": await handlers["session_start"]({}, ctx); break;
+  case "session-start-idle": await handlers["session_start"]({ reason: "reload" }, ctx); break;
+  case "session-start-busy": await handlers["session_start"]({ reason: "resume" }, ctx); break;
+  case "session-start-startup": await handlers["session_start"]({ reason: "startup" }, ctx); break;
+  case "session-start-unknown-reason": await handlers["session_start"]({}, ctx); break;
   case "settle-idle": await handlers["agent_settled"]({}, ctx); break;
   case "settle-continuing": await handlers["agent_settled"]({}, ctx); break;
   case "settle-stale": await handlers["agent_settled"]({}, staleCtx); break;
@@ -158,6 +161,16 @@ test_pi_extension_session_start_reestablishes_state() {
   state="$HOME_DIR/state"
   ext="$state/$id.pi-ext.ts"
 
+  out=$(drive_pi_ext "$ext" session-start-startup) || fail "startup session_start drive failed: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "busy fm-spawn" ] || \
+    fail "startup session_start must leave the armed launch seed authoritative, got '$out'"
+
+  out=$(drive_pi_ext "$ext" session-start-unknown-reason) || fail "unknown-reason drive failed: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "busy fm-spawn" ] || \
+    fail "an unrecognized session_start reason must not write state, got '$out'"
+
   out=$(drive_pi_ext "$ext" session-start-idle) || fail "idle session_start drive failed: $out"
   out=$(classify pi "$id" "$state")
   [ "$out" = "idle pi-ext" ] || fail "fresh idle session_start must classify idle, got '$out'"
@@ -165,7 +178,7 @@ test_pi_extension_session_start_reestablishes_state() {
   out=$(drive_pi_ext "$ext" session-start-busy) || fail "busy session_start drive failed: $out"
   out=$(classify pi "$id" "$state")
   [ "$out" = "busy pi-ext" ] || fail "fresh busy session_start must classify busy, got '$out'"
-  pass "pi extension reestablishes semantic busy state from fresh session_start contexts"
+  pass "pi extension repairs state from replacement session_start contexts and leaves the startup seed alone"
 }
 
 test_pi_extension_stale_context_settle_is_safe() {

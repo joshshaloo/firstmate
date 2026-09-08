@@ -272,7 +272,7 @@ The follow-up was verified in the interactive TUI; `opencode run` can exit befor
 
 | Fact | Value |
 |---|---|
-| Busy state | The Firstmate-owned extension's `agent_start` (busy), fresh `session_start` state repair, and `agent_settled` confirmed by stale-safe `ctx.isIdle()` (idle), which covers reload/replacement, retries, compaction, tool loops, and queued continuations. |
+| Busy state | The Firstmate-owned extension's `agent_start` (busy), fresh `session_start` state repair after a reload or session replacement (never at startup, where the spawn seed stays authoritative), and `agent_settled` confirmed by stale-safe `ctx.isIdle()` (idle), which covers reload/replacement, retries, compaction, tool loops, and queued continuations. |
 | Exit command | `/quit` |
 | Interrupt | single Escape |
 

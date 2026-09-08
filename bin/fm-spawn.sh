@@ -1948,8 +1948,12 @@ EOF
 // Firstmate semantic busy-state events + turn-end notification; written by
 // fm-spawn under the contract owned by bin/fm-busy-lib.sh.
 // Semantic state: "agent_start" -> busy when a low-level agent run begins;
-// "session_start" -> busy or idle from the fresh lifecycle context after Pi
-// startup, reload, or session replacement; "agent_settled" -> idle only when
+// "session_start" -> busy or idle from the fresh lifecycle context after a
+// reload or a session replacement (reload/new/resume/fork). Pi's startup
+// session_start is deliberately NOT a state edge: it fires before the
+// positional launch brief reaches agent_start, where isIdle() is still true
+// but the task has not settled, so the armed fm-spawn launch seed stays
+// authoritative until agent_start. "agent_settled" -> idle only when
 // ctx.isIdle() confirms Pi will not continue automatically. Auto-retries,
 // auto-compaction retries, tool loops, and queued continuations all keep the
 // run un-settled, and a settle that raced another extension's fresh run keeps
@@ -1976,8 +1980,10 @@ const safeIsIdle = (ctx: any): true | false | undefined => {
     throw error;
   }
 };
+const REPAIR_REASONS = ["reload", "new", "resume", "fork"];
 export default function (pi: any) {
-  pi.on("session_start", (_event: any, ctx: any) => {
+  pi.on("session_start", (event: any, ctx: any) => {
+    if (!REPAIR_REASONS.includes(String(event?.reason ?? ""))) return;
     const idle = safeIsIdle(ctx);
     if (idle === undefined) return;
     return busyEvent(idle ? "idle" : "busy", "session-start");

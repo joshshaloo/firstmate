@@ -103,6 +103,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-public-followup-lib.sh
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 
 RETRY_BACKOFF=${FM_PF_RETRY_BACKOFF_SECS:-900}
 case "$RETRY_BACKOFF" in ''|*[!0-9]*) RETRY_BACKOFF=900 ;; esac
@@ -516,13 +518,31 @@ public_followup_registration_valid() {
 }
 
 public_followup_secondmate_home() {
-  local id=$1 meta home marker
+  local id=$1 meta home marker line row_rc matches
   fm_pf_home_id_valid "secondmate:$id" || return 1
   meta="$STATE/$id.meta"
   home=$(fmx_meta_get "$meta" home)
   if [ -z "$home" ] && [ -f "$DATA/secondmates.md" ] && [ ! -L "$DATA/secondmates.md" ]; then
-    home=$(awk -v id="$id" '$1 == "-" && $2 == id { line=$0 } END { print line }' "$DATA/secondmates.md" 2>/dev/null \
-      | sed -n 's/.*(home:[[:space:]]*\([^;)]*\);.*/\1/p' | sed 's/[[:space:]]*$//')
+    matches=0
+    while IFS= read -r line; do
+      case "$line" in
+        "- "*) ;;
+        *) continue ;;
+      esac
+      row_rc=0
+      secondmate_registry_parse_line "$line" || row_rc=$?
+      [ "$SECONDMATE_REGISTRY_ID" = "$id" ] || continue
+      matches=$((matches + 1))
+      if [ "$row_rc" -eq 2 ]; then
+        die "secondmate $id: $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" 1
+      fi
+      [ "$row_rc" -eq 0 ] || continue
+      if secondmate_registry_row_is_remote; then
+        die "secondmate $id: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" 1
+      fi
+      home=$SECONDMATE_REGISTRY_HOME
+    done < "$DATA/secondmates.md"
+    [ "$matches" -le 1 ] || die "secondmate $id has multiple registry rows" 1
   fi
   [ -n "$home" ] || return 1
   case "$home" in /*) ;; *) return 1 ;; esac

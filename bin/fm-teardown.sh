@@ -132,6 +132,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-public-followup-lib.sh
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -208,7 +210,7 @@ PUBLIC_FOLLOWUP_PARENT_UNRESOLVED=0
 PUBLIC_FOLLOWUP_PARENT_RELAY_ACTIVE=0
 PUBLIC_FOLLOWUP_RELAY_ACTIVE=0
 public_followup_resolve_primary_home() {
-  local parent=$1 child=$2 id=$3 parent_meta registry lines line_count meta_home registry_home
+  local parent=$1 child=$2 id=$3 parent_meta registry line matches row_rc meta_home registry_home
   fm_pf_home_id_valid "secondmate:$id" || return 1
   case "$parent" in /*) ;; *) return 1 ;; esac
   parent=$(CDPATH='' cd -- "$parent" 2>/dev/null && pwd -P) || return 1
@@ -222,11 +224,31 @@ public_followup_resolve_primary_home() {
   [ "$meta_home" = "$child" ] || return 1
   registry="$parent/data/secondmates.md"
   [ -f "$registry" ] && [ ! -L "$registry" ] || return 1
-  lines=$(awk -v wanted="$id" '$1 == "-" && $2 == wanted { print }' "$registry" 2>/dev/null || true)
-  line_count=$(printf '%s\n' "$lines" | grep -c . || true)
-  [ "$line_count" -eq 1 ] || return 1
-  line=$(printf '%s\n' "$lines")
-  registry_home=$(printf '%s\n' "$line" | sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p')
+  matches=0
+  registry_home=
+  while IFS= read -r line; do
+    case "$line" in
+      "- "*) ;;
+      *) continue ;;
+    esac
+    row_rc=0
+    secondmate_registry_parse_line "$line" || row_rc=$?
+    if [ "$SECONDMATE_REGISTRY_ID" != "$id" ]; then
+      continue
+    fi
+    matches=$((matches + 1))
+    if [ "$row_rc" -eq 2 ]; then
+      echo "error: secondmate $id: $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" >&2
+      return 1
+    fi
+    [ "$row_rc" -eq 0 ] || continue
+    if secondmate_registry_row_is_remote; then
+      echo "error: secondmate $id: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" >&2
+      return 1
+    fi
+    registry_home=$SECONDMATE_REGISTRY_HOME
+  done < "$registry"
+  [ "$matches" -eq 1 ] || return 1
   registry_home=$(CDPATH='' cd -- "$registry_home" 2>/dev/null && pwd -P) || return 1
   [ "$registry_home" = "$child" ] || return 1
   printf '%s\n' "$parent"
@@ -779,8 +801,8 @@ backlog_refresh_reminder() {
   fi
 }
 
-registry_home_for_line() {
-  sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p'
+registry_refusal_line() {  # <id> <wording>
+  printf 'REFUSAL\t%s\t%s\n' "$1" "$2"
 }
 
 path_is_ancestor_of() {
@@ -1161,24 +1183,34 @@ validate_removal_target() {
 }
 
 registered_descendant_home_for_removal() {
-  local reg=$1 target=$2 line id registered_home registered_abs
+  local reg=$1 target=$2 line row_rc id registered_home registered_abs
   [ -f "$reg" ] || return 1
   while IFS= read -r line; do
     case "$line" in
-      "- "*)
-        id=${line#- }
-        id=${id%% *}
-        registered_home=$(printf '%s\n' "$line" | registry_home_for_line)
-        [ -n "$registered_home" ] || continue
-        registered_abs=$(removal_target_abs_path "$registered_home" 2>/dev/null || true)
-        [ -n "$registered_abs" ] || continue
-        [ "$registered_abs" = "$target" ] && continue
-        if path_is_ancestor_of "$target" "$registered_abs"; then
-          printf '%s\t%s\n' "$id" "$registered_abs"
-          return 0
-        fi
-        ;;
+      "- "*) ;;
+      *) continue ;;
     esac
+    row_rc=0
+    secondmate_registry_parse_line "$line" || row_rc=$?
+    if [ "$row_rc" -eq 2 ]; then
+      registry_refusal_line "${SECONDMATE_REGISTRY_ID:-unknown}" "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"
+      return 0
+    fi
+    [ "$row_rc" -eq 0 ] || continue
+    id=$SECONDMATE_REGISTRY_ID
+    # This scan only asks whether a registered home sits under the removal
+    # target, and a home on another host never can.
+    if secondmate_registry_row_is_remote; then
+      continue
+    fi
+    registered_home=$SECONDMATE_REGISTRY_HOME
+    registered_abs=$(removal_target_abs_path "$registered_home" 2>/dev/null || true)
+    [ -n "$registered_abs" ] || continue
+    [ "$registered_abs" = "$target" ] && continue
+    if path_is_ancestor_of "$target" "$registered_abs"; then
+      printf 'DESCENDANT\t%s\t%s\n' "$id" "$registered_abs"
+      return 0
+    fi
   done < "$reg"
   return 1
 }
@@ -1265,10 +1297,14 @@ validate_firstmate_home_for_removal() {
     conflict=$(registered_descendant_home_for_removal "$abs_home_path/data/secondmates.md" "$abs_home_path" || true)
   fi
   if [ -n "$conflict" ]; then
-    IFS=$'\t' read -r child_id child_home <<EOF
+    IFS=$'\t' read -r conflict_kind child_id child_home <<EOF
 $conflict
 EOF
-    echo "REFUSED: unsafe $label removal target $home contains registered secondmate home $child_home for $child_id" >&2
+    if [ "$conflict_kind" = REFUSAL ]; then
+      echo "REFUSED: unsafe $label removal target $home: secondmate $child_id: $child_home" >&2
+    else
+      echo "REFUSED: unsafe $label removal target $home contains registered secondmate home $child_home for $child_id" >&2
+    fi
     return 1
   fi
   printf '%s\n' "$abs_home_path"

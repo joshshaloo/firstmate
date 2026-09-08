@@ -42,6 +42,18 @@ secondmate_registry_remote_refusal() {
   printf '%s\n' "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
 }
 
+# Whether the row just parsed places its secondmate on another host. Its `home:`
+# is a path over there, so it can never equal, contain, or be contained by a path
+# here: a whole-registry scan that only asks local-path questions already has its
+# answer for such a row and moves on to the next one. A reader that must act on
+# one specific id still refuses it with the remote wording, because there the
+# remote row is the subject of the operation rather than a bystander. A row this
+# parser could not read earns the opposite treatment - nothing is proven about
+# where it lives, so scans refuse rather than skip.
+secondmate_registry_row_is_remote() {
+  [ "${SECONDMATE_REGISTRY_REMOTE:-0}" = 1 ]
+}
+
 # Field values are bounded by the `;` and `)` delimiters, which permit padding
 # before them, so a hand-written `home: /path ;` must resolve to the same path a
 # generated `home: /path;` does. Trimming belongs here rather than in each caller.

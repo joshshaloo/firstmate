@@ -37,7 +37,7 @@ Two things about plain `glab` were established by running it, because assuming e
 
 First, plain `glab` has no field selector.
 `gh` reads one field with `--json state -q .state`; `glab mr view` offers only `-F, --output string  Format output as: text, json`.
-Its JSON would need a JSON processor, and `jq` is not one of firstmate's common tools, so the state is read from glab's own field output instead.
+Its JSON would need a JSON processor, and `jq` was not one of firstmate's common tools when GitLab watching was added, so the state is read from glab's own field output instead.
 Only an exact `merged` wakes firstmate, so a changed output format produces no wake rather than a false merge.
 
 Second, `glab` cannot take a merge request URL the way `gh pr view` can.
@@ -207,6 +207,7 @@ Secret values are never printed, stored in state, or copied into tests.
 The refusal names the concrete missing requirement, for example `bkt on PATH`, `jq on PATH`, or the missing `BKT_*` variable names.
 It never arms a silent poll when the authenticated Bitbucket context is missing.
 If that environment disappears after arming, the poll emits `bitbucket-auth-missing: ...` with the missing variable names instead of silently skipping the check.
+A `bkt` or `jq` that disappears from `PATH` after arming emits `bitbucket-missing: bkt on PATH` or `bitbucket-missing: jq on PATH` for the same reason.
 
 The Bitbucket poll first reads the pull request state through `bkt api /repositories/<workspace>/<repo>/pullrequests/<number> --json`.
 A `MERGED` state emits `merged` and uses the same watcher retirement path as the other forges.
@@ -215,7 +216,7 @@ A fully successful set emits `green`.
 A failed, stopped, cancelled, or errored status emits `red: <build name> <state>`.
 Pending, running, unreadable, malformed, or absent statuses produce no readiness wake.
 When no build status exists yet, the poll falls back to the latest source-branch pipeline from `bkt pipeline list --json --workspace <workspace> --repo <repo> --limit 20` and emits the same `green` or `red: pipeline <number> <result>` result only when that pipeline is terminal.
-Only `merged` retires the poll, so `green`, `red: ...`, and `bitbucket-auth-missing: ...` all describe conditions that hold across sweeps.
+Only `merged` retires the poll, so `green`, `red: ...`, `bitbucket-auth-missing: ...`, and `bitbucket-missing: ...` all describe conditions that hold across sweeps.
 The watcher surfaces such a line once and wakes again only when the emitted line changes, so a pull request left red does not wake firstmate every `FM_CHECK_INTERVAL`; this is the watcher's shared rule for every forge, not a Bitbucket special case.
 
 `bin/fm-pr-merge.sh` merges Bitbucket Cloud pull requests through `bkt pr merge <number> --workspace <workspace> --repo <repo>` after first recording the same metadata through `bin/fm-pr-check.sh`.
@@ -228,6 +229,7 @@ Repository selector overrides such as `--workspace`, `--repo`, `--project`, and 
 Teaching no-mistakes to open Bitbucket pull requests is a separate no-mistakes change; it would need the same environment-backed `bkt` context available inside the no-mistakes run.
 
 A GitLab task records no `pr_head=` or `landing_branch=`.
-`gh` exposes the head commit and base branch as selectable fields, while plain `glab` exposes equivalent data only inside its JSON output, which would need a JSON processor firstmate does not require.
+`gh` exposes the head commit and base branch as selectable fields, while plain `glab` exposes equivalent data only inside its JSON output, which would need a JSON processor firstmate did not require when GitLab watching was added.
+The Bitbucket path does require `jq`, but only for a Bitbucket task, so the GitLab reader is unchanged here.
 Both consumers already treat the head as optional: `bin/fm-teardown.sh` reads it from the forge at teardown and falls back to its content check, and `bin/fm-review-diff.sh` resolves the head from the remote when none is recorded.
 For a GitLab merge request aimed away from the default branch, pass `fm-teardown.sh --landing-branch <branch>` so the content check compares against the directed branch.

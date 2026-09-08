@@ -477,7 +477,7 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   write_parent_secondmate_event "$home" timedout "$timedout" "old timed work"
 
   fakebin=$(make_fakebin "$home")
-  json=$(FAKE_NM_SLEEP=1 FM_SNAPSHOT_SECONDMATE_TIMEOUT=1 run "$home" "$fakebin" --json)
+  json=$(FM_TIMEOUT_MECHANISM_OVERRIDE=bash FAKE_NM_SLEEP=1 FM_SNAPSHOT_SECONDMATE_TIMEOUT=1 run "$home" "$fakebin" --json)
   chmod 700 "$unreadable/data"
   printf '%s' "$json" | jq -e '
     (.secondmates | length) == 5
@@ -1111,12 +1111,12 @@ test_perl_fallback_bounds_github_call() {
   done
   started=$(date +%s)
   json=$(PATH="$fakebin:$toolbin" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
-    FM_BEARINGS_PR_TIMEOUT=1 NET_LOG="$home/net.log" FAKE_GH_SLEEP=1 "$BEARINGS" --include-prs --json)
+    FM_TIMEOUT_MECHANISM_OVERRIDE=bash FM_BEARINGS_PR_TIMEOUT=1 NET_LOG="$home/net.log" FAKE_GH_SLEEP=1 "$BEARINGS" --include-prs --json)
   elapsed=$(( $(date +%s) - started ))
-  [ "$elapsed" -lt 10 ] || fail "Perl fallback did not bound a stalled gh call (${elapsed}s)"
+  [ "$elapsed" -lt 10 ] || fail "shared timeout did not bound a stalled gh call (${elapsed}s)"
   printf '%s' "$json" | jq -e '.prs | test("unavailable")' >/dev/null \
     || fail "timed-out gh call did not fail soft: $json"
-  pass "Perl fallback bounds stalled GitHub calls without coreutils timeout"
+  pass "shared timeout bounds stalled GitHub calls without coreutils timeout"
 }
 
 write_large_fixture() {  # <home> <count>

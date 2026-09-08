@@ -57,6 +57,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -189,18 +191,8 @@ strip_quotes() {
 }
 
 # Bounded no-mistakes call in the worktree; stdout only, never fails the script.
-HAVE_TIMEOUT=none
-if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=timeout
-elif command -v gtimeout >/dev/null 2>&1; then HAVE_TIMEOUT=gtimeout
-elif command -v perl >/dev/null 2>&1; then HAVE_TIMEOUT=perl
-fi
 nm_run() {  # <args...>
-  case "$HAVE_TIMEOUT" in
-    timeout)  ( cd "$WT" && timeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    gtimeout) ( cd "$WT" && gtimeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    *)        true ;;
-  esac
+  ( cd "$WT" && fm_run_timed "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true
 }
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).

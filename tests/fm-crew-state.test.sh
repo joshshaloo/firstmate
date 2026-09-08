@@ -1149,7 +1149,7 @@ test_dead_window_still_reports_active_run_step() {
   pass "closed pane still reports an active run-step"
 }
 
-test_no_timeout_uses_perl_bound() {
+test_no_timeout_uses_shared_bound() {
   reset_fakes
   local d toolbin out start elapsed calls_file calls
   d=$(new_case no-timeout)
@@ -1175,10 +1175,10 @@ SH
   elapsed=$((SECONDS - start))
   assert_contains "$out" "state: working" "timed-out no-mistakes falls back to pane"
   assert_contains "$out" "source: pane" "timed-out no-mistakes -> pane source"
-  [ "$elapsed" -lt 5 ] || fail "perl timeout did not bound no-mistakes calls (elapsed ${elapsed}s)"
+  [ "$elapsed" -lt 5 ] || fail "shared timeout did not bound no-mistakes calls (elapsed ${elapsed}s)"
   calls=$(awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null || echo 0)
   [ "$calls" -eq 1 ] || fail "empty no-mistakes status triggered extra lookups ($calls calls)"
-  pass "no timeout command uses perl bound"
+  pass "no timeout command uses the shared bound"
 }
 
 # (i) kind=scout skips the run lookup entirely (its deliverable is a report).
@@ -1413,7 +1413,7 @@ test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step
-test_no_timeout_uses_perl_bound
+test_no_timeout_uses_shared_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
 test_missing_meta

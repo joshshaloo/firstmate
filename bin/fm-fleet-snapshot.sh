@@ -139,6 +139,9 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-ff-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-ff-lib.sh"  # validate_secondmate_home: shared seeded-home boundary checks
+# shellcheck source=bin/fm-timeout-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-backlog-parse-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backlog-parse-lib.sh"  # fm_backlog_json: the single owner of backlog row syntax
@@ -635,20 +638,6 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
 FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=${FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME:-10}
 case "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" in ''|*[!0-9]*) FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=10 ;; esac
 
-run_timed() {  # <seconds> <command...>
-  local seconds=$1
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
-  else
-    return 124
-  fi
-}
-
 # GNU stat treats -f as a filesystem-report command, so a BSD-first fallback can
 # pollute arithmetic input before failing. Select the platform syntax once.
 if [ "$(uname 2>/dev/null || true)" = Darwin ]; then
@@ -750,7 +739,7 @@ JQ
        ],lines_in_window:$lines_in_window,records_in_window:$records_in_window}
 JQ
   )
-  out=$(run_timed "$FM_SNAPSHOT_REGISTRY_TIMEOUT" bash -c "$script" \
+  out=$(fm_run_timed "$FM_SNAPSHOT_REGISTRY_TIMEOUT" bash -c "$script" \
     fm-secondmate-registry "$reg" "$FM_SNAPSHOT_REGISTRY_LINES" \
     "$FM_SNAPSHOT_REGISTRY_BYTES" "$FM_SNAPSHOT_REGISTRY_RECORDS" "$reg" "$SNAPSHOT_NOW" \
     "$parse_filter" "$output_filter" 2>/dev/null)
@@ -837,7 +826,7 @@ bounded_parent_activities_json() {  # <status-file>
          records_in_window:$records_in_window}'
 BASH
   )
-  out=$(run_timed "$FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT" bash -c "$script" \
+  out=$(fm_run_timed "$FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT" bash -c "$script" \
     fm-parent-activities "$SCRIPT_DIR/fm-classify-lib.sh" "$f" \
     "$FM_SNAPSHOT_PARENT_ACTIVITY_LINES" "$FM_SNAPSHOT_PARENT_ACTIVITY_BYTES" \
     "$FM_SNAPSHOT_PARENT_ACTIVITIES" "$SNAPSHOT_STAT_STYLE" 2>/dev/null)
@@ -866,7 +855,7 @@ terminal_evidence_json() {  # <parent-task-json> <event-note> <evidence-contradi
     return 0
   fi
   # shellcheck disable=SC2016 # Positional parameters expand inside the child bash, not here.
-  out=$(run_timed "$FM_SNAPSHOT_TERMINAL_TIMEOUT" bash -c \
+  out=$(fm_run_timed "$FM_SNAPSHOT_TERMINAL_TIMEOUT" bash -c \
     '. "$1"; fm_backend_capture "$2" "$3" "$4" "$5" | LC_ALL=C head -c "$6"; rc=${PIPESTATUS[0]}; [ "$rc" -eq 141 ] && rc=0; exit "$rc"' \
     fm-terminal-capture "$SCRIPT_DIR/fm-backend.sh" "$backend" "$target" "$FM_SNAPSHOT_TERMINAL_LINES" "$expected" "$FM_SNAPSHOT_TERMINAL_BYTES" 2>/dev/null)
   rc=$?
@@ -1035,7 +1024,7 @@ secondmate_current_json() {  # <parent-tasks-json-file>
       fi
     fi
     if [ -z "$reason" ]; then
-      summary=$(run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" env \
+      summary=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" env \
         FM_ROOT_OVERRIDE="$FM_ROOT" \
         FM_HOME="$home" \
         FM_STATE_OVERRIDE="$home/state" \

@@ -25,6 +25,9 @@
 # shared default branch or any other worktree's checkout.
 
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
+FM_FF_LIB_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$FM_FF_LIB_DIR/fm-secondmate-registry-lib.sh"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -236,9 +239,11 @@ secondmate_registry_field() {
   [ -f "$reg" ] || return 1
   line=$(grep -E "^- $id( |$)" "$reg" | tail -1 || true)
   [ -n "$line" ] || return 1
+  secondmate_registry_parse_line "$line" || return 1
+  [ "$SECONDMATE_REGISTRY_ID" = "$id" ] || return 1
   case "$key" in
-    home) value=$(printf '%s\n' "$line" | sed -n 's/.*(home:[[:space:]]*\([^;)]*\);.*/\1/p' | sed 's/[[:space:]]*$//') ;;
-    projects) value=$(printf '%s\n' "$line" | sed -n 's/.*; projects:[[:space:]]*\([^;)]*\); added .*/\1/p' | sed 's/[[:space:]]*$//') ;;
+    home) value=$SECONDMATE_REGISTRY_HOME ;;
+    projects) value=$SECONDMATE_REGISTRY_PROJECTS ;;
     *) return 1 ;;
   esac
   [ -n "$value" ] || return 1

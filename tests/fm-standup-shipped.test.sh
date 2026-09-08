@@ -23,11 +23,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SHIPPED="$ROOT/bin/fm-standup-shipped.sh"
-if declare -f fm_test_tmproot | grep -q __fm_var; then
-  fm_test_tmproot TMP_ROOT fm-standup
-else
-  TMP_ROOT=$(fm_test_tmproot fm-standup)
-fi
+fm_test_tmproot TMP_ROOT fm-standup
 FM_ROOT_OVERRIDE="$TMP_ROOT/fixture-root"
 mkdir -p "$FM_ROOT_OVERRIDE"
 export FM_ROOT_OVERRIDE

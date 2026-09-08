@@ -16,6 +16,10 @@ set -u
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the cmux adapter)"; exit 0; }
 
 fm_test_tmproot TMP_ROOT fm-backend-cmux-tests
+# Hermetic base PATH for the deliberately-missing-cmux case: a host-installed
+# cmux must not satisfy it. jq is opted in so the only tool the case removes
+# is cmux itself, keeping the "not found" assertion about cmux.
+fm_test_set_base_path BASE_PATH jq
 
 # make_cmux_fakebin: a `cmux` stub that logs every invocation (one line,
 # unit-separated args, to $FM_CMUX_LOG) and returns the canned response for
@@ -195,7 +199,7 @@ test_version_check_refuses_missing_cmux() {
   # this test may run on a machine (like the one that verified this adapter)
   # where cmux really is installed at the real bundle path, which the plain
   # PATH-emptying above would not hide.
-  out=$( PATH="$dir/empty-fakebin:/usr/bin:/bin" FM_BACKEND_CMUX_BUNDLE_BIN="$dir/no-such-cmux" \
+  out=$( PATH="$dir/empty-fakebin:$BASE_PATH" FM_BACKEND_CMUX_BUNDLE_BIN="$dir/no-such-cmux" \
     bash -c '. "$0/bin/backends/cmux.sh"; fm_backend_cmux_version_check' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "version_check should refuse when cmux is not installed"

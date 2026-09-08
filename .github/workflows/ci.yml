@@ -24,7 +24,7 @@ jobs:
       # re-spell the shellcheck command here; keep CI and the pre-push gate on it.
       - run: bin/fm-lint.sh
 
-  # Deterministic proof that portable parallel shards + portable serial + Herdr
+  # Deterministic proof that portable parallel shards + portable serial shards + Herdr
   # equal the complete tests/*.test.sh inventory with no missing or duplicates.
   test-coverage:
     name: Test coverage guard
@@ -62,6 +62,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane portable-parallel-1 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
+      - name: Enforce CI budget headroom
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
       - name: Upload shard 1 timing artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -94,6 +96,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane portable-parallel-2 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
+      - name: Enforce CI budget headroom
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
       - name: Upload shard 2 timing artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -103,13 +107,15 @@ jobs:
           if-no-files-found: warn
 
   # Required portable serial remainder: watcher, lock, AFK, tmux, daemon,
-  # ambiguous, and other stateful tests. Real Herdr stays in tests-herdr.
-  tests-portable-serial:
-    name: Behavior portable serial
+  # ambiguous, and other stateful tests. The two serial shards are generated
+  # from measured artifact durations by bin/fm-test-run.sh. Real Herdr stays in tests-herdr.
+  tests-portable-serial-1:
+    name: Behavior portable serial 1
     runs-on: ubuntu-latest
-    # Measured serial remainder is ~13 min wall without Herdr. Cap is a hang
-    # tripwire above observed p99 script cost and suite wall, not the expected
-    # healthy end (interim 25m full-suite slack reduced after sharding).
+    # Hang tripwire above observed p99 script cost and suite wall, not the
+    # expected healthy end. docs/fm-test-portable-shards.md owns the measured
+    # before/after shard durations. bin/fm-ci-budget-guard.sh reads this
+    # timeout-minutes directly, so raising it moves the guard threshold with it.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -133,18 +139,66 @@ jobs:
           set -eu
           npm install -g tasks-axi
           tasks-axi --version
-      - name: Run portable serial remainder
+      - name: Run portable serial shard 1
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
-          bin/fm-test-run.sh --lane portable-serial \
-            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial.json"
+          bin/fm-test-run.sh --lane portable-serial-1 \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-1.json"
+      - name: Enforce CI budget headroom
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-1.json"
       - name: Upload portable serial timing artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fm-test-timing-portable-serial
-          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-serial.json
+          name: fm-test-timing-portable-serial-1
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-serial-1.json
+          if-no-files-found: warn
+
+  tests-portable-serial-2:
+    name: Behavior portable serial 2
+    runs-on: ubuntu-latest
+    # Hang tripwire above observed p99 script cost and suite wall, not the
+    # expected healthy end. docs/fm-test-portable-shards.md owns the measured
+    # before/after shard durations. bin/fm-ci-budget-guard.sh reads this
+    # timeout-minutes directly, so raising it moves the guard threshold with it.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Require tmux for e2e tests
+        run: |
+          set -eu
+          command -v tmux >/dev/null || {
+            echo "::error::tmux is required for real afk injection e2e coverage"
+            exit 1
+          }
+          tmux -V
+      - name: Install tasks-axi for backlog-handoff delegation
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
+      - name: Run portable serial shard 2
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          bin/fm-test-run.sh --lane portable-serial-2 \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-2.json"
+      - name: Enforce CI budget headroom
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-2.json"
+      - name: Upload portable serial timing artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-test-timing-portable-serial-2
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-serial-2.json
           if-no-files-found: warn
 
   # Required real-Herdr lane: pinned install, serial real-herdr-gated family,
@@ -244,6 +298,8 @@ jobs:
           bin/fm-test-run.sh --family real-herdr-gated \
             --fail-on-gate-skip 'herdr not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
+      - name: Enforce CI budget headroom
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
       - name: Cleanup job-owned Herdr lab sessions
         if: always()
         run: |
@@ -272,7 +328,8 @@ jobs:
     needs:
       - tests-portable-parallel-1
       - tests-portable-parallel-2
-      - tests-portable-serial
+      - tests-portable-serial-1
+      - tests-portable-serial-2
       - tests-herdr
     if: always()
     steps:

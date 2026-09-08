@@ -351,38 +351,50 @@ test_exclude_family() {
 }
 
 test_portable_shard_union_and_coverage_guard() {
-  local s1 s2 proven serial herdr all_count union_count overlap out first
+  local s1 s2 proven serial serial1 serial2 herdr all_count union_count overlap out first
   s1=$("$RUNNER" --list --lane portable-parallel-1)
   s2=$("$RUNNER" --list --lane portable-parallel-2)
   proven=$("$RUNNER" --list --proven-isolated)
   serial=$("$RUNNER" --list --lane portable-serial)
+  serial1=$("$RUNNER" --list --lane portable-serial-1)
+  serial2=$("$RUNNER" --list --lane portable-serial-2)
   herdr=$("$RUNNER" --list --family real-herdr-gated)
   [ -n "$s1" ] && [ -n "$s2" ] || fail "portable parallel shards must be non-empty"
+  [ -n "$serial1" ] && [ -n "$serial2" ] || fail "portable serial shards must be non-empty"
   # Shards disjoint.
   overlap=$(LC_ALL=C comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
   [ -z "$overlap" ] || fail "portable parallel shards overlap: $overlap"
-  # Union of shards equals proven-isolated.
+  overlap=$(LC_ALL=C comm -12 <(printf '%s\n' "$serial1" | LC_ALL=C sort) <(printf '%s\n' "$serial2" | LC_ALL=C sort) || true)
+  [ -z "$overlap" ] || fail "portable serial shards overlap: $overlap"
+  # Union of parallel shards equals proven-isolated.
   [ "$(printf '%s\n' "$s1" "$s2" | LC_ALL=C sort -u)" = \
     "$(printf '%s\n' "$proven" | LC_ALL=C sort -u)" ] \
-    || fail "shard union must equal proven-isolated set"
+    || fail "parallel shard union must equal proven-isolated set"
+  # Union of serial shards equals the serial compatibility lane.
+  [ "$(printf '%s\n' "$serial1" "$serial2" | LC_ALL=C sort -u)" = \
+    "$(printf '%s\n' "$serial" | LC_ALL=C sort -u)" ] \
+    || fail "serial shard union must equal portable-serial"
   # No herdr in portable lanes.
-  printf '%s\n' "$s1" "$s2" "$serial" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
+  printf '%s\n' "$s1" "$s2" "$serial1" "$serial2" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     && fail "portable lanes must not include real-herdr-gated smoke"
   printf '%s\n' "$herdr" | grep -Fq 'tests/fm-backend-herdr-smoke.test.sh' \
     || fail "herdr family must include smoke"
   out=$("$RUNNER" --check-coverage)
   assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard success marker"
   all_count=$("$RUNNER" --list --all | wc -l | tr -d ' ')
-  union_count=$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" | LC_ALL=C sort -u | wc -l | tr -d ' ')
+  union_count=$(printf '%s\n' "$s1" "$s2" "$serial1" "$serial2" "$herdr" | LC_ALL=C sort -u | wc -l | tr -d ' ')
   [ "$union_count" = "$all_count" ] \
     || fail "union of lanes ($union_count) must equal --all ($all_count)"
-  # No duplicates across the four partitions.
-  [ "$(printf '%s\n' "$s1" "$s2" "$serial" "$herdr" | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" = "0" ] \
+  # No duplicates across the five partitions.
+  [ "$(printf '%s\n' "$s1" "$s2" "$serial1" "$serial2" "$herdr" | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" = "0" ] \
     || fail "lanes must not duplicate scripts"
   # LPT order: first script of shard 1 is the longest proven script.
   first=$(printf '%s\n' "$s1" | head -n 1)
   [ "$first" = "tests/fm-x-mode.test.sh" ] \
-    || fail "shard 1 must start with the longest proven script, got $first"
+    || fail "parallel shard 1 must start with the longest proven script, got $first"
+  first=$(printf '%s\n' "$serial1" | head -n 1)
+  [ "$first" = "tests/fm-pr-check-security.test.sh" ] \
+    || fail "serial shard 1 must start with the longest measured serial script, got $first"
   pass "portable shard union, disjointness, and coverage guard hold"
 }
 
@@ -525,6 +537,93 @@ SH
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
 }
 
+test_ci_budget_fraction_and_guard() {
+  local tmp json out rc
+  fm_test_tmproot tmp fm-test-run-budget
+  json="$tmp/timing.json"
+  cat >"$json" <<'JSON'
+{
+  "selection": "lane=fixture",
+  "summary": {"duration_ms": 4000, "failed": 0, "skipped_gate": 0, "total": 1},
+  "scripts": []
+}
+JSON
+  [ "$("$RUNNER" --ci-budget-fraction)" = "3/4" ] \
+    || fail "CI budget fraction must be owned by fm-test-run"
+  out=$("$ROOT/bin/fm-ci-budget-guard.sh" "$json" 1) \
+    || { rm -rf "$tmp"; fail "budget guard should pass below threshold"; }
+  assert_contains "$out" "FM_CI_BUDGET ok" "budget guard success marker"
+  cat >"$json" <<'JSON'
+{
+  "selection": "lane=fixture",
+  "summary": {"duration_ms": 46000, "failed": 0, "skipped_gate": 0, "total": 1},
+  "scripts": []
+}
+JSON
+  set +e
+  "$ROOT/bin/fm-ci-budget-guard.sh" "$json" 1 >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || { rm -rf "$tmp"; fail "budget guard should fail over threshold, got $rc"; }
+  grep -Fq 'exceeds 3/4 of 1m budget' "$tmp/out" \
+    || { rm -rf "$tmp"; fail "budget guard failure should name fraction and budget: $(cat "$tmp/out" "$tmp/err")"; }
+  rm -rf "$tmp"
+  pass "CI budget fraction is single-owned and enforced from timing JSON"
+}
+
+test_serial_shards_need_no_python3() {
+  local tmp out
+  fm_test_tmproot tmp fm-test-run-nopy3
+  mkdir -p "$tmp/bin"
+  cat >"$tmp/bin/python3" <<'SH'
+#!/bin/sh
+echo "python3 must not be required for lane selection" >&2
+exit 127
+SH
+  chmod +x "$tmp/bin/python3"
+  out=$(PATH="$tmp/bin:$PATH" "$RUNNER" --list --lane portable-serial-1) \
+    || { rm -rf "$tmp"; fail "serial shard listing must not invoke python3"; }
+  printf '%s\n' "$out" | grep -Fq 'tests/' \
+    || { rm -rf "$tmp"; fail "serial shard listing produced no scripts without python3"; }
+  out=$(PATH="$tmp/bin:$PATH" "$RUNNER" --check-coverage) \
+    || { rm -rf "$tmp"; fail "coverage guard must not invoke python3"; }
+  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard success without python3"
+  rm -rf "$tmp"
+  pass "serial shard selection and coverage guard stay portable without python3"
+}
+
+test_ci_budget_guard_path_and_timeout_sources() {
+  local tmp out rc
+  fm_test_tmproot tmp fm-test-run-budget-src
+  cat >"$tmp/timing.json" <<'JSON'
+{
+  "selection": "lane=fixture",
+  "summary": {"duration_ms": 4000, "failed": 0, "skipped_gate": 0, "total": 1},
+  "scripts": []
+}
+JSON
+  # Relative timing paths resolve against the caller's directory, not the repo root.
+  out=$(cd "$tmp" && "$ROOT/bin/fm-ci-budget-guard.sh" ./timing.json 1) \
+    || { rm -rf "$tmp"; fail "budget guard must accept a caller-relative timing path"; }
+  assert_contains "$out" "FM_CI_BUDGET ok" "relative timing path accepted"
+  # Omitted timeout comes from the running job's own workflow timeout-minutes.
+  out=$(GITHUB_JOB=tests-portable-serial-1 \
+    GITHUB_WORKFLOW_REF="owner/repo/.github/workflows/ci.yml@refs/heads/main" \
+    "$ROOT/bin/fm-ci-budget-guard.sh" "$tmp/timing.json") \
+    || { rm -rf "$tmp"; fail "budget guard must resolve timeout-minutes from the workflow job"; }
+  assert_contains "$out" "timeout_minutes=20" "workflow-sourced per-job timeout"
+  set +e
+  GITHUB_JOB='' GITHUB_WORKFLOW_REF='' "$ROOT/bin/fm-ci-budget-guard.sh" "$tmp/timing.json" \
+    >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "budget guard should refuse an unresolvable timeout, got $rc"; }
+  grep -Fq 'pass it explicitly' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "unresolvable timeout should say how to supply one: $(cat "$tmp/err")"; }
+  rm -rf "$tmp"
+  pass "budget guard keeps caller-relative paths and single-owns the per-job timeout"
+}
+
 test_aggregate_json() {
   local tmp a b
   fm_test_tmproot tmp fm-test-run-aggjson
@@ -581,4 +680,7 @@ test_exclude_family
 test_portable_shard_union_and_coverage_guard
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
+test_serial_shards_need_no_python3
+test_ci_budget_fraction_and_guard
+test_ci_budget_guard_path_and_timeout_sources
 test_aggregate_json

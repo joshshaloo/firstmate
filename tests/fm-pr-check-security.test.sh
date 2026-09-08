@@ -721,10 +721,17 @@ SH
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"
 }
 
+# One bounded watcher run. The alarm is a hang tripwire, not the expected
+# duration: a case passes as soon as the watcher emits and exits, so the bound
+# only has to outlast the slowest healthy cycle on a loaded CI runner rather
+# than a comfortable local one. Cases that need a different bound pass
+# FM_TEST_WATCH_TIMEOUT, like the FM_TEST_CHECK_INTERVAL and FM_TEST_WATCH_ROOT
+# seams beside it.
 run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
+  local watch_timeout=${FM_TEST_WATCH_TIMEOUT:-30}
   shift 2
-  perl -e 'my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm 10; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
+  perl -e 'my $timeout=shift; my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm $timeout; waitpid $pid, 0; alarm 0; exit($? >> 8)' "$watch_timeout" \
     env FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT=1 \
       FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "$WATCH" "$@"
 }
@@ -3104,6 +3111,20 @@ seed_canonical_poll() {
   chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
 }
 
+# The watcher compares a poll emission against "<identity>|<hash>|<line>", where
+# identity and hash are the live registration's, so a fixture marker only pins
+# anything when it carries those exact bytes. Derive them from the same owner
+# functions bin/fm-watch.sh uses rather than re-deriving the format here.
+seed_surfaced_poll_marker() {  # <state> <id> <line>
+  local state=$1 id=$2 line=$3 registration identity hash
+  registration="$state/$id.pr-poll-registration"
+  identity=$(fm_pr_file_identity "$registration") \
+    || fail "could not derive the poll registration identity for $id"
+  hash=$(fm_pr_sha256 "$registration") \
+    || fail "could not hash the poll registration for $id"
+  printf '%s|%s|%s' "$identity" "$hash" "$line" > "$state/.check-surfaced-$id"
+}
+
 add_stop_custom_check() {
   local dir=$1 state
   state="$dir/home/state"
@@ -3145,6 +3166,7 @@ test_merged_poll_retires_once() {
   meta_before=$(cat "$state/task-a.meta")
   seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
   add_stop_custom_check "$dir"
+  seed_surfaced_poll_marker "$state" task-a merged
 
   set +e
   FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
@@ -3154,6 +3176,7 @@ test_merged_poll_retires_once() {
   first=$(cat "$dir/watch-1.out")
   case "$first" in check:*task-a.check.sh:*merged) ;; *) fail "first merged notification was not preserved: $first" ;; esac
   assert_poll_absent "$state" task-a
+  [ ! -e "$state/.check-surfaced-task-a" ] || fail "retirement left the poll surfaced marker"
   [ "$(cat "$state/task-a.meta")" = "$meta_before" ] || fail "merged retirement changed canonical metadata"
 
   rm -f "$state/.last-check"
@@ -3254,6 +3277,7 @@ test_standing_poll_emission_wakes_once() {
   [ "$(queued_check_wakes "$state" task-a)" -eq 2 ] \
     || fail "red to green did not queue exactly one further wake"
 
+  seed_surfaced_poll_marker "$state" task-a merged
   rc=0
   run_bitbucket_watch_cycle "$dir" "$dir/watch-5.out" "$green" \
     '{"state":"MERGED","source":{"branch":{"name":"feature/bitbucket"},"commit":{"hash":"bbbbbbbbbbbb"}},"destination":{"branch":{"name":"main"}}}' || rc=$?

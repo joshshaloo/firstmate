@@ -227,7 +227,7 @@ The firstmate repo itself is the exception: its `.no-mistakes/` directory is loc
 PR-based task merges go through `bin/fm-pr-merge.sh`, which records the task's PR metadata through `bin/fm-pr-check.sh` before calling the forge's CLI.
 The helper requires a full canonical PR URL and derives the repository identity only from it: a `https://github.com/<owner>/<repo>/pull/<n>` URL invokes `gh-axi pr merge <n> --repo <owner>/<repo>` and defaults to `--squash`, while a `https://bitbucket.org/<workspace>/<repo>/pull-requests/<n>` URL invokes `bkt pr merge <n> --workspace <workspace> --repo <repo>` and defaults to `--strategy squash`.
 Both preserve an explicit caller-supplied merge method, and both reject malformed URLs or repository override flags before recording merge state; a well-formed GitLab merge request URL is refused, explicitly, rather than sent to the wrong forge.
-[docs/gitlab-merge-watch.md](gitlab-merge-watch.md) owns the per-forge CLI, authentication, and refusal detail for both the merge path and the watcher's poll.
+[docs/merge-watch.md](merge-watch.md) owns the per-forge CLI, authentication, and refusal detail for both the merge path and the watcher's poll.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 

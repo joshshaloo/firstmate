@@ -41,8 +41,33 @@ wake() {
   exit 0
 }
 
+# One-shot surfaced markers, the single owner of "this exact line has already
+# been shown to firstmate". Every family that needs a standing condition to wake
+# once - captain-relevant statuses (hb), run-step transitions behind a declared
+# pause, and non-terminal PR-poll emissions (check) - records its surfaced bytes
+# here rather than growing its own parallel marker. <kind> namespaces the family
+# and <key> identifies the subject; callers pass a key that is already safe as a
+# filename component.
+_fm_surfaced_path() {  # <kind> <key>
+  printf '%s/.%s-surfaced-%s' "$STATE" "$1" "$2"
+}
+
+# 0 when <line> has NOT already been surfaced for this subject, so the caller
+# wakes; 1 when it is byte-identical to the recorded one.
+fm_surfaced_is_new() {  # <kind> <key> <line>
+  [ "$(cat "$(_fm_surfaced_path "$1" "$2")" 2>/dev/null || true)" != "$3" ]
+}
+
+fm_surfaced_record() {  # <kind> <key> <line>
+  printf '%s' "$3" > "$(_fm_surfaced_path "$1" "$2")"
+}
+
+fm_surfaced_clear() {  # <kind> <key>
+  rm -f "$(_fm_surfaced_path "$1" "$2")"
+}
+
 _hb_surfaced_path() {
-  printf '%s/.hb-surfaced-%s' "$STATE" "$(printf '%s' "$1" | tr ':/.' '___')"
+  _fm_surfaced_path hb "$(printf '%s' "$1" | tr ':/.' '___')"
 }
 
 # Record a captain-relevant status after its durable wake has been enqueued.

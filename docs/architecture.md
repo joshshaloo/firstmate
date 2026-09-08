@@ -18,6 +18,9 @@ When a canonical validated PR poll returns exactly `merged`, the watcher appends
 The receipt makes retirement safely retryable across restarts: fixed-path recovery revalidates the same evidence, removes the runnable check first, removes its registration and data sidecars, removes the receipt last, and preserves task metadata including `pr=` and `pr_head=`.
 A concurrent replacement remains armed, every non-merged or invalid observation remains unchanged, and retirement never performs task or persistent-secondmate cleanup.
 `bin/fm-pr-lib.sh` owns the receipt format and strict identity mechanics, while `bin/fm-watch.sh` owns queue-before-retirement ordering.
+Only `merged` retires a poll, so every other emission - `green`, `red: <build>`, or a missing-forge-context line - describes a standing condition that no poll cycle can clear.
+Those non-terminal emissions surface once and again only when the emitted line itself changes, through the same one-shot surfaced markers the watcher uses for captain-relevant statuses and run-step transitions (`bin/fm-push-transition-lib.sh`), so a pull request sitting red costs one wake rather than one per `FM_CHECK_INTERVAL`.
+The rule compares emitted lines and never interprets them, so GitHub, GitLab, and Bitbucket Cloud behave identically.
 No-verb wakes, such as `working:` notes and bare turn-ended signals, are benign only when `bin/fm-crew-state.sh` reports positive evidence that the crew is still working: an actively running no-mistakes step attributed to that crew's current code, or an exact busy verdict from the semantic busy-state contract.
 A crew that declares `paused:` for a known external wait is separately absorbed and re-surfaced only on the longer pause cadence, rather than being treated as a possible wedge or short-cycling on pane text churn.
 A durable `captain-held` endpoint uses that same cadence only when the backend confidently reports its agent dead.

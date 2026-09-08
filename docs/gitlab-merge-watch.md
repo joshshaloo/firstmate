@@ -215,6 +215,8 @@ A fully successful set emits `green`.
 A failed, stopped, cancelled, or errored status emits `red: <build name> <state>`.
 Pending, running, unreadable, malformed, or absent statuses produce no readiness wake.
 When no build status exists yet, the poll falls back to the latest source-branch pipeline from `bkt pipeline list --json --workspace <workspace> --repo <repo> --limit 20` and emits the same `green` or `red: pipeline <number> <result>` result only when that pipeline is terminal.
+Only `merged` retires the poll, so `green`, `red: ...`, and `bitbucket-auth-missing: ...` all describe conditions that hold across sweeps.
+The watcher surfaces such a line once and wakes again only when the emitted line changes, so a pull request left red does not wake firstmate every `FM_CHECK_INTERVAL`; this is the watcher's shared rule for every forge, not a Bitbucket special case.
 
 `bin/fm-pr-merge.sh` merges Bitbucket Cloud pull requests through `bkt pr merge <number> --workspace <workspace> --repo <repo>` after first recording the same metadata through `bin/fm-pr-check.sh`.
 The default Bitbucket merge strategy is `--strategy squash`, unless the caller passes an explicit `--strategy` after `--`.

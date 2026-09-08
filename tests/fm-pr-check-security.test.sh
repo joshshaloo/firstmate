@@ -2697,6 +2697,7 @@ test_teardown_removes_poll_artifacts() {
   printf 'data\n' > "$dir/home/state/task-a.pr-poll"
   printf 'registration\n' > "$dir/home/state/task-a.pr-poll-registration"
   printf 'trust\n' > "$dir/home/state/task-a.check-trust"
+  printf 'red: unit tests FAILED' > "$dir/home/state/.check-surfaced-task-a"
   mkdir -p "$dir/home/state/.pr-check-quarantine"
   chmod 0700 "$dir/home/state/.pr-check-quarantine"
   printf 'legacy\n' > "$dir/home/state/.pr-check-quarantine/task-a.check.abc123"
@@ -2715,6 +2716,7 @@ SH
   [ ! -e "$dir/home/state/task-a.pr-poll" ] || fail "teardown left the sidecar"
   [ ! -e "$dir/home/state/task-a.pr-poll-registration" ] || fail "teardown left the PR poll registration"
   [ ! -e "$dir/home/state/task-a.check-trust" ] || fail "teardown left the custom check registration"
+  [ ! -e "$dir/home/state/.check-surfaced-task-a" ] || fail "teardown left the poll surfaced marker"
   ! find "$dir/home/state/.pr-check-quarantine" -name 'task-a.*' -print 2>/dev/null | grep . >/dev/null \
     || fail "teardown left task quarantine artifacts"
 
@@ -3169,6 +3171,88 @@ test_merged_poll_retires_once() {
   pass "validated merged polls notify once and retire before the next watcher cycle"
 }
 
+# One bounded watcher cycle against the Bitbucket fixtures. The fixture
+# environment is exported inside a subshell so it cannot leak into the test
+# shell's own HOME.
+run_bitbucket_watch_cycle() {  # <dir> <out> <checks-json> [pr-json]
+  local dir=$1 out=$2 checks=$3 pr=${4:-} rc=0
+  rm -f "$dir/home/state/.last-check"
+  (
+    export FM_TEST_BKT_LOG="$dir/bkt.log" HOME="$dir/user" FM_TEST_BKT_CHECKS_JSON="$checks"
+    [ -z "$pr" ] || export FM_TEST_BKT_PR_JSON="$pr"
+    run_watcher_bounded "$dir/home" "$dir/fakebin"
+  ) > "$out" 2> "$out.err" || rc=$?
+  return "$rc"
+}
+
+queued_check_wakes() {  # <state> <id>
+  local state=$1 id=$2 count=0
+  [ -f "$state/.wake-queue" ] || { printf '0'; return 0; }
+  count=$(grep -c "$(printf '\tcheck\t')[^$(printf '\t')]*$id.check.sh$(printf '\t')" "$state/.wake-queue") || count=0
+  printf '%s' "$count"
+}
+
+# Only `merged` retires a poll, so a red build - or any other non-terminal
+# emission - is a standing condition that every later sweep re-reads unchanged.
+# It must cost exactly one firstmate wake, and wake again only when the emitted
+# line itself changes.
+test_standing_poll_emission_wakes_once() {
+  local dir state url rc cycle red green
+  dir=$(make_case standing-poll-emission)
+  state="$dir/home/state"
+  url=https://bitbucket.org/acme/widgets/pull-requests/7
+  red='{"statuses":[{"state":"FAILED","name":"unit tests"}]}'
+  green='{"statuses":[{"state":"SUCCESSFUL","name":"unit tests"}]}'
+  write_poll_meta "$state" task-a "$url"
+  seed_canonical_poll "$dir" task-a "$url"
+  add_stop_custom_check "$dir"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-1.out" "$red" || rc=$?
+  [ "$rc" -eq 0 ] || fail "first red watcher cycle failed: $(cat "$dir/watch-1.out.err")"
+  grep -F "check: $state/task-a.check.sh: red: unit tests FAILED" "$dir/watch-1.out" >/dev/null \
+    || fail "a red Bitbucket poll did not surface once: $(cat "$dir/watch-1.out")"
+  [ "$(cat "$state/.check-surfaced-task-a" 2>/dev/null || true)" = 'red: unit tests FAILED' ] \
+    || fail "the surfaced emission was not recorded"
+
+  for cycle in 2 3; do
+    rc=0
+    run_bitbucket_watch_cycle "$dir" "$dir/watch-$cycle.out" "$red" || rc=$?
+    [ "$rc" -eq 0 ] || fail "red watcher cycle $cycle failed: $(cat "$dir/watch-$cycle.out.err")"
+    ! grep -F 'task-a.check.sh: red' "$dir/watch-$cycle.out" >/dev/null \
+      || fail "an unchanged red Bitbucket poll woke firstmate again on cycle $cycle"
+    case "$(cat "$dir/watch-$cycle.out")" in
+      *z-stop.check.sh:*stop-cycle) ;;
+      *) fail "cycle $cycle did not reach the control check: $(cat "$dir/watch-$cycle.out")" ;;
+    esac
+  done
+  [ "$(queued_check_wakes "$state" task-a)" -eq 1 ] \
+    || fail "a standing red condition queued more than one wake across three sweeps"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-4.out" "$green" || rc=$?
+  [ "$rc" -eq 0 ] || fail "green watcher cycle failed: $(cat "$dir/watch-4.out.err")"
+  grep -F "check: $state/task-a.check.sh: green" "$dir/watch-4.out" >/dev/null \
+    || fail "a changed emission did not wake firstmate again: $(cat "$dir/watch-4.out")"
+  [ "$(cat "$state/.check-surfaced-task-a" 2>/dev/null || true)" = green ] \
+    || fail "the changed emission was not recorded"
+  [ "$(queued_check_wakes "$state" task-a)" -eq 2 ] \
+    || fail "red to green did not queue exactly one further wake"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-5.out" "$green" \
+    '{"state":"MERGED","source":{"branch":{"name":"feature/bitbucket"},"commit":{"hash":"bbbbbbbbbbbb"}},"destination":{"branch":{"name":"main"}}}' || rc=$?
+  [ "$rc" -eq 0 ] || fail "merged watcher cycle failed: $(cat "$dir/watch-5.out.err")"
+  grep -F "check: $state/task-a.check.sh: merged" "$dir/watch-5.out" >/dev/null \
+    || fail "merged did not surface: $(cat "$dir/watch-5.out")"
+  assert_poll_absent "$state" task-a
+  [ ! -e "$state/.check-surfaced-task-a" ] || fail "retirement left the poll surfaced marker"
+  [ "$(queued_check_wakes "$state" task-a)" -eq 3 ] \
+    || fail "the terminal merged notification was not queued exactly once"
+
+  pass "a standing non-terminal poll emission wakes once and again only when it changes"
+}
+
 test_persistent_secondmate_retirement_is_poll_only() {
   local dir state meta_before status_before registry_before endpoint_before rc
   dir=$(make_case merged-retirement-secondmate)
@@ -3530,6 +3614,7 @@ test_parser_matrix
 test_gitlab_merge_watch
 test_bitbucket_cloud_watch
 test_merged_poll_retires_once
+test_standing_poll_emission_wakes_once
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery
 test_external_merge_transition_retires_only_terminal_poll

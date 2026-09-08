@@ -367,9 +367,13 @@ $HERDR_SECTION
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 
-**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
-The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
-If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+**Verify isolation before anything else.** Run \`pwd -P\` and compare the physical path exactly against these two paths:
+- Expected task worktree: \`__FM_TASK_WORKTREE_PATH__\`
+- Primary checkout: \`__FM_PRIMARY_CHECKOUT_PATH__\`
+If \`pwd -P\` equals the expected task worktree path, proceed.
+If \`pwd -P\` equals the primary checkout path, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+If \`pwd -P\` equals anything else, STOP - do not branch or commit here - append \`blocked: launched in unexpected path; expected __FM_TASK_WORKTREE_PATH__; primary __FM_PRIMARY_CHECKOUT_PATH__\` to the status file and stop.
+Note after deciding: \`git rev-parse --show-toplevel\` should match \`pwd -P\`, while \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect linked-worktree internals but do not decide isolation.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 

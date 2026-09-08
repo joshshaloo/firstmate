@@ -1773,6 +1773,15 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_cleanup_worktree_record_guards
 fi
 
+fill_ship_brief_isolation_paths() {
+  local wt_real primary_real
+  [ "$KIND" = ship ] || return 0
+  wt_real=$(real_path_or_raw "$WT")
+  primary_real=$PROJ_ABS_REAL
+  FM_TASK_WORKTREE_PATH="$wt_real" FM_PRIMARY_CHECKOUT_PATH="$primary_real" \
+    perl -0pi -e 's/__FM_TASK_WORKTREE_PATH__/$ENV{FM_TASK_WORKTREE_PATH}/g; s/__FM_PRIMARY_CHECKOUT_PATH__/$ENV{FM_PRIMARY_CHECKOUT_PATH}/g' "$BRIEF"
+}
+
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
@@ -1780,6 +1789,7 @@ fi
 # targeted knob: TMPDIR is too broad (affects every program's temp, not just Go's).
 TASK_TMP="/tmp/fm-$ID"
 mkdir -p "$TASK_TMP/gotmp"
+fill_ship_brief_isolation_paths
 
 # Per-harness turn-end hook where enabled: a file that touches
 # state/<id>.turn-ended when the agent finishes a turn. Worktree-resident hooks

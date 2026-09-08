@@ -264,6 +264,35 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
+test_ship_isolation_check_names_mechanical_path_comparison() {
+  local home id brief
+  home="$TMP_ROOT/isolation-wording-home"
+  mkdir -p "$home/data"
+  id="brief-isolation-c1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016 # Literal placeholders and backticks must remain unexpanded.
+  assert_grep 'Expected task worktree: `__FM_TASK_WORKTREE_PATH__`' "$brief" \
+    "ship brief missing the spawn-filled expected worktree path placeholder"
+  # shellcheck disable=SC2016 # Literal placeholders and backticks must remain unexpanded.
+  assert_grep 'Primary checkout: `__FM_PRIMARY_CHECKOUT_PATH__`' "$brief" \
+    "ship brief missing the spawn-filled primary checkout path placeholder"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'Run `pwd -P` and compare the physical path exactly against these two paths' "$brief" \
+    "ship brief does not make pwd -P path comparison the isolation decision"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'If `pwd -P` equals the expected task worktree path, proceed.' "$brief" \
+    "ship brief missing the proceed branch of the mechanical comparison"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'If `pwd -P` equals the primary checkout path, STOP' "$brief" \
+    "ship brief missing the stop-if-primary branch of the mechanical comparison"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'If `pwd -P` equals anything else, STOP' "$brief" \
+    "ship brief missing the unexpected-path stop branch of the mechanical comparison"
+  pass "fm-brief.sh: ship isolation check uses spawn-filled paths and mechanical pwd comparison"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -624,6 +653,7 @@ test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_ship_isolation_check_names_mechanical_path_comparison
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

@@ -194,9 +194,10 @@ registry_home_conflict_for_assignment() {
     fi
     [ "$row_rc" -eq 0 ] || continue
     registered_id=$SECONDMATE_REGISTRY_ID
-    if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
-      registry_row_refusal "$registered_id" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
-      return 2
+    # This scan only asks whether some registered local path collides with the
+    # target, and a row on another host cannot.
+    if secondmate_registry_row_is_remote; then
+      continue
     fi
     registered_home=$SECONDMATE_REGISTRY_HOME
     [ -n "$registered_home" ] || continue
@@ -232,7 +233,9 @@ registry_id_conflict_for_assignment() {
     [ "$row_rc" -eq 0 ] || continue
     registered_id=$SECONDMATE_REGISTRY_ID
     [ "$registered_id" = "$id" ] || continue
-    if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+    # The id being assigned is this check's subject, so a remote row for it is a
+    # refusal rather than a bystander to skip.
+    if secondmate_registry_row_is_remote; then
       registry_row_refusal "$registered_id" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
       return 2
     fi
@@ -269,9 +272,12 @@ validate_registry() {
       fi
       [ "$row_rc" -eq 0 ] || continue
       id=$SECONDMATE_REGISTRY_ID
-      if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+      # A remote row still claims an id here, so it belongs in the id table. Its
+      # home is a path on another host and cannot collide with, contain, or be
+      # contained by a local home, so it stays out of the local-path tables and
+      # is never a reason to refuse the whole registry.
+      if secondmate_registry_row_is_remote; then
         printf 'remote:%s\t%s\n' "$SECONDMATE_REGISTRY_HOME" "$id" >> "$tmp"
-        refusals=${refusals}${refusals:+$'\n'}"$id"$'\t'"$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
         continue
       fi
       registered_home=$SECONDMATE_REGISTRY_HOME

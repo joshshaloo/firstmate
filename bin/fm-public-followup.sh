@@ -537,7 +537,7 @@ public_followup_secondmate_home() {
         die "secondmate $id: $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" 1
       fi
       [ "$row_rc" -eq 0 ] || continue
-      if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+      if secondmate_registry_row_is_remote; then
         die "secondmate $id: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" 1
       fi
       home=$SECONDMATE_REGISTRY_HOME

@@ -189,20 +189,79 @@ EOF
 }
 
 
-test_home_seed_validate_refuses_remote_rows_with_parser_wording() {
-  local home err
+# A remote row's home is a path on another host, so it can never collide with a
+# local home: the local-path scans skip it instead of failing the whole registry.
+test_home_seed_validate_skips_remote_rows() {
+  local home local_home local_abs err
   home="$TMP_ROOT/validate-remote-row-home"
+  local_home="$TMP_ROOT/validate-remote-row-local"
   err="$TMP_ROOT/validate-remote-row.err"
+  mkdir -p "$home/data" "$local_home"
+  local_abs=$(cd "$local_home" && pwd -P)
+  cat > "$home/data/secondmates.md" <<EOF
+- design - design domain (home: $local_abs; scope: design work; projects: alpha; added 2026-06-22)
+- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: alpha; added 2026-06-22)
+EOF
+
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" validate >/dev/null 2>"$err" \
+    || fail "registry validation refused a registry holding a tolerated remote row: $(cat "$err")"
+  pass "home seed validation skips remote rows in its local-path scans"
+}
+
+# A row the parser cannot read proves nothing about where it lives, so unlike a
+# remote row it still fails the whole registry.
+test_home_seed_validate_refuses_unreadable_rows_with_parser_wording() {
+  local home err
+  home="$TMP_ROOT/validate-unreadable-row-home"
+  err="$TMP_ROOT/validate-unreadable-row.err"
   mkdir -p "$home/data"
-  printf '%s
-' '- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+  printf '%s\n' '- unreadable - unreadable domain (home: /srv/fm/unreadable; scope: unreadable; projects: alpha; added 2026-6-22)' > "$home/data/secondmates.md"
 
   if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" validate >/dev/null 2>"$err"; then
-    fail "registry validation accepted a remote secondmate row"
+    fail "registry validation accepted a row the shared parser cannot read"
+  fi
+  grep -F "error: secondmate unreadable: $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" "$err" >/dev/null \
+    || fail "registry validation did not report the parser-owned malformed refusal: $(cat "$err")"
+  pass "home seed validation refuses unreadable rows with parser-owned wording"
+}
+
+test_home_seed_assigns_local_home_beside_a_remote_row() {
+  local home sub err
+  home="$TMP_ROOT/remote-row-seed-home"
+  sub="$TMP_ROOT/remote-row-seed-subhome"
+  err="$TMP_ROOT/remote-row-seed.err"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  printf '%s\n' '- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='local design domain' \
+    FM_SECONDMATE_SCOPE='local design work' \
+    "$ROOT/bin/fm-home-seed.sh" design "$sub" --no-projects >/dev/null 2>"$err" \
+    || fail "seed refused an unrelated local home because of a tolerated remote row: $(cat "$err")"
+  assert_grep '- design - local design domain' "$home/data/secondmates.md" \
+    "seed did not register the local secondmate beside the remote row"
+  assert_grep '- faraway - remote domain' "$home/data/secondmates.md" \
+    "seed dropped the tolerated remote row"
+  pass "home seeding assigns a local home while a remote row is registered"
+}
+
+# The id being assigned is the subject of the assignment check, so its own remote
+# row is a refusal rather than a bystander to skip.
+test_home_seed_refuses_assignment_for_a_remote_row_id() {
+  local home sub err
+  home="$TMP_ROOT/remote-row-id-seed-home"
+  sub="$TMP_ROOT/remote-row-id-seed-subhome"
+  err="$TMP_ROOT/remote-row-id-seed.err"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  printf '%s\n' '- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+
+  if FM_HOME="$home" FM_SECONDMATE_CHARTER='faraway domain' \
+    FM_SECONDMATE_SCOPE='faraway work' \
+    "$ROOT/bin/fm-home-seed.sh" faraway "$sub" --no-projects >/dev/null 2>"$err"; then
+    fail "seed assigned a local home to an id already registered on another host"
   fi
   grep -F "error: secondmate faraway: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$err" >/dev/null \
-    || fail "registry validation did not report the parser-owned remote refusal: $(cat "$err")"
-  pass "home seed validation refuses remote rows with parser-owned wording"
+    || fail "seed did not report the parser-owned remote refusal: $(cat "$err")"
+  pass "home seeding refuses to reassign an id whose row places it on another host"
 }
 
 
@@ -1977,19 +2036,57 @@ home=$subhome
 projects=alpha
 EOF
   printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
-  printf '%s\n' '- faraway - remote nested domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: beta; added 2026-06-22)' > "$subhome/data/secondmates.md"
+  printf '%s\n' '- unreadable - nested domain (home: '"$subhome"'/nested; scope: nested domain; projects: beta; added 2026-6-22)' > "$subhome/data/secondmates.md"
   fakebin=$(make_fake_tmux "$TMP_ROOT/parser-refusal-teardown-fake")
   log="$TMP_ROOT/parser-refusal-teardown-fake/tmux.log"
   if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/parser-refusal-teardown-fake/pane.txt" \
     "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>"$err"; then
-    fail "teardown removed a home whose child registry contained a remote row"
+    fail "teardown removed a home whose child registry contained an unreadable row"
   fi
-  grep -F "secondmate faraway: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$err" >/dev/null \
-    || fail "teardown did not report the parser-owned remote refusal: $(cat "$err")"
+  grep -F "secondmate unreadable: $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" "$err" >/dev/null \
+    || fail "teardown did not report the parser-owned malformed refusal: $(cat "$err")"
   [ -d "$subhome" ] || fail "teardown removed the home after parser-owned row refusal"
   [ -e "$home/state/domain.meta" ] || fail "teardown cleared parent meta after parser-owned row refusal"
   grep -F 'kill-window' "$log" >/dev/null && fail "teardown killed a window before parser-owned row refusal"
   pass "secondmate teardown refuses parser-rejected rows before destructive home removal"
+}
+
+# A remote row in either registry names a home on another host, so it can never
+# sit under the removal target and never blocks an unrelated local teardown.
+test_secondmate_teardown_skips_remote_registry_rows() {
+  local home subhome fakebin err log
+  home="$TMP_ROOT/remote-row-teardown-home"
+  subhome="$TMP_ROOT/remote-row-teardown-subhome"
+  err="$TMP_ROOT/remote-row-teardown.err"
+  mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/data"
+  mark_firstmate_home "$subhome"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$subhome
+project=$subhome
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$subhome
+projects=alpha
+EOF
+  cat > "$home/data/secondmates.md" <<EOF
+- domain - design domain (home: $subhome; scope: design domain; projects: alpha; added 2026-06-22)
+- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: beta; added 2026-06-22)
+EOF
+  printf '%s\n' '- nested-faraway - remote nested domain (host: elsewhere; root: /srv/fm; home: /srv/fm/nested-faraway; scope: remote; projects: beta; added 2026-06-22)' > "$subhome/data/secondmates.md"
+  fakebin=$(make_fake_tmux "$TMP_ROOT/remote-row-teardown-fake")
+  log="$TMP_ROOT/remote-row-teardown-fake/tmux.log"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/remote-row-teardown-fake/pane.txt" \
+    "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>"$err" \
+    || fail "teardown refused an unrelated local secondmate over a tolerated remote row: $(cat "$err")"
+  [ ! -d "$subhome" ] || fail "teardown did not remove the secondmate home"
+  [ ! -e "$home/state/domain.meta" ] || fail "teardown did not clear the parent meta"
+  assert_grep '- faraway - remote domain' "$home/data/secondmates.md" \
+    "teardown dropped the tolerated remote row from the parent registry"
+  pass "secondmate teardown skips remote registry rows in its local-path scans"
 }
 
 test_secondmate_force_teardown_prevalidates_before_child_cleanup() {
@@ -2407,7 +2504,10 @@ test_seed_allows_overlapping_clones_and_drops_owner
 test_home_seed_validate_rejects_duplicate_homes
 test_home_seed_validate_rejects_duplicate_ids
 test_home_seed_validate_rejects_duplicate_id_across_local_and_remote_rows
-test_home_seed_validate_refuses_remote_rows_with_parser_wording
+test_home_seed_validate_skips_remote_rows
+test_home_seed_validate_refuses_unreadable_rows_with_parser_wording
+test_home_seed_assigns_local_home_beside_a_remote_row
+test_home_seed_refuses_assignment_for_a_remote_row_id
 test_home_seed_validate_rejects_nested_homes
 test_home_seed_uses_treehouse_acquired_home
 test_home_seed_returns_treehouse_acquired_home_on_assignment_failure
@@ -2455,6 +2555,7 @@ test_secondmate_force_teardown_refuses_operational_dir_symlink_outside_home
 test_secondmate_teardown_refuses_registered_nested_home
 test_secondmate_teardown_refuses_child_registry_nested_home
 test_secondmate_teardown_refuses_parser_rejected_child_registry_rows
+test_secondmate_teardown_skips_remote_registry_rows
 test_secondmate_force_teardown_prevalidates_before_child_cleanup
 test_secondmate_force_teardown_refuses_child_active_home_descendant
 test_secondmate_force_teardown_refuses_child_repo_descendant

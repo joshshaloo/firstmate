@@ -242,7 +242,7 @@ public_followup_resolve_primary_home() {
       return 1
     fi
     [ "$row_rc" -eq 0 ] || continue
-    if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+    if secondmate_registry_row_is_remote; then
       echo "error: secondmate $id: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" >&2
       return 1
     fi
@@ -1198,9 +1198,10 @@ registered_descendant_home_for_removal() {
     fi
     [ "$row_rc" -eq 0 ] || continue
     id=$SECONDMATE_REGISTRY_ID
-    if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
-      registry_refusal_line "$id" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
-      return 0
+    # This scan only asks whether a registered home sits under the removal
+    # target, and a home on another host never can.
+    if secondmate_registry_row_is_remote; then
+      continue
     fi
     registered_home=$SECONDMATE_REGISTRY_HOME
     registered_abs=$(removal_target_abs_path "$registered_home" 2>/dev/null || true)

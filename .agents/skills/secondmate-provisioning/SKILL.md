@@ -32,7 +32,10 @@ A remote row form with `host:` and `root:` fields is recognized by `bin/fm-secon
 No firstmate path provisions, spawns, or syncs a remote secondmate.
 `bin/fm-secondmate-registry-lib.sh` owns the single refusal wording for a local-home resolution attempt against such a row: `remote secondmate rows are parser-only tolerance; local home resolution is unsupported`.
 The `added` date must be zero-padded `YYYY-MM-DD`, and every reader that consumes `data/secondmates.md` delegates row parsing to `bin/fm-secondmate-registry-lib.sh`, so they refuse a row whose date is not.
-Spawn, backlog handoff, config push, the bootstrap sweep, `/updatefirstmate`, teardown's descendant-home and parent-binding lookups, public-followup home resolution, home-seed validation, and fleet snapshot display all resolve rows through the one row parser and refuse exactly the same rows: a row that parser cannot read, and a row placing its secondmate on another host, whose `home:` path this home never resolves as a local path.
+Spawn, backlog handoff, config push, the bootstrap sweep, `/updatefirstmate`, teardown's descendant-home and parent-binding lookups, public-followup home resolution, home-seed validation and assignment checks, and fleet snapshot display all resolve rows through the one row parser and refuse the same two kinds of row: a row that parser cannot read, and a row placing its secondmate on another host, whose `home:` path this home never resolves as a local path.
+A reader acting on one specific secondmate refuses both kinds for that id.
+A whole-registry scan that only asks local-path questions - home-seed validation and its home-conflict check, teardown's parent-registry and child-registry descendant scans - refuses an unreadable row, because nothing is proven about where it lives, but skips a remote row: that row's home is a path on another host and can never equal, contain, or be contained by a local home, so it is never a reason to abort provisioning or teardown of an unrelated local secondmate.
+A remote row still claims its id, so duplicate-id validation counts it alongside local rows.
 Readers that print a skip, send failure, validation error, cleanup refusal, or display error name which of those two refusals applied instead of reporting an anonymous missing home.
 
 ## Charter and seed

@@ -716,7 +716,7 @@ registry_secondmates_json() {
         continue
       fi
       [ "$row_rc" -eq 0 ] || continue
-      if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+      if secondmate_registry_row_is_remote; then
         jq -cn --arg id "$SECONDMATE_REGISTRY_ID" \
           --arg err "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" \
           '{id:$id,home:null,registered:true,registry_error:$err}' >> "$records_file" || exit 3

@@ -25,13 +25,13 @@ file_mode() {
 }
 
 test_remote_registry_refusal_wording_is_parser_owned() {
-  local got
-  secondmate_registry_parse_line '- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/home; scope: remote work; projects: alpha; added 2026-08-01)' \
-    || fail "remote parser-tolerance row did not parse"
-  [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || fail "remote parser-tolerance row was not marked remote"
+  local got spellers
   got=$(secondmate_registry_remote_refusal)
-  [ "$got" = "remote secondmate rows are parser-only tolerance; local home resolution is unsupported" ] \
-    || fail "remote registry refusal wording drifted from parser owner"
+  [ "$got" = "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" ] \
+    || fail "remote registry refusal accessor did not return the parser-owned wording"
+  spellers=$(grep -rlF "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$ROOT/bin" | sort | tr '\n' ' ')
+  [ "$spellers" = "$ROOT/bin/fm-secondmate-registry-lib.sh " ] \
+    || fail "remote registry refusal wording is spelled outside the parser library: $spellers"
   pass "remote registry refusal wording is owned by the parser library"
 }
 

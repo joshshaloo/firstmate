@@ -675,6 +675,8 @@ JSON
   [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "reshaped artifact must not emit partial shard list: $(cat "$tmp/out")"; }
   grep -Fq 'portable serial timing artifact has unrecognized shape: missing top-level scripts array' "$tmp/err" \
     || { rm -rf "$tmp"; fail "missing scripts refusal not concrete: $(cat "$tmp/err")"; }
+  ! grep -Fq 'selected no tests' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "artifact refusal must not be masked by an empty-lane message: $(cat "$tmp/err")"; }
 
   cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
 {
@@ -727,6 +729,67 @@ JSON
   [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "empty scripts must not emit partial shard list"; }
   grep -Fq 'scripts array is empty' "$tmp/err" \
     || { rm -rf "$tmp"; fail "empty scripts refusal not concrete: $(cat "$tmp/err")"; }
+
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+{
+  "selection": "lane=portable-serial",
+  "scripts": [],
+  "summary": {
+    "total": 0
+  }
+}
+JSON
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "writer-shaped empty scripts should exit 2, got $rc"; }
+  [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "writer-shaped empty scripts must not emit partial shard list"; }
+  grep -Fq 'scripts array is empty' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "writer-shaped empty scripts refusal not concrete: $(cat "$tmp/err")"; }
+
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+{
+  "scripts": [
+    {
+      "duration_ms": 30,
+      "path": "tests/fm-afk-inject-e2e.test.sh",
+      "meta": {
+        "duration_ms": 999999
+      }
+    }
+  ]
+}
+JSON
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "nested scripts[] object should exit 2, got $rc"; }
+  [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "nested scripts[] object must not emit partial shard list: $(cat "$tmp/out")"; }
+  grep -Fq 'nested scripts[] object' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "nested scripts[] object refusal not concrete: $(cat "$tmp/err")"; }
+
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+{
+  "summary": {
+    "scripts": [
+      {
+        "duration_ms": 30,
+        "path": "tests/fm-afk-inject-e2e.test.sh"
+      }
+    ]
+  }
+}
+JSON
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "nested scripts array should exit 2, got $rc"; }
+  [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "nested scripts array must not emit partial shard list: $(cat "$tmp/out")"; }
+  grep -Fq 'missing top-level scripts array' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "nested scripts array refusal not concrete: $(cat "$tmp/err")"; }
 
   rm -rf "$tmp"
   pass "serial timing parser refuses reshaped artifacts before emitting shards"

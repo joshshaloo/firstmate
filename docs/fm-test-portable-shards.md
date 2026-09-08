@@ -86,6 +86,7 @@ When the budget guard reports timing drift, or the serial shards have absorbed e
 
 1. Take a green main run and download its `fm-test-timing-portable-serial-1` and `fm-test-timing-portable-serial-2` artifacts.
 2. Merge them with `bin/fm-test-run.sh --aggregate-json <out>`, or run `bin/fm-test-run.sh --lane portable-serial --json <out>` locally for a single-lane artifact. Shard assignment reads only the `scripts[].path` and `scripts[].duration_ms` rows, so either shape works.
+   The parser validates the whole document, so an artifact that is malformed, reshaped away from a top-level `scripts` array, missing a `path` or numeric `duration_ms`, nesting a container inside a `scripts[]` entry, or carrying an empty script list makes lane listing and `--check-coverage` refuse with exit 2 and a concrete reason instead of silently producing a degraded partition.
 3. Copy the result over [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json), commit it, and update the Verification inputs run id plus the after rows of the Before and after table with the new shard sums. The before row is the historical baseline for this split and stays as recorded.
 4. Confirm the reassignment with `bin/fm-test-run.sh --check-coverage`.
 

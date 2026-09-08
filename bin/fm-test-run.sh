@@ -342,8 +342,9 @@ list_portable_serial_durations() {
   # Accepted portable-serial timing schema and refusal wording are owned here:
   # a top-level JSON object must contain a top-level scripts array, and each
   # scripts[] object must contain string path and numeric duration_ms fields.
-  # Extra fields are ignored; malformed or reshaped artifacts refuse before any
-  # shard row is emitted.
+  # Extra scalar fields are ignored, container depth is tracked so only the
+  # top-level scripts key is honoured and no scripts[] entry may nest; malformed
+  # or reshaped artifacts refuse before any shard row is emitted.
   awk '
     function fail(msg) {
       if (!failed) printf "fm-test-run: portable serial timing artifact has unrecognized shape: %s\n", msg > "/dev/stderr"
@@ -353,6 +354,12 @@ list_portable_serial_durations() {
       sub(/^[ \t]*/, "", s)
       sub(/[ \t]*$/, "", s)
       return s
+    }
+    function opens_container(s) {
+      return s ~ /^("[^"]*"[ \t]*:[ \t]*)?[[{][ \t]*$/
+    }
+    function closes_container(s) {
+      return s ~ /^[]}][ \t]*,?$/
     }
     function finish_script() {
       if (!in_obj) return
@@ -371,37 +378,65 @@ list_portable_serial_durations() {
       line = trim($0)
       if (!seen_first) {
         seen_first = 1
-        if (line != "{") fail("expected top-level object")
+        if (line != "{") {
+          fail("expected top-level object")
+          next
+        }
+        depth = 1
+        next
       }
       if (failed) next
-      if (!seen_scripts && line ~ /^"scripts"[ \t]*:[ \t]*\[[ \t]*$/) {
-        seen_scripts = 1
-        in_scripts = 1
+      if (!in_scripts) {
+        if (depth == 1 && line ~ /^"scripts"[ \t]*:[ \t]*\[[ \t]*$/) {
+          if (seen_scripts) {
+            fail("duplicate top-level scripts key")
+            next
+          }
+          seen_scripts = 1
+          in_scripts = 1
+          depth = 2
+          next
+        }
+        if (depth == 1 && line ~ /^"scripts"[ \t]*:[ \t]*\[[ \t]*\][ \t]*,?$/) {
+          if (seen_scripts) fail("duplicate top-level scripts key")
+          seen_scripts = 1
+          next
+        }
+        if (depth == 1 && line ~ /^"scripts"[ \t]*:/) {
+          fail(seen_scripts ? "duplicate top-level scripts key" : "top-level scripts must be an array")
+          next
+        }
+        if (opens_container(line)) depth++
+        else if (closes_container(line)) depth--
         next
       }
-      if (!seen_scripts && line ~ /^"scripts"[ \t]*:/) {
-        fail("top-level scripts must be an array")
-        next
-      }
-      if (!in_scripts) next
-      if (line == "]" || line == "],") {
-        if (in_obj) fail("scripts[] entry not closed before array end")
-        in_scripts = 0
-        next
-      }
-      if (line == "{" || line == "{,") {
-        if (in_obj) fail("nested scripts[] object")
-        in_obj = 1
-        path = ""
-        dur = ""
+      if (!in_obj) {
+        if (line == "]" || line == "],") {
+          in_scripts = 0
+          depth = 1
+          next
+        }
+        if (line == "{" || line == "{,") {
+          in_obj = 1
+          depth = 3
+          path = ""
+          dur = ""
+          next
+        }
+        fail("scripts array entries must be objects")
         next
       }
       if (line == "}," || line == "}") {
         finish_script()
+        depth = 2
         next
       }
-      if (!in_obj) {
-        fail("scripts array entries must be objects")
+      if (line == "]" || line == "],") {
+        fail("scripts[] entry not closed before array end")
+        next
+      }
+      if (opens_container(line)) {
+        fail("nested scripts[] object")
         next
       }
       if (line ~ /^"path"[ \t]*:[ \t]*"[^"]*"[,]?$/) {
@@ -433,17 +468,13 @@ list_portable_serial_durations() {
 }
 
 list_portable_serial_shard() {
-  local shard=$1 durations_tmp
+  local shard=$1 durations
   case "$shard" in
     1|2) ;;
     *) die "portable serial shard must be 1 or 2" ;;
   esac
   [ -f "$PORTABLE_SERIAL_TIMING_JSON" ] || die "portable serial timing artifact not found: $PORTABLE_SERIAL_TIMING_JSON"
-  durations_tmp=$(mktemp "${TMPDIR:-/tmp}/fm-test-serial-durations.XXXXXX")
-  if ! list_portable_serial_durations "$PORTABLE_SERIAL_TIMING_JSON" >"$durations_tmp"; then
-    rm -f "$durations_tmp"
-    exit 2
-  fi
+  durations=$(list_portable_serial_durations "$PORTABLE_SERIAL_TIMING_JSON") || return 2
   # Longest-processing-time balance from measured artifact durations, in awk so
   # lane listing and --check-coverage stay portable without python3.
   # New serial-remainder tests have duration 0 and still land automatically.
@@ -457,7 +488,7 @@ list_portable_serial_shard() {
         printf "%d\t%s\n", (p in dur ? dur[p] : 0), p
       }
     }
-  ' "$durations_tmp" \
+  ' <<<"$durations" \
     | LC_ALL=C sort -k1,1nr -k2,2 \
     | awk -F'\t' -v want="$shard" '
         {
@@ -466,7 +497,6 @@ list_portable_serial_shard() {
           if (idx == want) print $2
         }
       '
-  rm -f "$durations_tmp"
 }
 
 select_proven_isolated() {
@@ -478,7 +508,7 @@ select_proven_isolated() {
 }
 
 select_lane() {
-  local want=$1 s base fam found=0
+  local want=$1 s base fam found=0 serial_out serial_rc=0
   case "$want" in
     portable-parallel-1)
       while IFS= read -r s; do
@@ -494,19 +524,16 @@ select_lane() {
         found=1
       done < <(list_portable_parallel_2)
       ;;
-    portable-serial-1)
+    portable-serial-1|portable-serial-2)
+      # Captured, not streamed: a refusing timing artifact must abort the whole
+      # run with its own status instead of dying in a process substitution.
+      serial_out=$(list_portable_serial_shard "${want##*-}") || serial_rc=$?
+      [ "$serial_rc" -eq 0 ] || exit "$serial_rc"
       while IFS= read -r s; do
         [ -n "$s" ] || continue
         add_script "$s"
         found=1
-      done < <(list_portable_serial_shard 1)
-      ;;
-    portable-serial-2)
-      while IFS= read -r s; do
-        [ -n "$s" ] || continue
-        add_script "$s"
-        found=1
-      done < <(list_portable_serial_shard 2)
+      done <<<"$serial_out"
       ;;
     portable-serial)
       # Compatibility alias: the complete serial remainder. CI uses the two

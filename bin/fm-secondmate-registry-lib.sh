@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034 # parsed fields are output globals for sourcing callers.
-# Shared parser for data/secondmates.md record SYNTAX. Reading a registry file,
-# resolving a home, and validating a route are other owners' jobs: this one turns
-# a single row into its fields and says whether the row is well formed.
+# Shared parser for data/secondmates.md record SYNTAX. The supported routing
+# table contract is owned by .agents/skills/secondmate-provisioning/SKILL.md;
+# this library only turns one parser-compatible row into fields and says whether
+# the row is well formed. Reading a registry file, resolving a home, and
+# validating a route are other owners' jobs.
 #
-# A generated local record ends with this explicit structured suffix:
-#   (home: ...; scope: ...; projects: ...; added YYYY-MM-DD)
-# A remote record adds its host placement before the existing fields:
-#   (host: ...; root: ...; home: ...; scope: ...; projects: ...; added YYYY-MM-DD)
 # Summary text and scope text are natural language and may contain parentheses
 # and semicolons, so field boundaries are anchored to the suffix markers rather
 # than to the first incidental punctuation.
@@ -21,6 +19,11 @@ SECONDMATE_REGISTRY_SCOPE=
 SECONDMATE_REGISTRY_PROJECTS=
 SECONDMATE_REGISTRY_ADDED=
 SECONDMATE_REGISTRY_REMOTE=0
+SECONDMATE_REGISTRY_REMOTE_REFUSAL="remote secondmate rows are parser-only tolerance; local home resolution is unsupported"
+
+secondmate_registry_remote_refusal() {
+  printf '%s\n' "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
+}
 
 secondmate_registry_parse_line() {
   local line=$1

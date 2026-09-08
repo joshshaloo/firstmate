@@ -13,12 +13,28 @@ set -u
 fm_test_tmproot TMP_ROOT fm-secondmate-safety
 export FM_BACKEND=tmux
 
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$ROOT/bin/fm-secondmate-registry-lib.sh"
+
 file_mode() {
   if [ "$(uname)" = Darwin ]; then
     stat -f %Lp "$1"
   else
     stat -c %a "$1"
   fi
+}
+
+test_remote_registry_refusal_wording_is_parser_owned() {
+  local got spellers
+  got=$(secondmate_registry_remote_refusal)
+  [ "$got" = "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" ] \
+    || fail "remote registry refusal accessor did not return the parser-owned wording"
+  spellers=$(grep -rlF "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$ROOT/bin" | sort | tr '\n' ' ')
+  [ "$spellers" = "$ROOT/bin/fm-secondmate-registry-lib.sh " ] \
+    || fail "remote registry refusal wording is spelled outside the parser library: $spellers"
+  grep -qF "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$ROOT/.agents/skills/secondmate-provisioning/SKILL.md" \
+    || fail "secondmate-provisioning SKILL.md documents a refusal wording the parser library no longer emits"
+  pass "remote registry refusal wording is owned by the parser library"
 }
 
 test_fm_home_parameterization() {
@@ -2164,6 +2180,7 @@ EOF
   pass "fm-backlog-handoff refuses Done items under whitespace section headings and unsafe homes"
 }
 
+test_remote_registry_refusal_wording_is_parser_owned
 test_fm_home_parameterization
 test_lock_status_is_per_home
 test_seed_allows_overlapping_clones_and_drops_owner

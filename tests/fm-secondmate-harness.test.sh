@@ -1401,6 +1401,53 @@ test_config_push_reports_skips_dirty_and_invalid_home() {
   pass "B13 config-push reports dirty, non-allowing, and invalid homes without failing warnings-only runs"
 }
 
+# data/secondmates.md row syntax has one owner (bin/fm-secondmate-registry-lib.sh).
+# config-push resolves a home from that registry only when a live meta carries no
+# home= of its own, so its skip line must NAME which of the owner's two refusals
+# applied - a row placed on another host, or a row the parser cannot read -
+# instead of the generic "no registry home" that reads as if the row were absent.
+# A meta with no row at all still gets that generic wording, because nothing was
+# refused there.
+test_config_push_names_registry_row_refusals() {
+  local w head out status remote_refusal malformed_refusal id
+  w=$(new_world config-push-registry-refusals)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  for id in faraway unreadable absent; do
+    add_sm_worktree "$w" "$id" "$head"
+    # Drop home= so the registry is the only place a home could come from.
+    grep -v '^home=' "$w/home/state/$id.meta" > "$w/home/state/$id.meta.next"
+    mv "$w/home/state/$id.meta.next" "$w/home/state/$id.meta"
+  done
+  {
+    printf -- '- faraway - a mate on another box (host: elsewhere; root: /srv/fm; home: %s/faraway; scope: things; projects: p; added 2026-06-23)\n' "$w"
+    printf -- '- unreadable - domain supervisor (home: %s/unreadable; scope: things; projects: p; added 2026-6-23)\n' "$w"
+  } > "$w/home/data/secondmates.md"
+  printf 'codex\n' > "$w/home/config/crew-harness"
+  remote_refusal=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"' _ "$ROOT")
+  malformed_refusal=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"' _ "$ROOT")
+  [ -n "$remote_refusal" ] && [ -n "$malformed_refusal" ] \
+    || fail "the registry parser must own both refusal wordings"
+
+  out=$(run_config_push "$w" 2>/dev/null); status=$?
+
+  expect_code 0 "$status" "refused registry rows are warnings, not a failed push"
+  assert_contains "$out" "secondmate faraway: skipped - $remote_refusal" \
+    "config push did not name the remote-placed row it refused"
+  assert_contains "$out" "secondmate unreadable: skipped - $malformed_refusal" \
+    "config push did not name the unreadable row it refused"
+  assert_contains "$out" "secondmate absent: skipped - no home= in " \
+    "a meta with no registry row at all must keep the generic no-home wording"
+  assert_not_contains "$out" "secondmate faraway: skipped - no home= in " \
+    "a refused remote row must not be reported as a missing home field"
+  assert_not_contains "$out" "secondmate unreadable: skipped - no home= in " \
+    "a refused unreadable row must not be reported as a missing home field"
+  [ ! -e "$w/faraway/config/crew-harness" ] \
+    || fail "config push wrote into a home behind a refused remote row"
+  [ ! -e "$w/unreadable/config/crew-harness" ] \
+    || fail "config push wrote into a home behind a row the parser cannot read"
+  pass "B13b config-push names each registry-row refusal instead of a generic missing home"
+}
+
 test_config_push_exits_nonzero_on_copy_error() {
   local w head out err status sm_real err_text
   w=$(new_world config-push-error)
@@ -2337,6 +2384,7 @@ test_bootstrap_sweep_surfaces_config_propagation_failure
 test_bootstrap_rereads_after_partial_propagation
 test_config_push_propagates_reports_without_ff_or_nudge
 test_config_push_reports_skips_dirty_and_invalid_home
+test_config_push_names_registry_row_refusals
 test_config_push_exits_nonzero_on_copy_error
 test_config_push_rereads_after_partial_propagation
 test_config_reread_per_home_changed_sets_and_exact_bytes

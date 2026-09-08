@@ -80,8 +80,8 @@ classify() {  # <harness> <id> <state-dir>
 # drive_pi_ext <ext-path> <mode>: load the generated Pi extension in a plain
 # Node host and fire one lifecycle handler. Modes: agent-start, session-start-idle,
 # session-start-busy, session-start-startup, session-start-unknown-reason,
-# settle-idle, settle-continuing, settle-stale, settle-throws, settle-then-start,
-# turn-end.
+# session-start-no-isidle, settle-idle, settle-continuing, settle-stale,
+# settle-throws, settle-no-ctx, settle-no-isidle, settle-then-start, turn-end.
 drive_pi_ext() {
   EXT_PATH="$1" MODE="$2" node --input-type=module 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
@@ -102,6 +102,9 @@ switch (process.env.MODE) {
   case "settle-continuing": await handlers["agent_settled"]({}, ctx); break;
   case "settle-stale": await handlers["agent_settled"]({}, staleCtx); break;
   case "settle-throws": await handlers["agent_settled"]({}, throwingCtx); break;
+  case "settle-no-ctx": await handlers["agent_settled"]({}, undefined); break;
+  case "settle-no-isidle": await handlers["agent_settled"]({}, {}); break;
+  case "session-start-no-isidle": await handlers["session_start"]({ reason: "fork" }, {}); break;
   case "settle-then-start":
     await handlers["agent_settled"]({}, ctx);
     await handlers["agent_start"]({}, ctx);
@@ -198,6 +201,21 @@ test_pi_extension_stale_context_settle_is_safe() {
   out=$(drive_pi_ext "$ext" session-start-idle) || fail "replacement session_start drive failed: $out"
   out=$(classify pi "$id" "$state")
   [ "$out" = "idle pi-ext" ] || fail "fresh replacement session_start must repair idle, got '$out'"
+
+  out=$(drive_pi_ext "$ext" agent-start) || fail "agent_start drive failed: $out"
+  out=$(drive_pi_ext "$ext" settle-no-ctx) || fail "settle without a ctx must not throw: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "idle pi-ext" ] || fail "a settle with no ctx must settle idle, got '$out'"
+
+  out=$(drive_pi_ext "$ext" agent-start) || fail "agent_start drive failed: $out"
+  out=$(drive_pi_ext "$ext" settle-no-isidle) || fail "settle without ctx.isIdle must not throw: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "idle pi-ext" ] || fail "a settle with no ctx.isIdle must settle idle, got '$out'"
+
+  out=$(drive_pi_ext "$ext" agent-start) || fail "agent_start drive failed: $out"
+  out=$(drive_pi_ext "$ext" session-start-no-isidle) || fail "session_start without ctx.isIdle failed: $out"
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "idle pi-ext" ] || fail "a replacement session_start with no ctx.isIdle must repair idle, got '$out'"
 
   if out=$(drive_pi_ext "$ext" settle-throws); then
     fail "unrelated isIdle errors must not be swallowed"

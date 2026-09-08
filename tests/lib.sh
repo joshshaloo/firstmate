@@ -164,9 +164,93 @@ fm_test_tmproot() {
 
 # --- fakebin / PATH shims ---------------------------------------------------
 #
+# fm_test_base_path [extra-tool...] echoes the hermetic base PATH for suites that
+# prepend a fakebin. FM_TEST_BASE_PATH remains an explicit override. Otherwise
+# the base PATH is a private bin directory containing only the allowlisted real
+# system tools symlinked by name. That keeps host-installed tools such as herdr,
+# tmux, gh, or node from satisfying a test that meant to fake or omit them.
+#
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to
 # shadow real tools with stubs. fm_fake_exit0 drops trivial exit-0 stubs for the
 # named tools into a fakebin dir.
+
+FM_TEST_BASE_TOOL_ALLOWLIST='awk base64 basename bash cat chmod cmp cp cut date dirname env find git grep head id kill ln ls mkdir mktemp mv openssl paste perl printf ps pwd readlink realpath rm rmdir sed seq sh shasum sleep sort stat tail tee touch tr uname wc xargs'
+FM_TEST_CORE_BIN=
+FM_TEST_CORE_BIN_KEY=
+
+fm_test_find_real_tool() {
+  local tool=$1 dir
+  local search_path=${FM_TEST_REAL_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+  while [ -n "$search_path" ]; do
+    dir=${search_path%%:*}
+    if [ "$search_path" = "$dir" ]; then
+      search_path=
+    else
+      search_path=${search_path#*:}
+    fi
+    [ -n "$dir" ] || continue
+    if [ -x "$dir/$tool" ]; then
+      printf '%s\n' "$dir/$tool"
+      return 0
+    fi
+  done
+  command -v "$tool" 2>/dev/null || return 1
+}
+
+fm_test_base_path() {
+  local key tool real
+  if [ -n "${FM_TEST_BASE_PATH:-}" ]; then
+    printf '%s\n' "$FM_TEST_BASE_PATH"
+    return 0
+  fi
+  key="${FM_TEST_REAL_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}|$*"
+  if [ -n "$FM_TEST_CORE_BIN" ] && [ "$FM_TEST_CORE_BIN_KEY" = "$key" ]; then
+    printf '%s\n' "$FM_TEST_CORE_BIN"
+    return 0
+  fi
+  FM_TEST_CORE_BIN=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-base-path.XXXXXX") \
+    || fail "fm_test_base_path could not create a private bin dir"
+  FM_TEST_CORE_BIN_KEY=$key
+  FM_TEST_CLEANUP_DIRS+=("$FM_TEST_CORE_BIN")
+  fm_test_install_cleanup_trap
+  for tool in $FM_TEST_BASE_TOOL_ALLOWLIST "$@"; do
+    [ -n "$tool" ] || continue
+    [ ! -e "$FM_TEST_CORE_BIN/$tool" ] || continue
+    real=$(fm_test_find_real_tool "$tool") \
+      || fail "fm_test_base_path could not find required real tool: $tool"
+    ln -s "$real" "$FM_TEST_CORE_BIN/$tool"
+  done
+  printf '%s\n' "$FM_TEST_CORE_BIN"
+}
+
+fm_test_set_base_path() {
+  local __fm_var=$1 key tool real
+  shift
+  case "$__fm_var" in
+    ""|[!A-Za-z_]*|*[!A-Za-z0-9_]*) fail "fm_test_set_base_path requires a simple variable name" ;;
+    __fm_*) fail "fm_test_set_base_path cannot fill '$__fm_var': __fm_* names are the helper's own locals" ;;
+  esac
+  if [ -n "${FM_TEST_BASE_PATH:-}" ]; then
+    eval "$__fm_var=\$FM_TEST_BASE_PATH"
+    return 0
+  fi
+  key="${FM_TEST_REAL_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}|$*"
+  if [ -z "$FM_TEST_CORE_BIN" ] || [ "$FM_TEST_CORE_BIN_KEY" != "$key" ]; then
+    FM_TEST_CORE_BIN=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-base-path.XXXXXX") \
+      || fail "fm_test_base_path could not create a private bin dir"
+    FM_TEST_CORE_BIN_KEY=$key
+    FM_TEST_CLEANUP_DIRS+=("$FM_TEST_CORE_BIN")
+    fm_test_install_cleanup_trap
+    for tool in $FM_TEST_BASE_TOOL_ALLOWLIST "$@"; do
+      [ -n "$tool" ] || continue
+      [ ! -e "$FM_TEST_CORE_BIN/$tool" ] || continue
+      real=$(fm_test_find_real_tool "$tool") \
+        || fail "fm_test_base_path could not find required real tool: $tool"
+      ln -s "$real" "$FM_TEST_CORE_BIN/$tool"
+    done
+  fi
+  eval "$__fm_var=\$FM_TEST_CORE_BIN"
+}
 
 fm_fakebin() {
   local dir=$1 fakebin="$1/fakebin"

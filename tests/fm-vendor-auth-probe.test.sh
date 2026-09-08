@@ -24,7 +24,7 @@ set -u
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+fm_test_set_base_path BASE_PATH
 fm_test_tmproot TMP_ROOT fm-vendor-auth-probe-tests
 SCRIPT="$ROOT/bin/fm-vendor-auth-probe.sh"
 

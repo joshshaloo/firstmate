@@ -35,7 +35,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+fm_test_set_base_path BASE_PATH
 fm_git_identity fmtest fmtest@example.com
 
 fm_test_tmproot TMP_ROOT fm-secondmate-liveness

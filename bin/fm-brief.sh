@@ -34,6 +34,14 @@
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# That assertion is a mechanical comparison of `pwd -P` against two exact paths, which
+# a scaffold written before fm-spawn allocates the worktree cannot know, so it carries
+# them as the literal placeholders __FM_TASK_WORKTREE_PATH__ and
+# __FM_PRIMARY_CHECKOUT_PATH__. bin/fm-spawn.sh fills both after it allocates the task
+# worktree and before it launches the worker; it refuses the launch if either is still
+# standing. They are NOT {TASK}-style TODOs for firstmate: leave them untouched. A
+# hand-guessed path or a reworded check makes the worker block a correctly isolated
+# worktree.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from

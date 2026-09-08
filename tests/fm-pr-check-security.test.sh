@@ -727,13 +727,21 @@ SH
 # than a comfortable local one. Cases that need a different bound pass
 # FM_TEST_WATCH_TIMEOUT, like the FM_TEST_CHECK_INTERVAL and FM_TEST_WATCH_ROOT
 # seams beside it.
-# The child runs in its own process group so the timeout reaps only processes
-# spawned by this watcher fixture, by pid or pid-derived process group.
+# The child runs in its own process group so the fixture reaps only processes
+# spawned by this watcher fixture, by pid or pid-derived process group. That
+# group leaves the suite's group, so the fixture parent must also reap it when
+# the run is aborted (HUP/INT/TERM) rather than dying and orphaning it, and a
+# watcher that dies on a signal must report a signal-derived nonzero status so
+# no call site reads a truncated run as a clean pass.
 run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
   local watch_timeout=${FM_TEST_WATCH_TIMEOUT:-30}
   shift 2
   perl -e '
+    use Config;
+    my %signo;
+    my $n = 0;
+    $signo{$_} = $n++ for split " ", $Config{sig_name};
     my $timeout = shift;
     my $pid = fork;
     die "fork failed\n" unless defined $pid;
@@ -742,22 +750,44 @@ run_watcher_bounded() {
       exec @ARGV;
       die "exec failed: $!\n";
     }
-    my $stop = sub {
-      local $SIG{ALRM} = "IGNORE";
+    my $reap = sub {
       kill "TERM", -$pid;
       kill "TERM", $pid;
       select undef, undef, undef, 0.2;
       kill "KILL", -$pid;
       kill "KILL", $pid;
       waitpid $pid, 0;
+    };
+    my $deafen = sub {
+      alarm 0;
+      $SIG{ALRM} = "IGNORE";
+      $SIG{HUP} = $SIG{INT} = $SIG{TERM} = "IGNORE";
+    };
+    my $stop = sub {
+      $deafen->();
+      $reap->();
       print STDERR "watcher fixture exceeded ${timeout}s and was terminated by pid $pid\n";
       exit 124;
     };
+    my $abort = sub {
+      my $sig = shift;
+      $deafen->();
+      $reap->();
+      print STDERR "watcher fixture aborted on SIG$sig and terminated watcher pid $pid\n";
+      exit(128 + ($signo{$sig} || 0));
+    };
     local $SIG{ALRM} = $stop;
+    local $SIG{HUP} = $abort;
+    local $SIG{INT} = $abort;
+    local $SIG{TERM} = $abort;
     alarm $timeout;
     waitpid $pid, 0;
     my $status = $?;
     alarm 0;
+    if (my $sig = $status & 127) {
+      print STDERR "watcher fixture child pid $pid died on signal $sig\n";
+      exit(128 + $sig);
+    }
     exit($status >> 8);
   ' "$watch_timeout" \
     env FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT=1 \

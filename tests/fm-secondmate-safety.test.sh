@@ -1238,6 +1238,62 @@ SH
   pass "secondmate spawn validates homes before launch"
 }
 
+# data/secondmates.md row syntax has one owner (bin/fm-secondmate-registry-lib.sh).
+# Spawn resolves an omitted secondmate home from that registry, so its resolver must
+# accept and refuse exactly the rows bootstrap and the fast-forward library do: a
+# hand-edited row the shared parser rejects must not still resolve a home and launch.
+test_secondmate_spawn_registry_resolution_matches_shared_parser() {
+  local home subhome subhome_abs fakebin log err row
+  home="$TMP_ROOT/spawn-registry-row-home"
+  subhome="$TMP_ROOT/spawn-registry-row-subhome"
+  mkdir -p "$home/data" "$home/state" "$subhome/data"
+  mark_firstmate_home "$subhome"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  printf 'charter\n' > "$subhome/data/charter.md"
+  subhome_abs=$(cd "$subhome" && pwd -P)
+  fakebin=$(make_fake_tmux "$TMP_ROOT/spawn-registry-row-fake")
+  log="$TMP_ROOT/spawn-registry-row-fake/tmux.log"
+  err="$TMP_ROOT/spawn-registry-row.err"
+
+  # Rows the old permissive inline sed resolved but the shared parser refuses: an
+  # unpadded added date, and a row carrying no " - <summary>" segment at all.
+  for row in \
+    "- domain - domain work (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-6-22)" \
+    "- domain (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)"; do
+    printf '%s\n' "$row" > "$home/data/secondmates.md"
+    : > "$log"
+    if bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+      _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1; then
+      fail "the shared registry parser resolved a home from a malformed row: $row"
+    fi
+    if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+      FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/spawn-registry-row-fake/pane.txt" \
+      "$ROOT/bin/fm-spawn.sh" domain codex --secondmate >/dev/null 2>"$err"; then
+      fail "secondmate spawn resolved a home from a malformed registry row: $row"
+    fi
+    grep -F 'no firstmate home supplied or registered for domain' "$err" >/dev/null \
+      || fail "spawn refused the malformed row for the wrong reason: $row"
+    grep -F 'new-window' "$log" >/dev/null && fail "spawn created a window for a malformed registry row"
+    [ -e "$home/state/domain.meta" ] && fail "spawn wrote meta for a malformed registry row"
+  done
+
+  # The canonical row still resolves, so the refusals above are about row syntax
+  # and not about this home.
+  printf '%s\n' \
+    "- domain - domain work (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
+    > "$home/data/secondmates.md"
+  bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 \
+    || fail "the shared registry parser refused the canonical row"
+  : > "$err"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/spawn-registry-row-fake/pane.txt" \
+    "$ROOT/bin/fm-spawn.sh" domain codex --secondmate >/dev/null 2>"$err" || true
+  grep -F 'no firstmate home supplied or registered for domain' "$err" >/dev/null \
+    && fail "spawn failed to resolve a home from the canonical registry row"
+  pass "secondmate spawn resolves registry rows through the shared parser"
+}
+
 test_secondmate_spawn_refuses_operational_dirs_outside_subhome() {
   local home subhome sink fakebin log err opdir
   home="$TMP_ROOT/spawn-opdir-home"
@@ -2219,6 +2275,7 @@ test_home_seed_refuses_project_destinations_outside_subhome
 test_home_seed_refuses_operational_dirs_outside_subhome
 test_home_seed_refuses_symlinked_leaf_files
 test_secondmate_spawn_requires_seeded_matching_home
+test_secondmate_spawn_registry_resolution_matches_shared_parser
 test_secondmate_spawn_refuses_operational_dirs_outside_subhome
 test_fm_send_refuses_bare_window_without_home_meta
 test_secondmate_teardown_retires_empty_home

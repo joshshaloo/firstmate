@@ -135,7 +135,6 @@ Operational compromises:
 - The visible token is only a restart-stable correlator and never substitutes for the exact binding.
 
 `tests/fm-backend-herdr-presentation-e2e.test.sh` covers multi-home ordering, concurrency, lock contention, legacy coexistence, focus preservation, ambiguous bindings and tokens, and exact-pane cleanup through the guarded lab path.
-`tests/fm-backend-herdr-pane-disappearance-e2e.test.sh` covers explicit pane close, shell reap, and session-restart husk classifier results through the guarded lab path.
 `tests/fm-spawn-worktree-claim.test.sh` covers same-id Herdr relaunch across dead-pane reconciliation with focus restoration and lock release, live refusal, unverified refusal, process-proof refusal, active-tab refusal, shared-tab refusal, presentation-lock contention refusal, cross-backend refusal, and the close-race verdict.
 `tests/fm-herdr-session-cleanup.test.sh` covers every discovery, ownership, topology, process, locking, revalidation, focus, retirement, and continue-on-error boundary.
 `tests/fm-herdr-session-cleanup-e2e.test.sh` covers the restored-shell cleanup in a guarded non-default named lab; [`verification/runtime-backends.md`](verification/runtime-backends.md#per-home-and-presentation-topology) owns the active versioned evidence.
@@ -230,6 +229,7 @@ A live, unreadable, unverified, process-unproven, active-tab, or tab-sharing end
 The generic Herdr agent-liveness probe reuses the same classifier.
 A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
+`tests/fm-backend-herdr-pane-disappearance-e2e.test.sh` pins that classifier and its recovery mapping against real Herdr through the guarded lab path, covering an explicitly closed pane, a pane whose own shell was reaped, and a restart husk.
 
 The session-start sweep uses this probe.
 Mid-session secondmate liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.

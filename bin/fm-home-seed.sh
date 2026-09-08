@@ -27,8 +27,11 @@
 #       to override the registry routing scope. Otherwise the registry summary
 #       and scope are derived from the filled charter brief.
 #   fm-home-seed.sh validate
-#       Refuse duplicate ids, duplicate homes, and nested or overlapping homes in
-#       data/secondmates.md.
+#       Refuse any row bin/fm-secondmate-registry-lib.sh cannot read, duplicate
+#       ids, duplicate homes, and nested or overlapping homes in
+#       data/secondmates.md. A remote row still claims its id, but its home is a
+#       path on another host, so it counts for the id check and stays out of the
+#       local-path ones.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

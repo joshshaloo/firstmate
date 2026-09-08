@@ -170,7 +170,7 @@ The helper's header owns exact parsing, publication, and report output mechanics
 
 Persistent secondmate routes live locally in `data/secondmates.md`.
 The concise single-line route contract is owned by the [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md#routing-table), including the parser-compatible fields, one-sentence summary requirement, `home:` pointer to the seeded charter, and limit on extra registry prose.
-`fm-home-seed.sh validate` refuses duplicate ids, duplicate homes, and nested or overlapping homes.
+`fm-home-seed.sh validate` refuses any row the shared row parser cannot read, duplicate ids, duplicate homes, and nested or overlapping homes.
 The main first mate routes by reading those scopes with judgment; the project list is provisioning data, not exclusive ownership.
 Use `fm-home-seed.sh <id> - {<project>...|--no-projects}` to lease a fresh firstmate worktree for the secondmate home.
 Use the deliberate `--no-projects` signal only for a firstmate-repo domain that needs no separate project clones.

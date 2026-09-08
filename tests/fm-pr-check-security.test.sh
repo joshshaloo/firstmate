@@ -2789,7 +2789,7 @@ SH
       'kind=ship' \
       'mode=local-only'
     if [ "$artifact" = check.sh ]; then
-      counterpart=pr-poll
+      counterpart='pr-poll'
     else
       counterpart=check.sh
     fi

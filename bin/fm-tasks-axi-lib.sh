@@ -10,19 +10,52 @@
 # backlog mutations, but validated secondmate handoffs always use `tasks-axi mv`.
 # Absent or any other value keeps the default tasks-axi backend path, falling
 # back to manual mutation when the tool is not compatible.
+# The --version probe runs through fm-timeout-lib.sh's bounded runner, so a
+# present-but-hung tasks-axi is reported as incompatible rather than stalling
+# every caller. FM_TASKS_AXI_VERSION_TIMEOUT overrides the 5s bound; blank,
+# non-numeric, and 0 values fall back to it, because a zero bound is not a
+# bound. On a timeout, fm_tasks_axi_version_parts returns 1 and leaves the
+# concrete reason in FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC for callers that
+# report remediation; a probe that returns normally clears it.
+
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+
+FM_TASKS_AXI_VERSION_TIMEOUT_DEFAULT=5
+FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC=${FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC:-}
+FM_TASKS_AXI_VERSION_PARTS=${FM_TASKS_AXI_VERSION_PARTS:-}
+
+fm_tasks_axi_version_timeout() {
+  local timeout=${FM_TASKS_AXI_VERSION_TIMEOUT:-$FM_TASKS_AXI_VERSION_TIMEOUT_DEFAULT}
+  case "$timeout" in
+    ''|*[!0-9]*|0) timeout=$FM_TASKS_AXI_VERSION_TIMEOUT_DEFAULT ;;
+  esac
+  printf '%s\n' "$timeout"
+}
 
 fm_tasks_axi_version_parts() {
-  local output
+  local output timeout rc
+  FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC=
+  FM_TASKS_AXI_VERSION_PARTS=
   command -v tasks-axi >/dev/null 2>&1 || return 1
-  output=$(tasks-axi --version 2>/dev/null) || return 1
-  printf '%s\n' "$output" |
+  timeout=$(fm_tasks_axi_version_timeout)
+  output=$(fm_run_timed "$timeout" tasks-axi --version 2>/dev/null </dev/null)
+  rc=$?
+  if [ "$rc" -eq 124 ]; then
+    FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC="tasks-axi --version hung for ${timeout}s"
+    return 1
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  FM_TASKS_AXI_VERSION_PARTS=$(printf '%s\n' "$output" |
     sed -n 's/.*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p' |
-    head -1
+    head -1)
+  printf '%s\n' "$FM_TASKS_AXI_VERSION_PARTS"
 }
 
 fm_tasks_axi_compatible() {
   local parts major minor patch rest
-  parts=$(fm_tasks_axi_version_parts) || return 1
+  fm_tasks_axi_version_parts >/dev/null || return 1
+  parts=$FM_TASKS_AXI_VERSION_PARTS
   [ -n "$parts" ] || return 1
   major=${parts%% *}
   rest=${parts#* }

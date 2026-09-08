@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
-# Resolve a project's delivery mode and yolo flag from the data/projects.md registry.
+# Resolve a project's REGISTERED delivery posture from the data/projects.md registry.
 # Prints two words to stdout: "<mode> <yolo>" where mode is one of
 # no-mistakes|direct-PR|local-only and yolo is on|off.
+#
+# MECHANICAL CONSUMERS ONLY. This answers "what posture did the captain register
+# for this project", never "how does this task ship". A task's delivery mode and
+# yolo are resolved by firstmate at intake and passed explicitly to
+# bin/fm-brief.sh, bin/fm-spawn.sh, and bin/fm-promote.sh (AGENTS.md section 7).
+# The consumers are bin/fm-fleet-sync.sh (skip local-only clones),
+# bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init),
+# bin/fm-spawn.sh's advisory registry-deviation notice, and
+# bin/fm-standup-shipped.sh (report each project's registered posture).
 #
 # Registry line format (data/projects.md):
 #   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
 #
-# mode = how a finished change reaches main:
-#   no-mistakes  full pipeline -> PR -> captain merge (default)
-#   direct-PR    push + PR via gh-axi, no pipeline -> captain merge
-#   local-only   local branch, no remote/PR -> captain approve -> guarded local merge
-# yolo (orthogonal) = when on, firstmate may make routine approval decisions itself.
-#   AGENTS.md section 7 is the single owner of authority exceptions, including
-#   ask-user contract expansion and stronger captain boundaries.
+# Registered modes:
+#   no-mistakes            full pipeline -> PR -> configured merge authority (default)
+#   direct-PR              push + PR via gh-axi, no pipeline
+#   local-only             local branch, no remote/PR, guarded local merge
+# yolo (orthogonal) = merge authority only: when on, firstmate merges green,
+#   in-scope work itself (AGENTS.md section 7).
 #
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
 # to stderr, so a typo never silently drops the gate.

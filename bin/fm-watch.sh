@@ -390,14 +390,17 @@ clear_pause_tracking() {  # <window>
 #     may run for a declared pause. Once per STALE_ESCALATE_SECS, not once per
 #     FM_POLL; a wait measured in hours tolerates that bounded lag far better
 #     than one CLI call per crew per poll.
-#   .paused-runstep-surfaced-<key> - records the exact (state, source, status
-#     line) that was last surfaced from behind the pause, so the transition wakes
-#     ONCE. Without it, wake() exits the watcher, the relaunched watcher re-reads
-#     the same unchanged hash and the same parked run-step, and surfaces again
-#     every poll - the very wake storm this change exists to remove. Any change
-#     to the run-step state, its source, or the status log re-arms the one shot.
+#   .paused-runstep-surfaced-<key> - records the crew-state surface identity
+#     (crew_pause_override_identity, bin/fm-classify-lib.sh: the whole current-state
+#     line minus its churning activity segment) plus the status line it was
+#     surfaced behind, so the transition wakes ONCE. Without it, wake() exits the
+#     watcher, the relaunched watcher re-reads the same unchanged hash and the
+#     same parked run-step, and surfaces again every poll - the very wake storm
+#     this change exists to remove. The identity carries the run detail, not just
+#     the state, so a run that parks at review, is answered, then parks again at
+#     test re-arms the one shot and surfaces the second gate too.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file surfaced_file class agent_alive fields state observed
+  local win=$1 task=$2 key last recheck_file surfaced_file class agent_alive observed
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
@@ -412,19 +415,17 @@ pause_state_class() {  # <window> <task>
   if status_is_paused "$last"; then
     if [ "$(age_of "$recheck_file")" -ge "$STALE_ESCALATE_SECS" ]; then
       date +%s > "$recheck_file"
-      fields=$(crew_state_fields "$task")
-      state=${fields%% *}
-      case "$state" in
-        done|failed|parked|blocked)
-          observed="${fields% *}|$last"
-          if [ "$observed" != "$(cat "$surfaced_file" 2>/dev/null || true)" ]; then
-            printf '%s' "$observed" > "$surfaced_file"
-            printf 'none'
-            return
-          fi
-          ;;
-        *) rm -f "$surfaced_file" ;;
-      esac
+      observed=$(crew_pause_override_identity "$task")
+      if [ -n "$observed" ]; then
+        observed="$observed|$last"
+        if [ "$observed" != "$(cat "$surfaced_file" 2>/dev/null || true)" ]; then
+          printf '%s' "$observed" > "$surfaced_file"
+          printf 'none'
+          return
+        fi
+      else
+        rm -f "$surfaced_file"
+      fi
     fi
     printf 'paused'
     return

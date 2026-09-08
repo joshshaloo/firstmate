@@ -388,6 +388,46 @@ test_crew_run_step_activity_recent_classifier() {
   pass "crew_run_step_activity_recent: only an active run step with a non-quiet reported last_activity is alive"
 }
 
+# crew_pause_override_identity answers "has the run moved past this declared
+# pause, and which state exactly" in one read. Its resolution is what keeps a
+# supervisor's repeat-wake suppression honest, so it must keep the detail that
+# names the gate and drop only the activity segment that churns with idle time.
+test_crew_pause_override_identity_classifier() {
+  local dir fakebin a b
+  dir=$(make_case pause-override-identity); fakebin="$dir/fakebin"
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE
+
+  FM_FAKE_CREW_STATE='state: paused · source: status-log · awaiting the external deploy'
+  [ -z "$(crew_pause_override_identity a)" ] || fail "a still-paused crew reported a pause override"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  [ -z "$(crew_pause_override_identity a)" ] || fail "an active run reported a pause override"
+  FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
+  [ -z "$(crew_pause_override_identity a)" ] || fail "an unreadable crew reported a pause override"
+  [ -z "$(crew_pause_override_identity "")" ] || fail "an empty id reported a pause override"
+
+  # Two parks at DIFFERENT gates must not share an identity, or a supervisor
+  # suppressing on it would swallow the second gate entirely.
+  FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review: 2 finding(s)'
+  a=$(crew_pause_override_identity a)
+  [ -n "$a" ] || fail "a parked run reported no pause override identity"
+  case "$a" in *"parked at review: 2 finding(s)") ;; *) fail "the identity dropped the run detail: $a" ;; esac
+  FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at test: 1 finding(s)'
+  b=$(crew_pause_override_identity a)
+  [ "$a" != "$b" ] || fail "two different gates collapsed into one identity: $a"
+
+  # Elapsed idle time alone must NOT change the identity, or the same unchanged
+  # state would re-fire a wake every recheck.
+  FM_FAKE_CREW_STATE='state: done · source: run-step · run completed · last_activity: 4s'
+  a=$(crew_pause_override_identity a)
+  FM_FAKE_CREW_STATE='state: done · source: run-step · run completed · last_activity: quiet 12m'
+  b=$(crew_pause_override_identity a)
+  [ "$a" = "$b" ] || fail "the churning activity segment leaked into the identity: $a vs $b"
+  case "$a" in *last_activity*) fail "the activity segment was not stripped: $a" ;; esac
+  unset FM_FAKE_CREW_STATE
+  pass "crew_pause_override_identity: keeps the gate-naming detail, drops only the churning activity segment"
+}
+
 # status_is_paused: the shared pause verb test both consumers read (so neither
 # hardcodes the literal). Matches only the verb before the first colon, so a reason
 # that merely mentions "paused" does not false-match, and a genuine blocker stays a
@@ -909,7 +949,7 @@ test_declared_pause_run_step_change_wakes_immediately() {
   printf '%s' "$pane_hash" > "$state/.stale-$key"
   printf '1\n' > "$state/.count-$key"
   : > "$state/.paused-$key"
-  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at ask-user'
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review: 2 finding(s)'
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 \
@@ -948,6 +988,39 @@ test_declared_pause_run_step_change_wakes_immediately() {
   [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "already-surfaced run-step state started a wedge timer"; }
   reap "$pid"
 
+  # Firstmate answers gate A; the run resumes and re-parks at a DIFFERENT gate
+  # before the next recheck, so the coarse state (`parked`) is unchanged and only
+  # the detail moved. That is the run step genuinely changing, so it must wake
+  # again - a state-only suppression key would swallow the second gate until the
+  # 1h pause backstop.
+  : > "$out"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at test: 1 finding(s)'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 \
+    FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a re-park at a different gate behind a declared pause did not wake"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the second gate did not print a stale wake"
+  reap "$pid"
+
+  # ...and that second gate is itself a one-shot: unchanged, it never wakes again
+  # inside the pause cadence.
+  : > "$out"
+  : > "$state/.wake-queue"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 \
+    FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 20; then
+    reap "$pid"; fail "an unchanged second gate behind a pause re-woke every poll: $(cat "$out")"
+  fi
+  sleep 2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    reap "$pid"; fail "an unchanged second gate behind a pause re-woke on a later poll: $(cat "$out")"
+  fi
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "an unchanged second gate enqueued another wake"; }
+  reap "$pid"
+
   # A genuinely NEW run-step state re-arms the one shot and surfaces again.
   : > "$out"
   export FM_FAKE_CREW_STATE='state: failed · source: run-step · run failed'
@@ -959,7 +1032,7 @@ test_declared_pause_run_step_change_wakes_immediately() {
   grep -F "stale: $window" "$out" >/dev/null || fail "the new run-step state did not print a stale wake"
   reap "$pid"
   unset FM_FAKE_CREW_STATE
-  pass "a run-step state change behind a declared pause wakes exactly once and re-arms on a new state"
+  pass "a run-step change behind a declared pause wakes once per distinct state, including a re-park at a new gate"
 }
 
 # The mirror image, and the reason the check is default-closed: no-mistakes
@@ -1860,6 +1933,7 @@ test_open_decision_fold_matches_legacy_fixtures
 test_open_decision_fold_500_entry_timing_guard
 test_crew_is_provably_working_classifier
 test_crew_run_step_activity_recent_classifier
+test_crew_pause_override_identity_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
 test_signal_crew_provably_working_classifier

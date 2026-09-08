@@ -37,6 +37,18 @@ FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 # source this library, so the field name has a single owner.
 FM_CREW_STATE_ACTIVITY_KEY='last_activity:'
 
+# Separator between the segments of that same line. Declared here for the same
+# reason as the key above: bin/fm-crew-state.sh writes it and the readers below
+# split on it, so it needs one owner rather than a literal in each file.
+FM_CREW_STATE_SEP=' · '
+
+# Authoritative states that OUTRANK a still-standing `paused:` status line: the
+# crew declared an external wait, but its no-mistakes run has since finished,
+# failed, parked at a gate, or blocked, which the captain must see. Owned here
+# beside the rest of the current-state vocabulary so a supervisor never spells
+# the set out as literals at a call site.
+FM_CREW_STATE_PAUSE_OVERRIDE_STATES='done failed parked blocked'
+
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
 # absorbs them only with positive provably-working evidence, while the daemon uses
@@ -438,6 +450,38 @@ crew_run_step_activity_recent() {  # <id>
   activity=${fields#working run-step }
   case "$activity" in ''|'-'|quiet*) return 1 ;; esac
   return 0
+}
+
+# The SURFACE IDENTITY of a crew whose authoritative state has moved past a
+# still-standing declared pause, or empty when it has not. One read answers both
+# halves of that question, so a pause reconciler never pays a second bounded
+# no-mistakes call to ask "and which state exactly?".
+#
+# The identity is the whole current-state line minus its trailing activity
+# segment. That resolution matters: a supervisor suppresses repeat wakes by
+# comparing this value, and state alone is too coarse - a run that parks at
+# review, gets answered, then parks again at test reports `parked` both times, so
+# a state-only key would silently swallow the second gate. fm-crew-state.sh's
+# detail already names the gate and its finding count, which is exactly what
+# distinguishes them, so the identity keeps the detail and drops only
+# last_activity - the one segment that churns purely with elapsed idle time and
+# would otherwise re-fire a wake for a crew that has not moved at all.
+crew_pause_override_identity() {  # <id>
+  local id=$1 line state
+  [ -n "$id" ] || return 0
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 0 ;; esac
+  case "$line" in *"source: "*) ;; *) return 0 ;; esac
+  state=${line#state: }; state=${state%% *}
+  case " $FM_CREW_STATE_PAUSE_OVERRIDE_STATES " in
+    *" $state "*) ;;
+    *) return 0 ;;
+  esac
+  case "$line" in
+    *"$FM_CREW_STATE_SEP$FM_CREW_STATE_ACTIVITY_KEY "*)
+      line=${line%%"$FM_CREW_STATE_SEP$FM_CREW_STATE_ACTIVITY_KEY "*} ;;
+  esac
+  printf '%s' "$line"
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class

@@ -99,6 +99,8 @@ PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-quota-axi-lib.sh disable=SC1091
@@ -537,6 +539,8 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
 fi
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN=1.31.2
+FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT_DEFAULT=5
+TOOL_VERSION_AT_LEAST_TIMEOUT_DIAGNOSTIC=
 
 treehouse_supports_lease() {
   treehouse get --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--lease([^[:alnum:]_-]|$)'
@@ -546,11 +550,27 @@ treehouse_supports_lease() {
 # cannot be parsed into exactly one major.minor.patch triple is incompatible,
 # never assumed current, so a development or vendored build cannot pass a floor
 # it was never checked against.
+tool_version_timeout() {
+  local timeout=${FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT:-$FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT_DEFAULT}
+  case "$timeout" in
+    ''|*[!0-9]*|0) timeout=$FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT_DEFAULT ;;
+  esac
+  printf '%s\n' "$timeout"
+}
+
 tool_version_at_least() {  # <tool> <min-version>
-  local tool=$1 min=$2 output parts major minor patch extra
+  local tool=$1 min=$2 output parts major minor patch extra timeout rc
   local min_major min_minor min_patch min_extra
+  TOOL_VERSION_AT_LEAST_TIMEOUT_DIAGNOSTIC=
   command -v "$tool" >/dev/null 2>&1 || return 1
-  output=$("$tool" --version 2>/dev/null) || return 1
+  timeout=$(tool_version_timeout)
+  output=$(fm_run_timed "$timeout" "$tool" --version 2>/dev/null </dev/null)
+  rc=$?
+  if [ "$rc" -eq 124 ]; then
+    TOOL_VERSION_AT_LEAST_TIMEOUT_DIAGNOSTIC="$tool --version hung for ${timeout}s"
+    return 1
+  fi
+  [ "$rc" -eq 0 ] || return 1
   parts=$(printf '%s\n' "$output" | sed -nE 's/.*[vV]?([0-9]+)\.([0-9]+)\.([0-9]+).*/\1 \2 \3/p' | head -n 1)
   IFS=' ' read -r major minor patch extra <<< "$parts"
   [ -n "$major" ] && [ -n "$minor" ] && [ -n "$patch" ] && [ -z "$extra" ] || return 1
@@ -874,13 +894,21 @@ if fm_backend_list_contains "$TOOLS" treehouse \
   echo "MISSING: treehouse (install: $(install_cmd treehouse))"
 fi
 if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
-  echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
+  if [ -n "$TOOL_VERSION_AT_LEAST_TIMEOUT_DIAGNOSTIC" ]; then
+    echo "MISSING: no-mistakes ($TOOL_VERSION_AT_LEAST_TIMEOUT_DIAGNOSTIC)"
+  else
+    echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
+  fi
 fi
 if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
   echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
 fi
 if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
-  echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
+  if [ -n "$FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC" ]; then
+    echo "MISSING: tasks-axi ($FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC)"
+  else
+    echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
+  fi
 fi
 gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
 # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its

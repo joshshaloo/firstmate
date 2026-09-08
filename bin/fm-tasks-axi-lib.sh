@@ -11,18 +11,44 @@
 # Absent or any other value keeps the default tasks-axi backend path, falling
 # back to manual mutation when the tool is not compatible.
 
+FM_TASKS_AXI_VERSION_TIMEOUT_DEFAULT=5
+FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC=${FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC:-}
+FM_TASKS_AXI_VERSION_PARTS=${FM_TASKS_AXI_VERSION_PARTS:-}
+
+fm_tasks_axi_version_timeout() {
+  local timeout=${FM_TASKS_AXI_VERSION_TIMEOUT:-$FM_TASKS_AXI_VERSION_TIMEOUT_DEFAULT}
+  case "$timeout" in
+    ''|*[!0-9]*|0) timeout=$FM_TASKS_AXI_VERSION_TIMEOUT_DEFAULT ;;
+  esac
+  printf '%s\n' "$timeout"
+}
+
 fm_tasks_axi_version_parts() {
-  local output
+  local output timeout rc script_dir
+  FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC=
+  FM_TASKS_AXI_VERSION_PARTS=
   command -v tasks-axi >/dev/null 2>&1 || return 1
-  output=$(tasks-axi --version 2>/dev/null) || return 1
-  printf '%s\n' "$output" |
+  timeout=$(fm_tasks_axi_version_timeout)
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+  . "$script_dir/fm-timeout-lib.sh"
+  output=$(fm_run_timed "$timeout" tasks-axi --version 2>/dev/null </dev/null)
+  rc=$?
+  if [ "$rc" -eq 124 ]; then
+    FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC="tasks-axi --version hung for ${timeout}s"
+    return 1
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  FM_TASKS_AXI_VERSION_PARTS=$(printf '%s\n' "$output" |
     sed -n 's/.*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p' |
-    head -1
+    head -1)
+  printf '%s\n' "$FM_TASKS_AXI_VERSION_PARTS"
 }
 
 fm_tasks_axi_compatible() {
   local parts major minor patch rest
-  parts=$(fm_tasks_axi_version_parts) || return 1
+  fm_tasks_axi_version_parts >/dev/null || return 1
+  parts=$FM_TASKS_AXI_VERSION_PARTS
   [ -n "$parts" ] || return 1
   major=${parts%% *}
   rest=${parts#* }

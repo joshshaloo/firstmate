@@ -295,6 +295,27 @@ ROWS
   pass "bootstrap reports treehouse lease + tasks-axi/quota-axi bootstrap contracts"
 }
 
+test_no_mistakes_version_probe_timeout_reports_hung_tool() {
+  local case_dir fakebin out expected
+  case_dir="$TMP_ROOT/no-mistakes-version-timeout"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  perl -e 'sleep 300'
+fi
+exit 0
+SH
+  chmod +x "$fakebin/no-mistakes"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  expected='MISSING: no-mistakes (no-mistakes --version hung for 1s)'
+  [ "$out" = "$expected" ] || fail "hung no-mistakes version probe should report a concrete timeout, got: $out"
+  pass "bootstrap bounds no-mistakes version probes with a concrete timeout diagnostic"
+}
+
 test_no_mistakes_min_version() {
   local label version mode case_dir fakebin out missing n
   missing='MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)'
@@ -331,6 +352,34 @@ ROWS
 # authentication surface, which is exactly how one harness's expired CLI token
 # produced a captain-facing "log in" claim for a candidate that never read it. A
 # stale install used to pass this check silently, so the fix stayed uninstalled.
+test_tasks_axi_version_probe_timeout_reports_hung_tool() {
+  local case_dir fakebin out expected
+  case_dir="$TMP_ROOT/tasks-axi-version-timeout"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  cat > "$fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  perl -e 'sleep 300'
+fi
+if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi update <id> [flags]'
+  printf '%s\n' '  --archive-body'
+fi
+if [ "${1:-}" = mv ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>'
+fi
+exit 0
+SH
+  chmod +x "$fakebin/tasks-axi"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_TASKS_AXI_VERSION_TIMEOUT=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  expected='MISSING: tasks-axi (tasks-axi --version hung for 1s)'
+  [ "$out" = "$expected" ] || fail "hung tasks-axi version probe should report a concrete timeout, got: $out"
+  pass "bootstrap bounds tasks-axi version probes with a concrete timeout diagnostic"
+}
+
 test_quota_axi_min_version() {
   local label version mode case_dir fakebin out missing n
   missing='MISSING: quota-axi (install: npm install -g quota-axi)'
@@ -910,7 +959,9 @@ ROWS
 }
 
 test_bootstrap_reporting
+test_no_mistakes_version_probe_timeout_reports_hung_tool
 test_no_mistakes_min_version
+test_tasks_axi_version_probe_timeout_reports_hung_tool
 test_quota_axi_min_version
 test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected

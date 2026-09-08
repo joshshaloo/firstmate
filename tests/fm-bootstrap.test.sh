@@ -15,6 +15,9 @@
 # Dedicated fleet-sync cases pin the computed bootstrap timeout, explicit
 # override, blank-env defaulting, partial-output relay, and pre-launch timeout
 # scan.
+# A dedicated harness case pins the suite's own hermeticity: the base PATH from
+# fm_test_set_base_path must not leak a real-path herdr into a fake toolchain,
+# so a host with herdr installed cannot silently satisfy a case that omits it.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091

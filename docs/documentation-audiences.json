@@ -256,7 +256,7 @@
       "audience": "operator-current"
     },
     {
-      "path": "docs/merge-watch.md",
+      "path": "docs/verification/forge-merge-watch.md",
       "audience": "maintainer-verification"
     },
     {

@@ -31,6 +31,24 @@ _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
 # or no-mistakes install; absent, it points at the real sibling script.
 FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 
+# Detail-segment key under which bin/fm-crew-state.sh reports the active run
+# step's no-mistakes-reported liveness, and which crew_run_step_activity_recent
+# below reads back. Declared once here because both the writer and the reader
+# source this library, so the field name has a single owner.
+FM_CREW_STATE_ACTIVITY_KEY='last_activity:'
+
+# Separator between the segments of that same line. Declared here for the same
+# reason as the key above: bin/fm-crew-state.sh writes it and the readers below
+# split on it, so it needs one owner rather than a literal in each file.
+FM_CREW_STATE_SEP=' · '
+
+# Authoritative states that OUTRANK a still-standing `paused:` status line: the
+# crew declared an external wait, but its no-mistakes run has since finished,
+# failed, parked at a gate, or blocked, which the captain must see. Owned here
+# beside the rest of the current-state vocabulary so a supervisor never spells
+# the set out as literals at a call site.
+FM_CREW_STATE_PAUSE_OVERRIDE_STATES='done failed parked blocked'
+
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
 # absorbs them only with positive provably-working evidence, while the daemon uses
@@ -372,17 +390,98 @@ signal_reason_is_actionable() {  # <file> ...
 # run it only on no-verb signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src
-  [ -n "$id" ] || { printf 'none'; return; }
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
-  case "$line" in state:*) ;; *) printf 'none'; return ;; esac
-  state=${line#state: }; state=${state%% *}
+  local fields state src
+  fields=$(crew_state_fields "$1")
+  state=${fields%% *}
+  src=${fields#* }; src=${src%% *}
   if [ "$state" = paused ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
-    src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac
   fi
   printf 'none'
+}
+
+# The structured fields of that same line, printed as "<state> <source> <activity>"
+# with the free-text activity value last, for callers that need the raw fields
+# rather than the absorb verdict: a pause reconciler deciding whether the
+# run-step has moved on behind an old paused: line, or the wedge timer asking
+# whether an active run step is still reporting progress. ONE fm-crew-state.sh
+# read serves all three fields, so no caller pays a second bounded no-mistakes
+# call to ask a second question about the same crew.
+# <activity> is the value fm-crew-state.sh published under
+# FM_CREW_STATE_ACTIVITY_KEY, or "-" when the line carried none (the gate's own
+# convention for a field it did not report). Unusable reads - no id, no line, or
+# a line missing state or source - report "unknown none -", the same closed
+# default fm-crew-state.sh itself emits when it has no source. Sole owner of the
+# line's field parsing; crew_absorb_class maps its result rather than re-parsing,
+# so no second copy can drift.
+crew_state_fields() {  # <id>
+  local id=$1 line state src activity
+  [ -n "$id" ] || { printf 'unknown none -'; return; }
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) printf 'unknown none -'; return ;; esac
+  case "$line" in *"source: "*) ;; *) printf 'unknown none -'; return ;; esac
+  state=${line#state: }; state=${state%% *}
+  src=${line#*source: }; src=${src%% *}
+  [ -n "$state" ] || state=unknown
+  [ -n "$src" ] || src=none
+  case "$line" in
+    *"$FM_CREW_STATE_ACTIVITY_KEY "*) activity=${line##*"$FM_CREW_STATE_ACTIVITY_KEY "} ;;
+    *) activity='-' ;;
+  esac
+  [ -n "$activity" ] || activity='-'
+  printf '%s %s %s' "$state" "$src" "$activity"
+}
+
+# 0 iff crew <id> is on an actively-running no-mistakes run step that no-mistakes
+# itself reports as having had recent activity. The gate is the single
+# authoritative liveness signal: `axi status`'s active_steps last_activity, which
+# fm-crew-state.sh captures and republishes in the line crew_state_fields reads,
+# and which the gate prefixes with `quiet` once no step log or native-agent
+# lifecycle activity has arrived within its own step_quiet_warning window.
+# Deliberately default-closed: an absent value (no active step, a coarse run
+# lookup, or a gate too old to report the field) is NOT evidence of liveness, so
+# the caller's wedge escalation proceeds exactly as it did before this check.
+crew_run_step_activity_recent() {  # <id>
+  local fields activity
+  [ -n "${1:-}" ] || return 1
+  fields=$(crew_state_fields "$1")
+  case "$fields" in "working run-step "*) ;; *) return 1 ;; esac
+  activity=${fields#working run-step }
+  case "$activity" in ''|'-'|quiet*) return 1 ;; esac
+  return 0
+}
+
+# The SURFACE IDENTITY of a crew whose authoritative state has moved past a
+# still-standing declared pause, or empty when it has not. One read answers both
+# halves of that question, so a pause reconciler never pays a second bounded
+# no-mistakes call to ask "and which state exactly?".
+#
+# The identity is the whole current-state line minus its trailing activity
+# segment. That resolution matters: a supervisor suppresses repeat wakes by
+# comparing this value, and state alone is too coarse - a run that parks at
+# review, gets answered, then parks again at test reports `parked` both times, so
+# a state-only key would silently swallow the second gate. fm-crew-state.sh's
+# detail already names the gate and its finding count, which is exactly what
+# distinguishes them, so the identity keeps the detail and drops only
+# last_activity - the one segment that churns purely with elapsed idle time and
+# would otherwise re-fire a wake for a crew that has not moved at all.
+crew_pause_override_identity() {  # <id>
+  local id=$1 line state
+  [ -n "$id" ] || return 0
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 0 ;; esac
+  case "$line" in *"source: "*) ;; *) return 0 ;; esac
+  state=${line#state: }; state=${state%% *}
+  case " $FM_CREW_STATE_PAUSE_OVERRIDE_STATES " in
+    *" $state "*) ;;
+    *) return 0 ;;
+  esac
+  case "$line" in
+    *"$FM_CREW_STATE_SEP$FM_CREW_STATE_ACTIVITY_KEY "*)
+      line=${line%%"$FM_CREW_STATE_SEP$FM_CREW_STATE_ACTIVITY_KEY "*} ;;
+  esac
+  printf '%s' "$line"
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class

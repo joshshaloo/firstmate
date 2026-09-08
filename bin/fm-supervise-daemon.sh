@@ -374,11 +374,11 @@ classify_stale() {  # <window> <state>
   last=$(last_status_line "$state/$task.status")
   if [ -n "$last" ] && status_is_paused "$last"; then
     # A DECLARED external-wait pause (fm-classify-lib.sh): an idle pane is EXPECTED,
-    # so this is not a wedge. The caller records a pause marker (long re-surface
+    # so this is not a wedge. The caller records a pause marker (pause re-surface
     # cadence in housekeeping) rather than a wedge stale marker. Cheap: reuses the
     # status line already read, no fm-crew-state.sh call, mirroring the daemon's
     # existing status-log classification.
-    printf 'pause|paused (awaiting external), rechecked on a long cadence: %s' "$last"
+    printf 'pause|paused (awaiting external), rechecked on the pause cadence: %s' "$last"
     return
   fi
   if [ -n "$last" ] && status_is_captain_relevant "$last"; then
@@ -471,6 +471,7 @@ clear_pause_tracking() {  # <window> <state>
   watcher_key=$(_stale_key "$win")
   rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-stale-$key" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
+    "$state/.paused-runstep-surfaced-$watcher_key" \
     "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key"
 }
 

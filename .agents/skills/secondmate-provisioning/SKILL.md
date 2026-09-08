@@ -17,7 +17,7 @@ Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natu
 
 ## Routing table
 
-`data/secondmates.md` has one parser-compatible line per persistent second mate:
+`data/secondmates.md` supports one local row form per persistent second mate:
 
 ```markdown
 - <id> - <one-sentence charter summary> (home: <absolute-home-path>; scope: <natural-language responsibility>; projects: <project-a>, <project-b>; added <date>)
@@ -28,6 +28,9 @@ The `home:` path points to the seeded home containing `data/charter.md`; no extr
 The home-seeded `data/charter.md` is the sole owner of boilerplate idle-by-default behavior, the normal delegation lifecycle, and standard escalation contracts, so point to that charter rather than restating those contracts in the registry entry.
 The `scope:` field is used during intake.
 The `projects:` field is a non-exclusive clone list, not ownership.
+A remote row form with `host:` and `root:` fields is recognized by `bin/fm-secondmate-registry-lib.sh` solely as parser-only tolerance so the standup reader can report such entries without following them.
+No firstmate path provisions, spawns, or syncs a remote secondmate.
+Every local-home resolver must refuse that row with the parser-owned error `remote secondmate rows are parser-only tolerance; local home resolution is unsupported`.
 
 ## Charter and seed
 

@@ -13,12 +13,26 @@ set -u
 fm_test_tmproot TMP_ROOT fm-secondmate-safety
 export FM_BACKEND=tmux
 
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$ROOT/bin/fm-secondmate-registry-lib.sh"
+
 file_mode() {
   if [ "$(uname)" = Darwin ]; then
     stat -f %Lp "$1"
   else
     stat -c %a "$1"
   fi
+}
+
+test_remote_registry_refusal_wording_is_parser_owned() {
+  local got
+  secondmate_registry_parse_line '- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/home; scope: remote work; projects: alpha; added 2026-08-01)' \
+    || fail "remote parser-tolerance row did not parse"
+  [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || fail "remote parser-tolerance row was not marked remote"
+  got=$(secondmate_registry_remote_refusal)
+  [ "$got" = "remote secondmate rows are parser-only tolerance; local home resolution is unsupported" ] \
+    || fail "remote registry refusal wording drifted from parser owner"
+  pass "remote registry refusal wording is owned by the parser library"
 }
 
 test_fm_home_parameterization() {
@@ -2164,6 +2178,7 @@ EOF
   pass "fm-backlog-handoff refuses Done items under whitespace section headings and unsafe homes"
 }
 
+test_remote_registry_refusal_wording_is_parser_owned
 test_fm_home_parameterization
 test_lock_status_is_per_home
 test_seed_allows_overlapping_clones_and_drops_owner

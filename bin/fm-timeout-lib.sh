@@ -25,6 +25,18 @@
 # group; the perl fallback does it explicitly with setpgrp plus a negative pid,
 # and the bash fallback uses monitor mode to give the bounded child its own
 # process group before signaling its negative pid.
+#
+# One site is deliberately NOT a caller: run_check_process in bin/fm-watch.sh.
+# The watcher launches a check under `set -m` so the launching subshell is the
+# process-group leader, and fm_active_check_stop tears the whole check tree down
+# by signaling that group's negative pid. That needs exec-in-group semantics -
+# the bound must BE the leader process, not a fork that lands in a group the
+# watcher never signals - which is the opposite of the own-group isolation every
+# mechanism here provides. So the watcher keeps its own launch (exec'd timeout,
+# and a perl fallback that honors FM_CHECK_OWNED_GROUP by skipping setpgrp and
+# signaling the inherited group). This library remains the single owner of every
+# bounded call whose child may be isolated; it is not the owner of that one
+# group-owned launch.
 set -u
 
 fm_timeout_mechanism() {

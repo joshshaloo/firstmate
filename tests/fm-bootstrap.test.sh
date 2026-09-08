@@ -24,6 +24,37 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 fm_test_tmproot TMP_ROOT fm-bootstrap-tests
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
 
+# Hermetic tool detection. Every case here proves what bootstrap reports as
+# MISSING, and it does that by leaving a tool out of the fake toolchain. A
+# developer host that has one of those tools installed system-wide (tmux and
+# herdr are ordinary packages) would satisfy the lookup from BASE_PATH behind
+# the fake's back and silently turn a fail-closed assertion into a pass - or,
+# for the session-provider gates, into a spurious failure. Mirror BASE_PATH once
+# into a directory that shadows nothing but the tools these cases deliberately
+# withhold, so the fake toolchain is the only place they can come from. The case
+# at test_tasks_axi_real_cli that needs a REAL node resolves it from the ambient
+# PATH itself, so it is unaffected.
+FM_BOOTSTRAP_WITHHELD_TOOLS="tmux herdr zellij cmux orca node tasks-axi quota-axi"
+build_hermetic_base_path() {
+  local bin dir entry name
+  bin="$TMP_ROOT/hermetic-bin"
+  mkdir -p "$bin"
+  local IFS=:
+  for dir in $BASE_PATH; do
+    unset IFS
+    [ -d "$dir" ] || continue
+    for entry in "$dir"/*; do
+      name=${entry##*/}
+      case " $FM_BOOTSTRAP_WITHHELD_TOOLS " in *" $name "*) continue ;; esac
+      [ -e "$bin/$name" ] || ln -s "$entry" "$bin/$name" 2>/dev/null || true
+    done
+    IFS=:
+  done
+  unset IFS
+  printf '%s\n' "$bin"
+}
+BASE_PATH=$(build_hermetic_base_path)
+
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
 # config/backend; the dev shell's ambient runtime markers ($TMUX inside tmux,
 # HERDR_ENV inside herdr, CMUX_* inside a cmux terminal) must not leak into
@@ -79,6 +110,9 @@ add_quota_axi() {
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
+  if [ "${FM_FAKE_QUOTA_AXI_HANG:-0}" = 1 ]; then
+    sleep 120
+  fi
   printf '%s\n' "${FM_FAKE_QUOTA_AXI_VERSION:-0.1.16}"
   exit 0
 fi
@@ -392,7 +426,7 @@ test_quota_axi_min_version() {
     printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
     fakebin=$(make_fake_toolchain "$case_dir")
     add_tasks_axi "$fakebin" "0.1.1"
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    out=$(FM_TIMEOUT_MECHANISM_OVERRIDE=bash PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
       FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_QUOTA_AXI_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh")
     case "$mode" in
       empty)
@@ -410,6 +444,36 @@ much older quota-axi minor reports an upgrade^0.0.9^missing
 unparseable quota-axi version reports an upgrade^quota-axi development build^missing
 ROWS
   pass "bootstrap enforces quota-axi minimum version"
+}
+
+# A version probe that never returns must not hold the whole startup diagnostic
+# hostage. Bootstrap passes the bound bin/fm-quota-axi-lib.sh owns, so a wedged
+# `quota-axi --version` becomes the same hung-version line its sibling probes produce.
+# The bound runs through the shared timeout owner's dependency-free mechanism
+# here, so this also proves bootstrap reaches the delegated bounded path. The
+# run uses the documented FM_QUOTA_AXI_VERSION_TIMEOUT override - read back from
+# the owner, never assumed - so the case stays fast and pins that the override
+# is what bootstrap actually waits on.
+test_quota_axi_hang_is_bounded_and_reported_missing() {
+  local case_dir fakebin out missing bound started elapsed
+  missing='MISSING: quota-axi (quota-axi --version hung for 3s)'
+  case_dir="$TMP_ROOT/quota-axi-hang"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_tasks_axi "$fakebin" "0.1.1"
+  bound=$(FM_QUOTA_AXI_VERSION_TIMEOUT=3 bash -c '. "$1"; printf "%s\n" "$FM_QUOTA_AXI_VERSION_TIMEOUT"' \
+    _ "$ROOT/bin/fm-quota-axi-lib.sh")
+  [ "$bound" = 3 ] || fail "fm-quota-axi-lib.sh must honor FM_QUOTA_AXI_VERSION_TIMEOUT, got '$bound'"
+  started=$(date +%s)
+  out=$(FM_TIMEOUT_MECHANISM_OVERRIDE=bash PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_QUOTA_AXI_VERSION_TIMEOUT="$bound" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_QUOTA_AXI_HANG=1 "$ROOT/bin/fm-bootstrap.sh")
+  elapsed=$(( $(date +%s) - started ))
+  [ "$out" = "$missing" ] || fail "a hung quota-axi: expected '$missing', got: $out"
+  [ "$elapsed" -lt $((bound + 20)) ] \
+    || fail "bootstrap was not bounded by the ${bound}s version-probe bound (${elapsed}s)"
+  pass "bootstrap bounds a hung quota-axi --version and reports it incompatible"
 }
 
 test_git_is_required_with_supported_install_instruction() {
@@ -963,6 +1027,7 @@ test_no_mistakes_version_probe_timeout_reports_hung_tool
 test_no_mistakes_min_version
 test_tasks_axi_version_probe_timeout_reports_hung_tool
 test_quota_axi_min_version
+test_quota_axi_hang_is_bounded_and_reported_missing
 test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux

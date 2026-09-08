@@ -284,7 +284,7 @@ test_missing_vendor_cli_is_reported_not_assumed() {
 test_hanging_probe_is_bounded_and_reported() {
   local started finished
   started=$(date +%s)
-  run_probe grok-hang grok -- "FM_FAKE_GROK_MODE=hang" "FM_VENDOR_AUTH_PROBE_TIMEOUT=2"
+  run_probe grok-hang grok -- "FM_FAKE_GROK_MODE=hang" "FM_VENDOR_AUTH_PROBE_TIMEOUT=2" "FM_TIMEOUT_MECHANISM_OVERRIDE=bash"
   finished=$(date +%s)
   assert_field "$RUN_LINE" status timeout "a hit bound must be reported as a timeout"
   [ $((finished - started)) -lt 25 ] \

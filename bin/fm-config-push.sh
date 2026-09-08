@@ -110,10 +110,14 @@ echo "config-push: $FM_HOME -> live secondmate homes"
 
 seen_homes=""
 errors=0
-while IFS='|' read -r id home _window meta; do
+while IFS='|' read -r id home _window meta home_refusal; do
   [ -n "$id" ] || continue
   if [ -z "$home" ]; then
-    printf 'secondmate %s: skipped - no home= in %s and no registry home\n' "$id" "$meta"
+    if [ -n "$home_refusal" ]; then
+      printf 'secondmate %s: skipped - %s\n' "$id" "$home_refusal"
+    else
+      printf 'secondmate %s: skipped - no home= in %s and no registry home\n' "$id" "$meta"
+    fi
     continue
   fi
   if ! validate_secondmate_home "$id" "$home"; then

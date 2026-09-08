@@ -25,6 +25,9 @@
 # shared default branch or any other worktree's checkout.
 
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
+FM_FF_LIB_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$FM_FF_LIB_DIR/fm-secondmate-registry-lib.sh"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -231,37 +234,76 @@ dirty_status() {
   fi
 }
 
+# Resolve one field of a LOCAL secondmate row. The fields served here (home,
+# projects) name paths on this host, so only the local row form can answer them:
+# a remote row places its home on another host and is refused rather than read as
+# if it were a local path. Callers that understand remote placement parse rows
+# through the shared owner directly and branch on SECONDMATE_REGISTRY_REMOTE.
+# Returns 1 when there is nothing to report (no registry, no row, no such
+# field), and a REFUSAL status when a row exists but this home will not serve it:
+# 2 for a row placed on another host, 3 for a row the shared parser cannot read.
+# secondmate_registry_field_refusal maps either status to the parser's wording -
+# the function itself usually runs in a command substitution, so the reason
+# travels as a status rather than a variable. A caller that only needs a value
+# can keep treating any non-zero status as "no value".
 secondmate_registry_field() {
-  local reg=$1 id=$2 key=$3 line value
+  local reg=$1 id=$2 key=$3 line value rc
   [ -f "$reg" ] || return 1
   line=$(grep -E "^- $id( |$)" "$reg" | tail -1 || true)
   [ -n "$line" ] || return 1
+  rc=0
+  secondmate_registry_parse_line "$line" || rc=$?
+  case "$rc" in
+    0) ;;
+    2) return 3 ;;
+    *) return 1 ;;
+  esac
+  [ "$SECONDMATE_REGISTRY_ID" = "$id" ] || return 1
+  [ "$SECONDMATE_REGISTRY_REMOTE" -eq 0 ] || return 2
   case "$key" in
-    home) value=$(printf '%s\n' "$line" | sed -n 's/.*(home:[[:space:]]*\([^;)]*\);.*/\1/p' | sed 's/[[:space:]]*$//') ;;
-    projects) value=$(printf '%s\n' "$line" | sed -n 's/.*; projects:[[:space:]]*\([^;)]*\); added .*/\1/p' | sed 's/[[:space:]]*$//') ;;
+    home) value=$SECONDMATE_REGISTRY_HOME ;;
+    projects) value=$SECONDMATE_REGISTRY_PROJECTS ;;
     *) return 1 ;;
   esac
   [ -n "$value" ] || return 1
   printf '%s\n' "$value"
 }
 
+# The wording for a secondmate_registry_field refusal status, or nothing when the
+# status only means "no value". Both wordings belong to the row's parser.
+secondmate_registry_field_refusal() {  # <status>
+  case "$1" in
+    2) printf '%s\n' "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" ;;
+    3) printf '%s\n' "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL" ;;
+  esac
+}
+
 # List this home's LIVE secondmate direct reports from state/<id>.meta records.
 # The meta file is the liveness signal; data/secondmates.md is only the fallback
 # for durable fields such as home= when an older/incomplete meta lacks them.
-# Output is pipe-delimited: id|home|window|meta-file.
+# Output is pipe-delimited: id|home|window|meta-file|home-refusal.
+# An empty home is never left to speak for itself: when the registry does have a
+# row for the id but this home cannot serve it, the last field carries the reason
+# so every consumer reports that refusal instead of a generic "no home" skip.
 live_secondmate_meta_records() {
-  local state=$1 registry=${2:-} meta id home window
+  local state=$1 registry=${2:-} meta id home window refusal rc
   [ -d "$state" ] || return 0
   for meta in "$state"/*.meta; do
     [ -f "$meta" ] || continue
     grep -q '^kind=secondmate$' "$meta" 2>/dev/null || continue
     id=$(basename "$meta" .meta)
+    refusal=""
     home=$(grep '^home=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
     if [ -z "$home" ] && [ -n "$registry" ]; then
-      home=$(secondmate_registry_field "$registry" "$id" home || true)
+      rc=0
+      home=$(secondmate_registry_field "$registry" "$id" home) || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        home=""
+        refusal=$(secondmate_registry_field_refusal "$rc")
+      fi
     fi
     window=$(grep '^window=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-    printf '%s|%s|%s|%s\n' "$id" "$home" "$window" "$meta"
+    printf '%s|%s|%s|%s|%s\n' "$id" "$home" "$window" "$meta" "$refusal"
   done
 }
 
@@ -372,10 +414,13 @@ ff_target() {
   return 0
 }
 
-# Sweep accumulators. The caller resets both before a sweep and reads
-# FF_NUDGE_WINDOWS after.
+# Sweep accumulators. The caller resets all three before a sweep and reads
+# FF_NUDGE_WINDOWS after. FF_SEEN_REFUSALS is the id set already reported as
+# refused: a secondmate reachable from both the live metas and a registry
+# backstop is one secondmate, so its refusal is stated once per run.
 FF_NUDGE_WINDOWS=""
 FF_SEEN_HOMES=""
+FF_SEEN_REFUSALS=""
 
 # Validate and fast-forward one secondmate home, accumulating its stable
 # fm-<id> task selector into FF_NUDGE_WINDOWS when it should be live-converged.
@@ -388,9 +433,18 @@ FF_SEEN_HOMES=""
 # firstmate repo itself (FM_ROOT) is never processed as its own secondmate, and
 # each resolved home is processed at most once.
 process_secondmate() {
-  local id=$1 home=$2 window=${3:-} base_mode=$4 nudge_requires_instr=${5:-no} home_real fm_root_real
+  local id=$1 home=$2 window=${3:-} base_mode=$4 nudge_requires_instr=${5:-no} home_refusal=${6:-} home_real fm_root_real
   [ -n "$id" ] || return 0
-  [ -n "$home" ] || return 0
+  if [ -z "$home" ]; then
+    if [ -n "$home_refusal" ]; then
+      case " $FF_SEEN_REFUSALS " in
+        *" $id "*) return 0 ;;
+      esac
+      FF_SEEN_REFUSALS="$FF_SEEN_REFUSALS $id"
+      echo "secondmate $id: skipped: $home_refusal"
+    fi
+    return 0
+  fi
   fm_root_real=$(resolve_path "$FM_ROOT")
   home_real=$(resolve_path "$home")
   [ "$home_real" != "$fm_root_real" ] || return 0
@@ -423,9 +477,9 @@ process_secondmate() {
 # FF_NUDGE_WINDOWS / FF_SEEN_HOMES, which the caller resets before and reads after.
 # The registry argument is only for home= fallback on older or incomplete meta records.
 sweep_live_secondmate_metas() {
-  local state=$1 base_mode=$2 nudge_requires_instr=${3:-no} registry=${4:-$FM_HOME/data/secondmates.md} id home window meta
+  local state=$1 base_mode=$2 nudge_requires_instr=${3:-no} registry=${4:-$FM_HOME/data/secondmates.md} id home window meta refusal
   [ -d "$state" ] || return 0
-  while IFS='|' read -r id home window meta; do
-    process_secondmate "$id" "$home" "$window" "$base_mode" "$nudge_requires_instr"
+  while IFS='|' read -r id home window meta refusal; do
+    process_secondmate "$id" "$home" "$window" "$base_mode" "$nudge_requires_instr" "$refusal"
   done < <(live_secondmate_meta_records "$state" "$registry")
 }

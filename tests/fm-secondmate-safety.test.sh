@@ -1238,6 +1238,104 @@ SH
   pass "secondmate spawn validates homes before launch"
 }
 
+# data/secondmates.md row syntax has one owner (bin/fm-secondmate-registry-lib.sh).
+# Spawn resolves an omitted secondmate home from that registry, so its resolver must
+# accept and refuse exactly the rows bootstrap and the fast-forward library do: a
+# hand-edited row the shared parser rejects must not still resolve a home and launch.
+test_secondmate_spawn_registry_resolution_matches_shared_parser() {
+  local home subhome subhome_abs fakebin log err row rc
+  home="$TMP_ROOT/spawn-registry-row-home"
+  subhome="$TMP_ROOT/spawn-registry-row-subhome"
+  mkdir -p "$home/data" "$home/state" "$subhome/data"
+  mark_firstmate_home "$subhome"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  printf 'charter\n' > "$subhome/data/charter.md"
+  subhome_abs=$(cd "$subhome" && pwd -P)
+  fakebin=$(make_fake_tmux "$TMP_ROOT/spawn-registry-row-fake")
+  log="$TMP_ROOT/spawn-registry-row-fake/tmux.log"
+  err="$TMP_ROOT/spawn-registry-row.err"
+
+  # Rows the old permissive inline sed resolved but the shared parser refuses: an
+  # unpadded added date, and a row carrying no " - <summary>" segment at all.
+  # Plus the remote row form: the shared parser understands it, but a remote home
+  # lives on another host, so spawn must keep refusing it exactly as it always has
+  # rather than launching against that path on this host.
+  for row in \
+    "- domain - domain work (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-6-22)" \
+    "- domain (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
+    "- domain - domain work (host: elsewhere; root: /srv/fm; home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)"; do
+    printf '%s\n' "$row" > "$home/data/secondmates.md"
+    : > "$log"
+    if bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+      _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1; then
+      fail "the shared registry parser resolved a home from a row spawn must refuse: $row"
+    fi
+    if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+      FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/spawn-registry-row-fake/pane.txt" \
+      "$ROOT/bin/fm-spawn.sh" domain codex --secondmate >/dev/null 2>"$err"; then
+      fail "secondmate spawn resolved a home from a registry row it must refuse: $row"
+    fi
+    grep -F 'no firstmate home supplied or registered for domain' "$err" >/dev/null \
+      || fail "spawn refused the row for the wrong reason: $row"
+    grep -F 'new-window' "$log" >/dev/null && fail "spawn created a window for a registry row it must refuse"
+    [ -e "$home/state/domain.meta" ] && fail "spawn wrote meta for a registry row it must refuse"
+  done
+
+  # The two refusals are not the same fact, so they do not share a status: a row
+  # this home cannot serve because the mate lives on another host reports 2, and
+  # a record this parser cannot read reports 3; and a line that is not a record
+  # at all - an ordinary bullet - reports 1, because there is nothing to report.
+  # Callers that surface a reason depend on that split; callers that only want a
+  # value still see "non-zero means no value".
+  printf '%s\n' \
+    "- domain - domain work (host: elsewhere; root: /srv/fm; home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
+    > "$home/data/secondmates.md"
+  rc=0
+  bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "a remote-placed row must report the remote refusal status, got $rc"
+  printf '%s\n' "- domain (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
+    > "$home/data/secondmates.md"
+  rc=0
+  bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 3 ] || fail "an unreadable record must report the malformed refusal status, got $rc"
+  printf '%s\n' "- domain is away this week" > "$home/data/secondmates.md"
+  rc=0
+  bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 1 ] || fail "an ordinary bullet must report the plain no-value status, got $rc"
+
+  # The canonical row still resolves, so the refusals above are about row syntax
+  # and not about this home.
+  printf '%s\n' \
+    "- domain - domain work (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
+    > "$home/data/secondmates.md"
+  bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 \
+    || fail "the shared registry parser refused the canonical row"
+  : > "$err"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/spawn-registry-row-fake/pane.txt" \
+    "$ROOT/bin/fm-spawn.sh" domain codex --secondmate >/dev/null 2>"$err" || true
+  grep -F 'no firstmate home supplied or registered for domain' "$err" >/dev/null \
+    && fail "spawn failed to resolve a home from the canonical registry row"
+
+  # The field delimiters permit padding before them, so a hand-written
+  # `home: /path ;` is the same route as the generated `home: /path;`. The owner
+  # trims it, exactly as every retired inline reader did.
+  local resolved
+  printf '%s\n' \
+    "- domain - domain work (home: $subhome_abs ; scope: domain scope; projects: alpha ; added 2026-06-22)" \
+    > "$home/data/secondmates.md"
+  resolved=$(bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" 2>/dev/null) \
+    || fail "the shared parser refused a row padded before its field delimiter"
+  [ "$resolved" = "$subhome_abs" ] \
+    || fail "the shared parser kept padding in the home field: [$resolved]"
+  pass "secondmate spawn resolves registry rows through the shared parser"
+}
+
 test_secondmate_spawn_refuses_operational_dirs_outside_subhome() {
   local home subhome sink fakebin log err opdir
   home="$TMP_ROOT/spawn-opdir-home"
@@ -2107,6 +2205,54 @@ EOF
   pass "fm-backlog-handoff aborts atomically on unmatched, in-flight, and unregistered targets"
 }
 
+# data/secondmates.md row syntax has one owner (bin/fm-secondmate-registry-lib.sh),
+# and handoff MUTATES backlog state, so it must refuse exactly the rows fm-spawn
+# and /updatefirstmate refuse. A row the owner cannot read, and a row placing its
+# mate on another host, are both named refusals here - never a generic "has no
+# home" that reads as if the registry simply lacked a field.
+test_backlog_handoff_refuses_rows_the_shared_parser_refuses() {
+  local home unreadable unreadable_abs faraway faraway_abs before out
+  local malformed_refusal remote_refusal
+  home="$TMP_ROOT/handoff-registry-rows-main"
+  unreadable="$TMP_ROOT/handoff-registry-rows-unreadable"
+  faraway="$TMP_ROOT/handoff-registry-rows-faraway"
+  mkdir -p "$home/data" "$home/state"
+  seed_secondmate_home_marker "$unreadable" unreadable
+  seed_secondmate_home_marker "$faraway" faraway
+  unreadable_abs=$(cd "$unreadable" && pwd -P)
+  faraway_abs=$(cd "$faraway" && pwd -P)
+  printf '## Queued\n- [ ] move-me - a queued item (repo: alpha)\n' > "$home/data/backlog.md"
+  {
+    printf -- '- unreadable - domain work (home: %s; scope: things; projects: alpha; added 2026-6-23)\n' "$unreadable_abs"
+    printf -- '- faraway - remote mate (host: elsewhere; root: /srv/fm; home: %s; scope: things; projects: alpha; added 2026-06-23)\n' "$faraway_abs"
+  } > "$home/data/secondmates.md"
+  before="$TMP_ROOT/handoff-registry-rows.before"
+  cp "$home/data/backlog.md" "$before"
+  malformed_refusal=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"' _ "$ROOT")
+  remote_refusal=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"' _ "$ROOT")
+  [ -n "$malformed_refusal" ] && [ -n "$remote_refusal" ] \
+    || fail "the registry parser must own both refusal wordings"
+
+  if out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" unreadable move-me 2>&1); then
+    fail "handoff accepted a registry row the shared parser refuses"
+  fi
+  printf '%s\n' "$out" | grep -Fx "error: secondmate unreadable: $malformed_refusal" >/dev/null \
+    || fail "handoff did not name the unreadable row as the reason on its own line: $out"
+  cmp -s "$before" "$home/data/backlog.md" || fail "an unreadable row still mutated the main backlog"
+  [ ! -e "$unreadable/data/backlog.md" ] || fail "handoff wrote into a home behind an unreadable row"
+
+  if out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" faraway move-me 2>&1); then
+    fail "handoff accepted a remote-registered secondmate row"
+  fi
+  printf '%s\n' "$out" | grep -Fx "error: secondmate faraway: $remote_refusal" >/dev/null \
+    || fail "handoff did not name the remote placement as the reason on its own line: $out"
+  printf '%s\n' "$out" | grep -F 'has no home' >/dev/null \
+    && fail "a remote row must not be reported as a missing home field"
+  cmp -s "$before" "$home/data/backlog.md" || fail "a remote row still mutated the main backlog"
+  [ ! -e "$faraway/data/backlog.md" ] || fail "handoff wrote into a remote-registered home on this host"
+  pass "fm-backlog-handoff refuses registry rows through the shared parser and names each refusal"
+}
+
 test_backlog_handoff_refuses_done_items_and_non_secondmate_homes() {
   local home subhome subhome_abs projhome projhome_abs markerhome markerhome_abs symlinkhome symlinkhome_abs outside before_main before_sub out
   home="$TMP_ROOT/handoff-safety-main"
@@ -2219,6 +2365,7 @@ test_home_seed_refuses_project_destinations_outside_subhome
 test_home_seed_refuses_operational_dirs_outside_subhome
 test_home_seed_refuses_symlinked_leaf_files
 test_secondmate_spawn_requires_seeded_matching_home
+test_secondmate_spawn_registry_resolution_matches_shared_parser
 test_secondmate_spawn_refuses_operational_dirs_outside_subhome
 test_fm_send_refuses_bare_window_without_home_meta
 test_secondmate_teardown_retires_empty_home
@@ -2240,3 +2387,4 @@ test_secondmate_idle_pane_is_not_stale
 test_secondmate_charter_brief_is_idle_by_default
 test_backlog_handoff_aborts_safely
 test_backlog_handoff_refuses_done_items_and_non_secondmate_homes
+test_backlog_handoff_refuses_rows_the_shared_parser_refuses

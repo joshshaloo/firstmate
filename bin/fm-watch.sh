@@ -517,6 +517,10 @@ scan_signals() {
   return 0
 }
 
+# The one bounded call deliberately NOT routed through bin/fm-timeout-lib.sh:
+# this must exec IN the caller's process group so fm_active_check_stop can tear
+# the whole check tree down by signaling that group. That library's header owns
+# the rationale for the exception; do not migrate this launch to it.
 run_check_process() {
   local c=$1
   shift

@@ -13,24 +13,40 @@
 # what keeps an older build from reaching a dispatch intake at all.
 
 FM_QUOTA_AXI_MIN=0.1.16
+# The bound every caller of the version probe uses, owned here beside the floor
+# it guards: a wedged `quota-axi --version` must surface as the MISSING
+# diagnostic rather than stalling the startup check that reports it.
+# FM_QUOTA_AXI_VERSION_TIMEOUT overrides the default for a slow host, matching
+# FM_CREW_STATE_NM_TIMEOUT and FM_BEARINGS_PR_TIMEOUT. A non-positive or
+# non-numeric value falls back to the default rather than failing the probe: a
+# bad override must not report a healthy install as MISSING.
+# shellcheck disable=SC2034 # Read by sourcing callers, not by this file.
+FM_QUOTA_AXI_VERSION_TIMEOUT=${FM_QUOTA_AXI_VERSION_TIMEOUT:-10}
+case "$FM_QUOTA_AXI_VERSION_TIMEOUT" in ''|*[!0-9]*|0) FM_QUOTA_AXI_VERSION_TIMEOUT=10 ;; esac
+# shellcheck disable=SC2034 # Read by sourcing callers after fm_quota_axi_compatible returns.
+FM_QUOTA_AXI_VERSION_TIMEOUT_DIAGNOSTIC=
+FM_QUOTA_AXI_LIB_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$FM_QUOTA_AXI_LIB_DIR/fm-timeout-lib.sh"
 
 fm_quota_axi_compatible() {
-  local timeout=${1:-} output parts major minor patch extra
+  local timeout=${1:-} output rc parts major minor patch extra
   local min_major min_minor min_patch min_extra
+  # shellcheck disable=SC2034 # Read by sourcing callers after fm_quota_axi_compatible returns.
+  FM_QUOTA_AXI_VERSION_TIMEOUT_DIAGNOSTIC=
   command -v quota-axi >/dev/null 2>&1 || return 1
   if [ -n "$timeout" ]; then
     case "$timeout" in
       ''|*[!0-9]*|0) return 1 ;;
     esac
-    if command -v timeout >/dev/null 2>&1; then
-      output=$(timeout "$timeout" quota-axi --version 2>/dev/null </dev/null) || return 1
-    elif command -v gtimeout >/dev/null 2>&1; then
-      output=$(gtimeout "$timeout" quota-axi --version 2>/dev/null </dev/null) || return 1
-    elif command -v perl >/dev/null 2>&1; then
-      output=$(perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$timeout" quota-axi --version 2>/dev/null </dev/null) || return 1
-    else
+    output=$(fm_run_timed "$timeout" quota-axi --version 2>/dev/null </dev/null)
+    rc=$?
+    if [ "$rc" -eq 124 ]; then
+      # shellcheck disable=SC2034 # Read by sourcing callers after fm_quota_axi_compatible returns.
+      FM_QUOTA_AXI_VERSION_TIMEOUT_DIAGNOSTIC="quota-axi --version hung for ${timeout}s"
       return 1
     fi
+    [ "$rc" -eq 0 ] || return 1
   else
     output=$(quota-axi --version 2>/dev/null </dev/null) || return 1
   fi

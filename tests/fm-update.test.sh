@@ -235,6 +235,74 @@ test_registry_backstop_dedup_and_self_exclusion() {
   pass "T7 registry backstop resolves, dedups meta+registry, excludes the firstmate repo"
 }
 
+# --- T12: the registry backstop reads rows through their owner --------------
+# data/secondmates.md row syntax has one owner (bin/fm-secondmate-registry-lib.sh),
+# so update must accept and refuse exactly the rows fm-spawn and the ff sweep do.
+# A row that owner cannot read is never fast-forwarded here, and a row placing its
+# mate on another host is reported with the owner's refusal wording instead of
+# silently resolving whatever same-named path happens to exist on this host. Both
+# refusals name their secondmate once; a row padded before a field delimiter is
+# still accepted, and an ordinary bullet is not a refusal at all.
+test_registry_backstop_refuses_rows_the_shared_parser_refuses() {
+  local w out refusal malformed before_unreadable before_remote refusal_lines
+  w=$(new_world t12)
+  git -C "$w/main" worktree add -q --detach "$w/unreadable" main
+  printf 'unreadable\n' > "$w/unreadable/.fm-secondmate-home"
+  git -C "$w/main" worktree add -q --detach "$w/faraway" main
+  printf 'faraway\n' > "$w/faraway/.fm-secondmate-home"
+  # A live meta with no home= makes the live sweep and the registry backstop
+  # reach the same secondmate, so the refusal has two chances to print.
+  {
+    printf 'kind=secondmate\n'
+    printf 'harness=codex\n'
+  } > "$w/home/state/faraway.meta"
+  cp "$w/home/state/faraway.meta" "$w/home/state/unreadable.meta"
+  # A padded row is the same row: the owner trims what the delimiters allow.
+  git -C "$w/main" worktree add -q --detach "$w/padded" main
+  printf 'padded\n' > "$w/padded/.fm-secondmate-home"
+  {
+    printf -- '- unreadable - domain supervisor (home: %s/unreadable; scope: things; projects: p; added 2026-6-23)\n' "$w"
+    printf -- '- faraway - remote mate (host: elsewhere; root: /srv/fm; home: %s/faraway; scope: things; projects: p; added 2026-06-23)\n' "$w"
+    printf -- '- padded - padded row (home: %s/padded ; scope: things; projects: p ; added 2026-06-23)\n' "$w"
+    printf -- '- a plain note about the fleet, not a registry row\n'
+  } > "$w/home/data/secondmates.md"
+  before_unreadable=$(git -C "$w/unreadable" rev-parse HEAD)
+  before_remote=$(git -C "$w/faraway" rev-parse HEAD)
+  bump_origin "$w" instr
+  refusal=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"' \
+    _ "$ROOT")
+  malformed=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"' \
+    _ "$ROOT")
+  [ -n "$refusal" ] && [ -n "$malformed" ] || fail "the registry parser must own both refusal wordings"
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "precondition: the firstmate repo itself advanced"
+  assert_contains "$out" "secondmate unreadable: skipped: $malformed" \
+    "an unpadded-date row is refused by name, not skipped in silence"
+  assert_not_contains "$out" "secondmate unreadable: updated" \
+    "an unpadded-date row the shared parser refuses must not be updated by the backstop"
+  [ "$(git -C "$w/unreadable" rev-parse HEAD)" = "$before_unreadable" ] \
+    || fail "a home behind a row the shared parser refuses was fast-forwarded"
+  refusal_lines=$(printf '%s\n' "$out" | grep -c "^secondmate unreadable: skipped: " || true)
+  [ "$refusal_lines" -eq 1 ] \
+    || fail "an unreadable row must be refused once, got $refusal_lines lines"
+  assert_contains "$out" "secondmate padded: updated " \
+    "a row padded before its field delimiters resolves to the same home"
+  [ "$(git -C "$w/padded" rev-parse HEAD)" = "$(git -C "$w/padded" rev-parse origin/main)" ] \
+    || fail "a padded row did not fast-forward its home"
+  assert_not_contains "$out" "secondmate a:" "an ordinary bullet is not reported as a refused row"
+  assert_contains "$out" "secondmate faraway: skipped: $refusal" \
+    "a remote-registered row is refused by name, not by an empty home"
+  [ "$(git -C "$w/faraway" rev-parse HEAD)" = "$before_remote" ] \
+    || fail "a remote-registered home was fast-forwarded on this host"
+  refusal_lines=$(printf '%s\n' "$out" | grep -c "^secondmate faraway: skipped: " || true)
+  [ "$refusal_lines" -eq 1 ] \
+    || fail "one secondmate must be refused once, got $refusal_lines lines"
+  assert_contains "$out" "nudge-secondmates: none" "refused registry rows are never nudged"
+  pass "T12 update reads registry rows through their owner and names what it refuses"
+}
+
 # --- T9: firstmate repo on a feature branch is skipped ---------------------
 test_firstmate_wrong_branch_skipped() {
   local w out before
@@ -297,6 +365,7 @@ test_dirty_secondmate_skipped
 test_diverged_secondmate_skipped
 test_idempotent_already_current
 test_registry_backstop_dedup_and_self_exclusion
+test_registry_backstop_refuses_rows_the_shared_parser_refuses
 test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update

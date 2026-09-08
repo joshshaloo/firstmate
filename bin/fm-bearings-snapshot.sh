@@ -59,6 +59,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 
 # Bounds (overridable for tests / large fleets).
@@ -191,15 +193,7 @@ repo_slug() {  # <url>
 
 # Bounded gh call; prints stdout, non-zero on timeout/failure. gh only.
 gh_bounded() {  # <args...>
-  if command -v timeout >/dev/null 2>&1; then
-    GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 timeout "$FM_BEARINGS_PR_TIMEOUT" gh "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 gtimeout "$FM_BEARINGS_PR_TIMEOUT" gh "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$FM_BEARINGS_PR_TIMEOUT" gh "$@"
-  else
-    return 124
-  fi
+  GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 fm_run_timed "$FM_BEARINGS_PR_TIMEOUT" gh "$@"
 }
 
 if [ "$INCLUDE_PRS" = 1 ]; then

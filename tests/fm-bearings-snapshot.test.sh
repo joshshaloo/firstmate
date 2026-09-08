@@ -477,7 +477,7 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   write_parent_secondmate_event "$home" timedout "$timedout" "old timed work"
 
   fakebin=$(make_fakebin "$home")
-  json=$(FAKE_NM_SLEEP=1 FM_SNAPSHOT_SECONDMATE_TIMEOUT=1 run "$home" "$fakebin" --json)
+  json=$(FM_TIMEOUT_MECHANISM_OVERRIDE=bash FAKE_NM_SLEEP=1 FM_SNAPSHOT_SECONDMATE_TIMEOUT=1 run "$home" "$fakebin" --json)
   chmod 700 "$unreadable/data"
   printf '%s' "$json" | jq -e '
     (.secondmates | length) == 5
@@ -1097,26 +1097,28 @@ test_partial_github_failure_degrades() {
   pass "a partial GitHub failure degrades gracefully"
 }
 
-test_perl_fallback_bounds_github_call() {
+test_shared_timeout_fallback_bounds_github_call() {
   local home fakebin toolbin cmd json started elapsed
-  home=$(make_home perl-timeout); write_fixture "$home"
+  home=$(make_home shared-timeout); write_fixture "$home"
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  # timeout/gtimeout are deliberately absent: that absence is what forces the perl
-  # fallback this test exercises. awk is granted like its POSIX peers above, because
+  # timeout/gtimeout are deliberately absent, and FM_TIMEOUT_MECHANISM_OVERRIDE
+  # asks bin/fm-timeout-lib.sh - the owner of bounded execution - for its
+  # dependency-free fallback, so this covers a host with no coreutils bound at
+  # all. awk is granted like its POSIX peers above, because
   # fm-fleet-snapshot.sh already calls awk unguarded on this same snapshot path.
   for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find mktemp rm awk; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
   started=$(date +%s)
   json=$(PATH="$fakebin:$toolbin" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
-    FM_BEARINGS_PR_TIMEOUT=1 NET_LOG="$home/net.log" FAKE_GH_SLEEP=1 "$BEARINGS" --include-prs --json)
+    FM_TIMEOUT_MECHANISM_OVERRIDE=bash FM_BEARINGS_PR_TIMEOUT=1 NET_LOG="$home/net.log" FAKE_GH_SLEEP=1 "$BEARINGS" --include-prs --json)
   elapsed=$(( $(date +%s) - started ))
-  [ "$elapsed" -lt 10 ] || fail "Perl fallback did not bound a stalled gh call (${elapsed}s)"
+  [ "$elapsed" -lt 10 ] || fail "shared timeout did not bound a stalled gh call (${elapsed}s)"
   printf '%s' "$json" | jq -e '.prs | test("unavailable")' >/dev/null \
     || fail "timed-out gh call did not fail soft: $json"
-  pass "Perl fallback bounds stalled GitHub calls without coreutils timeout"
+  pass "shared timeout bounds stalled GitHub calls without coreutils timeout"
 }
 
 write_large_fixture() {  # <home> <count>
@@ -2031,7 +2033,7 @@ test_report_pointers_surface
 test_superseded_queued_item_dropped_by_default
 test_include_prs_is_the_only_fetch_path
 test_partial_github_failure_degrades
-test_perl_fallback_bounds_github_call
+test_shared_timeout_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed

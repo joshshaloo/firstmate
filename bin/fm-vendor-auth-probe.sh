@@ -63,6 +63,10 @@
 #                                  `alarm 0` both mean "no deadline".
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
+
 VERIFIED_GROK_VERSION=0.2.117
 
 usage() {
@@ -129,23 +133,6 @@ case "$TIMEOUT" in
   ''|*[!0-9]*|0*) TIMEOUT=20 ;;
 esac
 
-# Bounded execution, mirroring bin/fm-fleet-snapshot.sh's run_timed selection so
-# a macOS host without coreutils still gets a hard bound instead of an unbounded
-# vendor CLI call. Exit 124 means the bound was hit.
-run_timed() {  # <seconds> <command...>
-  local seconds=$1
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
-  elif command -v perl >/dev/null 2>&1; then
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
-  else
-    return 124
-  fi
-}
-
 STATUS=unavailable
 VERSION=none
 VERSION_VERIFIED=none
@@ -160,13 +147,13 @@ emit() {
 # reaches the vendor CLI's argv or stdin.
 grok_version() {
   local output
-  output=$(run_timed "$TIMEOUT" grok --version 2>/dev/null </dev/null) || { printf 'none\n'; return 0; }
+  output=$(fm_run_timed "$TIMEOUT" grok --version 2>/dev/null </dev/null) || { printf 'none\n'; return 0; }
   printf '%s\n' "$output" | sed -nE 's/.*[^0-9]([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1 | grep . || printf 'none\n'
 }
 
 probe_grok() {
   local output first rc=0
-  output=$(run_timed "$TIMEOUT" grok models 2>/dev/null </dev/null) || rc=$?
+  output=$(fm_run_timed "$TIMEOUT" grok models 2>/dev/null </dev/null) || rc=$?
   if [ "$rc" -eq 124 ]; then
     printf 'timeout\n'
     return 0

@@ -300,8 +300,8 @@ When X mode is opted in, bootstrap also requires `curl` and `jq` before arming t
 An absent or incompatible `tasks-axi` reports `MISSING: tasks-axi (install: npm install -g tasks-axi)`; when `config/backlog-backend` is not `manual` and compatible `tasks-axi` is on `PATH`, bootstrap stays silent and firstmate uses its verbs for routine backlog mutations, otherwise it hand-edits `data/backlog.md` until installation is approved and completed.
 An absent or too-old `quota-axi` reports `MISSING: quota-axi (install: npm install -g quota-axi)`; firstmate cannot resolve a profile array without a compatible binary.
 That floor exists because it is the first build reporting per-credential auth sources, without which a candidate cannot be judged against the authentication surface it actually uses.
-The `no-mistakes` and `tasks-axi` version probes are bounded, so a present-but-hung tool cannot stall session start.
-A probe that hits its bound reports `MISSING: <tool> (<tool> --version hung for <N>s)` instead of an install command, because reinstalling is not the remediation for a tool that is installed and not answering; tune the bounds with `FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT` and `FM_TASKS_AXI_VERSION_TIMEOUT` under "Environment variables" below.
+The `no-mistakes`, `tasks-axi`, and `quota-axi` version probes are bounded, so a present-but-hung tool cannot stall session start.
+A `no-mistakes`, `tasks-axi`, or `quota-axi` probe that hits its bound reports `MISSING: <tool> (<tool> --version hung for <N>s)` instead of an install command, because reinstalling is not the remediation for a tool that is installed and not answering; tune the bounds with `FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT`, `FM_TASKS_AXI_VERSION_TIMEOUT`, and `FM_QUOTA_AXI_VERSION_TIMEOUT` under "Environment variables" below.
 Bootstrap also reports a `TANGLE:` line when `FM_ROOT` is on a named non-default branch; follow the printed checkout remediation rather than treating it as an installable tool problem.
 In a read-only session that did not get the fleet lock, the same line is advisory and omits the checkout command.
 The locked session-start bootstrap step also runs a best-effort project clone refresh through `fm-fleet-sync.sh`.
@@ -495,6 +495,7 @@ FM_WATCH_TRIAGE_LOG_MAX_BYTES=262144   # size cap for the watcher's absorbed-wak
 FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT=     # optional seconds allowed for bootstrap's best-effort clone refresh; unset/blank defaults to max(20, 5 + 3 * origin-backed-project-count)
 FM_BOOTSTRAP_TOOL_VERSION_TIMEOUT=5   # seconds a bootstrap `<tool> --version` probe may run before it is reported as hung (see "Toolchain"); blank, non-numeric, or 0 falls back to 5
 FM_TASKS_AXI_VERSION_TIMEOUT=5        # same bound for the tasks-axi --version probe owned by bin/fm-tasks-axi-lib.sh; blank, non-numeric, or 0 falls back to 5
+FM_QUOTA_AXI_VERSION_TIMEOUT=10       # same bound for the quota-axi --version probe owned by bin/fm-quota-axi-lib.sh; blank, non-numeric, or 0 falls back to 10
 FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone
 FM_STALE_WORKTREE_LOCK_AGE_SECS=30       # min mtime age before fm-teardown.sh treats a leftover worktree git index.lock as provably stale
 FM_TREEHOUSE_RETURN_LOCK_RETRIES=3        # retries after a treehouse return fails on the transient git index.lock signature

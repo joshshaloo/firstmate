@@ -338,43 +338,63 @@ list_portable_serial_remainder() {
   done < <(all_repo_tests)
 }
 
+list_portable_serial_durations() {
+  # Emit "duration_ms<TAB>path" for every measured script row in the timing
+  # artifact. Only script objects carry "path", so family and summary objects
+  # are skipped without tracking JSON nesting.
+  awk '
+    /^[ \t]*"duration_ms"[ \t]*:/ {
+      v = $0
+      sub(/^.*"duration_ms"[ \t]*:[ \t]*/, "", v)
+      sub(/[^0-9].*$/, "", v)
+      dur = v
+      next
+    }
+    /^[ \t]*"path"[ \t]*:/ {
+      v = $0
+      sub(/^.*"path"[ \t]*:[ \t]*"/, "", v)
+      sub(/".*$/, "", v)
+      path = v
+      next
+    }
+    /^[ \t]*}/ {
+      if (path != "" && dur != "") printf "%s\t%s\n", dur, path
+      dur = ""
+      path = ""
+      next
+    }
+  ' "$1"
+}
+
 list_portable_serial_shard() {
-  local shard=$1 tmp
+  local shard=$1
   case "$shard" in
     1|2) ;;
     *) die "portable serial shard must be 1 or 2" ;;
   esac
   [ -f "$PORTABLE_SERIAL_TIMING_JSON" ] || die "portable serial timing artifact not found: $PORTABLE_SERIAL_TIMING_JSON"
-  command -v python3 >/dev/null 2>&1 || die "portable serial shard selection requires python3"
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-serial-shard.XXXXXX")
-  list_portable_serial_remainder >"$tmp/current"
-  python3 - "$PORTABLE_SERIAL_TIMING_JSON" "$tmp/current" "$shard" <<'PY'
-import json, sys
-from pathlib import Path
-
-timing_path = Path(sys.argv[1])
-current_path = Path(sys.argv[2])
-want = int(sys.argv[3]) - 1
-current = [line.strip() for line in current_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-doc = json.loads(timing_path.read_text(encoding="utf-8"))
-durations = {}
-for row in doc.get("scripts") or []:
-    path = row.get("path")
-    if path:
-        durations[path] = int(row.get("duration_ms") or 0)
-
-# Longest-processing-time balance from measured artifact durations.
-# New serial-remainder tests have duration 0 and still land automatically.
-lanes = [[], []]
-totals = [0, 0]
-for path in sorted(current, key=lambda p: (-durations.get(p, 0), p)):
-    idx = 0 if totals[0] <= totals[1] else 1
-    lanes[idx].append(path)
-    totals[idx] += durations.get(path, 0)
-for path in lanes[want]:
-    print(path)
-PY
-  rm -rf "$tmp"
+  # Longest-processing-time balance from measured artifact durations, in awk so
+  # lane listing and --check-coverage stay portable without python3.
+  # New serial-remainder tests have duration 0 and still land automatically.
+  awk -F'\t' -v current="$(list_portable_serial_remainder)" '
+    { dur[$2] = $1 + 0 }
+    END {
+      n = split(current, rows, "\n")
+      for (i = 1; i <= n; i++) {
+        p = rows[i]
+        if (p == "") continue
+        printf "%d\t%s\n", (p in dur ? dur[p] : 0), p
+      }
+    }
+  ' <(list_portable_serial_durations "$PORTABLE_SERIAL_TIMING_JSON") \
+    | LC_ALL=C sort -k1,1nr -k2,2 \
+    | awk -F'\t' -v want="$shard" '
+        {
+          idx = (total1 <= total2) ? 1 : 2
+          if (idx == 1) total1 += $1; else total2 += $1
+          if (idx == want) print $2
+        }
+      '
 }
 
 select_proven_isolated() {

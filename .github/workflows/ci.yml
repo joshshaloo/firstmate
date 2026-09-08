@@ -63,7 +63,7 @@ jobs:
           bin/fm-test-run.sh --lane portable-parallel-1 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
       - name: Enforce CI budget headroom
-        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json" 10
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
       - name: Upload shard 1 timing artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -97,7 +97,7 @@ jobs:
           bin/fm-test-run.sh --lane portable-parallel-2 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
       - name: Enforce CI budget headroom
-        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json" 10
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
       - name: Upload shard 2 timing artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -112,9 +112,11 @@ jobs:
   tests-portable-serial-1:
     name: Behavior portable serial 1
     runs-on: ubuntu-latest
-    # Measured serial shard is ~9.5 min wall without Herdr. Cap is a hang
+    # The unsplit serial remainder measured ~19.1 min wall (19m13s job) against
+    # this same 20m cap; each generated shard is now ~9.5 min. Cap is a hang
     # tripwire above observed p99 script cost and suite wall, not the expected
-    # healthy end (interim 25m full-suite slack reduced after sharding).
+    # healthy end. docs/fm-test-portable-shards.md records the before/after
+    # numbers. bin/fm-ci-budget-guard.sh reads this timeout-minutes directly.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -145,7 +147,7 @@ jobs:
           bin/fm-test-run.sh --lane portable-serial-1 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-1.json"
       - name: Enforce CI budget headroom
-        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-1.json" 20
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-1.json"
       - name: Upload portable serial timing artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -157,9 +159,11 @@ jobs:
   tests-portable-serial-2:
     name: Behavior portable serial 2
     runs-on: ubuntu-latest
-    # Measured serial remainder is now split into two generated shards. Cap is a hang
+    # The unsplit serial remainder measured ~19.1 min wall (19m13s job) against
+    # this same 20m cap; each generated shard is now ~9.5 min. Cap is a hang
     # tripwire above observed p99 script cost and suite wall, not the expected
-    # healthy end (interim 25m full-suite slack reduced after sharding).
+    # healthy end. docs/fm-test-portable-shards.md records the before/after
+    # numbers. bin/fm-ci-budget-guard.sh reads this timeout-minutes directly.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -190,7 +194,7 @@ jobs:
           bin/fm-test-run.sh --lane portable-serial-2 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-2.json"
       - name: Enforce CI budget headroom
-        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-2.json" 20
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-2.json"
       - name: Upload portable serial timing artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -297,7 +301,7 @@ jobs:
             --fail-on-gate-skip 'herdr not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
       - name: Enforce CI budget headroom
-        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json" 40
+        run: bin/fm-ci-budget-guard.sh "$RUNNER_TEMP/fm-test/fm-test-timing-herdr.json"
       - name: Cleanup job-owned Herdr lab sessions
         if: always()
         run: |

@@ -571,6 +571,59 @@ JSON
   pass "CI budget fraction is single-owned and enforced from timing JSON"
 }
 
+test_serial_shards_need_no_python3() {
+  local tmp out
+  fm_test_tmproot tmp fm-test-run-nopy3
+  mkdir -p "$tmp/bin"
+  cat >"$tmp/bin/python3" <<'SH'
+#!/bin/sh
+echo "python3 must not be required for lane selection" >&2
+exit 127
+SH
+  chmod +x "$tmp/bin/python3"
+  out=$(PATH="$tmp/bin:$PATH" "$RUNNER" --list --lane portable-serial-1) \
+    || { rm -rf "$tmp"; fail "serial shard listing must not invoke python3"; }
+  printf '%s\n' "$out" | grep -Fq 'tests/' \
+    || { rm -rf "$tmp"; fail "serial shard listing produced no scripts without python3"; }
+  out=$(PATH="$tmp/bin:$PATH" "$RUNNER" --check-coverage) \
+    || { rm -rf "$tmp"; fail "coverage guard must not invoke python3"; }
+  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard success without python3"
+  rm -rf "$tmp"
+  pass "serial shard selection and coverage guard stay portable without python3"
+}
+
+test_ci_budget_guard_path_and_timeout_sources() {
+  local tmp out rc
+  fm_test_tmproot tmp fm-test-run-budget-src
+  cat >"$tmp/timing.json" <<'JSON'
+{
+  "selection": "lane=fixture",
+  "summary": {"duration_ms": 4000, "failed": 0, "skipped_gate": 0, "total": 1},
+  "scripts": []
+}
+JSON
+  # Relative timing paths resolve against the caller's directory, not the repo root.
+  out=$(cd "$tmp" && "$ROOT/bin/fm-ci-budget-guard.sh" ./timing.json 1) \
+    || { rm -rf "$tmp"; fail "budget guard must accept a caller-relative timing path"; }
+  assert_contains "$out" "FM_CI_BUDGET ok" "relative timing path accepted"
+  # Omitted timeout comes from the running job's own workflow timeout-minutes.
+  out=$(GITHUB_JOB=tests-portable-serial-1 \
+    GITHUB_WORKFLOW_REF="owner/repo/.github/workflows/ci.yml@refs/heads/main" \
+    "$ROOT/bin/fm-ci-budget-guard.sh" "$tmp/timing.json") \
+    || { rm -rf "$tmp"; fail "budget guard must resolve timeout-minutes from the workflow job"; }
+  assert_contains "$out" "timeout_minutes=20" "workflow-sourced per-job timeout"
+  set +e
+  GITHUB_JOB='' GITHUB_WORKFLOW_REF='' "$ROOT/bin/fm-ci-budget-guard.sh" "$tmp/timing.json" \
+    >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "budget guard should refuse an unresolvable timeout, got $rc"; }
+  grep -Fq 'pass it explicitly' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "unresolvable timeout should say how to supply one: $(cat "$tmp/err")"; }
+  rm -rf "$tmp"
+  pass "budget guard keeps caller-relative paths and single-owns the per-job timeout"
+}
+
 test_aggregate_json() {
   local tmp a b
   fm_test_tmproot tmp fm-test-run-aggjson
@@ -627,5 +680,7 @@ test_exclude_family
 test_portable_shard_union_and_coverage_guard
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
+test_serial_shards_need_no_python3
 test_ci_budget_fraction_and_guard
+test_ci_budget_guard_path_and_timeout_sources
 test_aggregate_json

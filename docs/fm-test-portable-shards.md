@@ -55,18 +55,39 @@ The two parallel lanes use longest-processing-time assignment from those measure
 It keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap, live-harness opt-in, GUI-backend, and other unproven work serial.
 CI runs that remainder as `portable-serial-1` and `portable-serial-2`.
 Those two lanes are generated with longest-processing-time assignment from [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json), not from hand-maintained lane lists.
+Assignment is pure `awk` over the artifact, so lane listing and the coverage guard stay portable on hosts without `python3`.
 New serial-remainder tests with no recorded duration still land automatically in one serial shard, and the budget guard catches timing drift after they run.
 
-| Lane | Script count | Estimated duration from run 34169543250 |
-|---|---:|---:|
-| `portable-serial-1` | 33 | 570780 ms (~9.5 min) |
-| `portable-serial-2` | 35 | 570767 ms (~9.5 min) |
-| imbalance | | 13 ms |
+### Before and after
+
+Before this split, the whole remainder ran as one `Behavior portable serial` job against a 20-minute timeout.
+The tracked artifact records `summary.duration_ms` 1143564 for that single lane, and the job wall clock on main runs 34169543250, 34165091768, and 34162488434 was 19m13s, 19m17s, and 19m43s - roughly 96% of the budget, with cancellation rather than a test failure as the next outcome.
+
+| Lane | Script count | Duration | Share of 20 min |
+|---|---:|---:|---:|
+| `portable-serial` (before) | 68 | 1143564 ms (~19.1 min), job wall 19m13s | ~96% |
+| `portable-serial-1` (after) | 33 | 570780 ms (~9.5 min) | ~48% |
+| `portable-serial-2` (after) | 35 | 570767 ms (~9.5 min) | ~48% |
+| imbalance | | 13 ms | |
+
+The after figures are the shard sums generated from run 34169543250 durations, not a fresh measurement; the budget guard re-checks them against the real job duration on every run.
 
 ## Coverage guard
 
-`bin/fm-test-run.sh --check-coverage` verifies that both parallel lanes partition the proven-isolated set.
-It also verifies that the parallel lanes, portable serial lane, and real-Herdr family are disjoint and cover every `tests/*.test.sh` script.
+`bin/fm-test-run.sh --check-coverage` verifies that:
+
+- both parallel lanes partition the proven-isolated set;
+- the two generated serial shards are disjoint and their union equals the `portable-serial` remainder;
+- the parallel lanes, both serial shards, and the real-Herdr family are disjoint and cover every `tests/*.test.sh` script.
+
+## Refreshing the serial timing artifact
+
+When the budget guard reports timing drift, or the serial shards have absorbed enough unmeasured tests to skew, replace the measured-duration input:
+
+1. Take a green main run and download its `fm-test-timing-portable-serial-1` and `fm-test-timing-portable-serial-2` artifacts.
+2. Merge them with `bin/fm-test-run.sh --aggregate-json <out>`, or run `bin/fm-test-run.sh --lane portable-serial --json <out>` locally for a single-lane artifact. Shard assignment reads only the `scripts[].path` and `scripts[].duration_ms` rows, so either shape works.
+3. Copy the result over [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json), commit it, and update the Verification inputs and Before and after tables above with the new run id and shard sums.
+4. Confirm the reassignment with `bin/fm-test-run.sh --check-coverage`.
 
 ## Timing artifacts
 
@@ -90,3 +111,5 @@ Portable shards, the portable serial lanes, and the Herdr lane upload runner-gen
 Timeouts are hang tripwires rather than expected healthy durations.
 The CI test-lane guard fails when a timing artifact exceeds 3/4 of the job's timeout budget.
 `bin/fm-test-run.sh --ci-budget-fraction` is the single owner of that fraction, and `bin/fm-ci-budget-guard.sh` enforces it in the workflow.
+The per-job budget stays single-owned too: workflow steps call the guard with the timing artifact only, and the guard reads `timeout-minutes` for the running `$GITHUB_JOB` out of the workflow file, so raising a job's timeout moves its guard threshold with it.
+An explicit `fm-ci-budget-guard.sh <timing-json> <timeout-minutes>` second argument remains for local runs outside GitHub Actions.

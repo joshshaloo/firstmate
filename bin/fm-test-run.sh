@@ -339,40 +339,111 @@ list_portable_serial_remainder() {
 }
 
 list_portable_serial_durations() {
-  # Emit "duration_ms<TAB>path" for every measured script row in the timing
-  # artifact. Only script objects carry "path", so family and summary objects
-  # are skipped without tracking JSON nesting.
+  # Accepted portable-serial timing schema and refusal wording are owned here:
+  # a top-level JSON object must contain a top-level scripts array, and each
+  # scripts[] object must contain string path and numeric duration_ms fields.
+  # Extra fields are ignored; malformed or reshaped artifacts refuse before any
+  # shard row is emitted.
   awk '
-    /^[ \t]*"duration_ms"[ \t]*:/ {
-      v = $0
-      sub(/^.*"duration_ms"[ \t]*:[ \t]*/, "", v)
-      sub(/[^0-9].*$/, "", v)
-      dur = v
-      next
+    function fail(msg) {
+      if (!failed) printf "fm-test-run: portable serial timing artifact has unrecognized shape: %s\n", msg > "/dev/stderr"
+      failed = 1
     }
-    /^[ \t]*"path"[ \t]*:/ {
-      v = $0
-      sub(/^.*"path"[ \t]*:[ \t]*"/, "", v)
-      sub(/".*$/, "", v)
-      path = v
-      next
+    function trim(s) {
+      sub(/^[ \t]*/, "", s)
+      sub(/[ \t]*$/, "", s)
+      return s
     }
-    /^[ \t]*}/ {
-      if (path != "" && dur != "") printf "%s\t%s\n", dur, path
-      dur = ""
+    function finish_script() {
+      if (!in_obj) return
+      if (path == "") fail("scripts[] entry missing path")
+      if (dur == "") fail("scripts[] entry missing duration_ms")
+      if (!failed) {
+        count++
+        rows[count] = dur "\t" path
+      }
       path = ""
+      dur = ""
+      in_obj = 0
+    }
+    /^[ \t]*$/ { next }
+    {
+      line = trim($0)
+      if (!seen_first) {
+        seen_first = 1
+        if (line != "{") fail("expected top-level object")
+      }
+      if (failed) next
+      if (!seen_scripts && line ~ /^"scripts"[ \t]*:[ \t]*\[[ \t]*$/) {
+        seen_scripts = 1
+        in_scripts = 1
+        next
+      }
+      if (!seen_scripts && line ~ /^"scripts"[ \t]*:/) {
+        fail("top-level scripts must be an array")
+        next
+      }
+      if (!in_scripts) next
+      if (line == "]" || line == "],") {
+        if (in_obj) fail("scripts[] entry not closed before array end")
+        in_scripts = 0
+        next
+      }
+      if (line == "{" || line == "{,") {
+        if (in_obj) fail("nested scripts[] object")
+        in_obj = 1
+        path = ""
+        dur = ""
+        next
+      }
+      if (line == "}," || line == "}") {
+        finish_script()
+        next
+      }
+      if (!in_obj) {
+        fail("scripts array entries must be objects")
+        next
+      }
+      if (line ~ /^"path"[ \t]*:[ \t]*"[^"]*"[,]?$/) {
+        path = line
+        sub(/^"path"[ \t]*:[ \t]*"/, "", path)
+        sub(/"[,]?$/, "", path)
+        next
+      }
+      if (line ~ /^"duration_ms"[ \t]*:[ \t]*[0-9]+[,]?$/) {
+        dur = line
+        sub(/^"duration_ms"[ \t]*:[ \t]*/, "", dur)
+        sub(/[,]?$/, "", dur)
+        next
+      }
+      if (line ~ /^"duration_ms"[ \t]*:/) {
+        fail("scripts[] duration_ms must be numeric")
+        next
+      }
       next
+    }
+    END {
+      if (!failed && !seen_scripts) fail("missing top-level scripts array")
+      if (!failed && in_scripts) fail("scripts array is not closed")
+      if (!failed && count == 0) fail("scripts array is empty")
+      if (failed) exit 2
+      for (i = 1; i <= count; i++) print rows[i]
     }
   ' "$1"
 }
 
 list_portable_serial_shard() {
-  local shard=$1
+  local shard=$1 durations_tmp
   case "$shard" in
     1|2) ;;
     *) die "portable serial shard must be 1 or 2" ;;
   esac
   [ -f "$PORTABLE_SERIAL_TIMING_JSON" ] || die "portable serial timing artifact not found: $PORTABLE_SERIAL_TIMING_JSON"
+  durations_tmp=$(mktemp "${TMPDIR:-/tmp}/fm-test-serial-durations.XXXXXX")
+  if ! list_portable_serial_durations "$PORTABLE_SERIAL_TIMING_JSON" >"$durations_tmp"; then
+    rm -f "$durations_tmp"
+    exit 2
+  fi
   # Longest-processing-time balance from measured artifact durations, in awk so
   # lane listing and --check-coverage stay portable without python3.
   # New serial-remainder tests have duration 0 and still land automatically.
@@ -386,7 +457,7 @@ list_portable_serial_shard() {
         printf "%d\t%s\n", (p in dur ? dur[p] : 0), p
       }
     }
-  ' <(list_portable_serial_durations "$PORTABLE_SERIAL_TIMING_JSON") \
+  ' "$durations_tmp" \
     | LC_ALL=C sort -k1,1nr -k2,2 \
     | awk -F'\t' -v want="$shard" '
         {
@@ -395,6 +466,7 @@ list_portable_serial_shard() {
           if (idx == want) print $2
         }
       '
+  rm -f "$durations_tmp"
 }
 
 select_proven_isolated() {

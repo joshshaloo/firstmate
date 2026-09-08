@@ -571,6 +571,167 @@ JSON
   pass "CI budget fraction is single-owned and enforced from timing JSON"
 }
 
+init_serial_timing_fixture_repo() {
+  local repo=$1 script
+  mkdir -p "$repo/bin" "$repo/docs" "$repo/tests"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  chmod +x "$repo/bin/fm-test-run.sh"
+  for script in \
+    fm-afk-inject-e2e.test.sh \
+    fm-backend.test.sh \
+    fm-pr-check-security.test.sh; do
+    printf '#!/usr/bin/env bash\necho ok\n' >"$repo/tests/$script"
+    chmod +x "$repo/tests/$script"
+  done
+}
+
+test_serial_timing_parser_valid_artifact_reproduces_partition() {
+  local tmp repo serial1 serial2
+  fm_test_tmproot tmp fm-test-run-serial-valid
+  repo="$tmp/repo"
+  init_serial_timing_fixture_repo "$repo"
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+{
+  "selection": "lane=portable-serial",
+  "summary": {"total": 3, "failed": 0, "skipped_gate": 0, "duration_ms": 60},
+  "scripts": [
+    {
+      "duration_ms": 30,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "afk",
+      "gate_skip": false,
+      "path": "tests/fm-afk-inject-e2e.test.sh"
+    },
+    {
+      "duration_ms": 20,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "backend-dispatch",
+      "gate_skip": false,
+      "path": "tests/fm-backend.test.sh"
+    },
+    {
+      "duration_ms": 10,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pr-forge",
+      "gate_skip": false,
+      "path": "tests/fm-pr-check-security.test.sh"
+    }
+  ]
+}
+JSON
+  serial1=$(cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) \
+    || { rm -rf "$tmp"; fail "valid serial timing artifact should list shard 1"; }
+  serial2=$(cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-2) \
+    || { rm -rf "$tmp"; fail "valid serial timing artifact should list shard 2"; }
+  [ "$serial1" = "tests/fm-afk-inject-e2e.test.sh" ] \
+    || { rm -rf "$tmp"; fail "valid artifact changed shard 1 assignment: $serial1"; }
+  [ "$serial2" = "tests/fm-backend.test.sh
+tests/fm-pr-check-security.test.sh" ] \
+    || { rm -rf "$tmp"; fail "valid artifact changed shard 2 assignment: $serial2"; }
+  rm -rf "$tmp"
+  pass "valid serial timing artifact reproduces exact LPT partition"
+}
+
+test_serial_timing_parser_refuses_reshaped_artifacts() {
+  local tmp repo rc
+  fm_test_tmproot tmp fm-test-run-serial-bad
+  repo="$tmp/repo"
+  init_serial_timing_fixture_repo "$repo"
+
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+[
+  {
+    "path": "tests/fm-afk-inject-e2e.test.sh",
+    "duration_ms": 30
+  }
+]
+JSON
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "unexpected top-level shape should exit 2, got $rc"; }
+  [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "unexpected top-level shape must not emit partial shard list"; }
+  grep -Fq 'portable serial timing artifact has unrecognized shape: expected top-level object' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "top-level shape refusal not concrete: $(cat "$tmp/err")"; }
+
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+{
+  "selection": "lane=portable-serial",
+  "summary": {"total": 1},
+  "results": [
+    {"path": "tests/fm-afk-inject-e2e.test.sh", "duration_ms": 30}
+  ]
+}
+JSON
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "reshaped artifact should exit 2, got $rc"; }
+  [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "reshaped artifact must not emit partial shard list: $(cat "$tmp/out")"; }
+  grep -Fq 'portable serial timing artifact has unrecognized shape: missing top-level scripts array' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "missing scripts refusal not concrete: $(cat "$tmp/err")"; }
+
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+{
+  "scripts": [
+    {
+      "path": "tests/fm-afk-inject-e2e.test.sh"
+    }
+  ]
+}
+JSON
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "missing duration should exit 2, got $rc"; }
+  [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "missing duration must not emit partial shard list"; }
+  grep -Fq 'scripts[] entry missing duration_ms' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "missing duration refusal not concrete: $(cat "$tmp/err")"; }
+
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+{
+  "scripts": [
+    {
+      "duration_ms": "thirty",
+      "path": "tests/fm-afk-inject-e2e.test.sh"
+    }
+  ]
+}
+JSON
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "non-numeric duration should exit 2, got $rc"; }
+  [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "non-numeric duration must not emit partial shard list"; }
+  grep -Fq 'scripts[] duration_ms must be numeric' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "non-numeric duration refusal not concrete: $(cat "$tmp/err")"; }
+
+  cat >"$repo/docs/fm-test-portable-serial-timing.json" <<'JSON'
+{
+  "scripts": [
+  ]
+}
+JSON
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --lane portable-serial-1) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "empty scripts should exit 2, got $rc"; }
+  [ ! -s "$tmp/out" ] || { rm -rf "$tmp"; fail "empty scripts must not emit partial shard list"; }
+  grep -Fq 'scripts array is empty' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "empty scripts refusal not concrete: $(cat "$tmp/err")"; }
+
+  rm -rf "$tmp"
+  pass "serial timing parser refuses reshaped artifacts before emitting shards"
+}
+
 test_serial_shards_need_no_python3() {
   local tmp out
   fm_test_tmproot tmp fm-test-run-nopy3
@@ -680,6 +841,8 @@ test_exclude_family
 test_portable_shard_union_and_coverage_guard
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
+test_serial_timing_parser_valid_artifact_reproduces_partition
+test_serial_timing_parser_refuses_reshaped_artifacts
 test_serial_shards_need_no_python3
 test_ci_budget_fraction_and_guard
 test_ci_budget_guard_path_and_timeout_sources

@@ -78,32 +78,22 @@ run_autoarm() {
 }
 
 # Fixture prelude for the variants that must leave a watcher this home's health
-# predicate accepts. The fake watcher records its OWN identity after the fork and
-# never execs, so no pre-exec cmdline can be captured and the recorded identity
-# stays valid for every later recheck. publish_fake_watcher returns only once the
-# lock is complete, so the arm's status line can never race the recheck.
+# predicate accepts. It uses the already-live fake Claude harness process as the
+# synthetic watcher holder, so these tests add no sleeps, poll waits, or child
+# watcher processes while still exercising the real pid-identity predicate.
 FAKE_WATCHER_PRELUDE='
 publish_fake_watcher() {
-  local lock="$FM_HOME/state/.watch.lock" ready="$FM_HOME/state/.fake-watcher-ready" i=0 previous
-  previous=$(cat "$FM_HOME/state/healthy-watcher-pid" 2>/dev/null || true)
-  [ -z "$previous" ] || kill "$previous" 2>/dev/null || true
-  rm -f "$ready"
+  local lock="$FM_HOME/state/.watch.lock" watcher
+  watcher=$(cat "$FM_HOME/state/.lock" 2>/dev/null || true)
+  . "$FM_HOME/bin/fm-wake-lib.sh"
+  fm_pid_alive "$watcher" || return 1
   mkdir -p "$lock"
-  (
-    . "$FM_HOME/bin/fm-wake-lib.sh"
-    printf "%s\n" "$BASHPID" > "$lock/pid"
-    printf "%s\n" "$FM_HOME" > "$lock/fm-home"
-    printf "%s/bin/fm-watch.sh\n" "$FM_HOME" > "$lock/watcher-path"
-    fm_pid_identity "$BASHPID" > "$lock/pid-identity"
-    touch "$FM_HOME/state/.last-watcher-beat"
-    printf "%s\n" "$BASHPID" > "$FM_HOME/state/healthy-watcher-pid"
-    : > "$ready"
-    while :; do sleep 0.5; done
-  ) &
-  while [ ! -e "$ready" ] && [ "$i" -lt 200 ]; do
-    sleep 0.05
-    i=$((i + 1))
-  done
+  printf "%s\n" "$watcher" > "$lock/pid"
+  printf "%s\n" "$FM_HOME" > "$lock/fm-home"
+  printf "%s/bin/fm-watch.sh\n" "$FM_HOME" > "$lock/watcher-path"
+  fm_pid_identity "$watcher" > "$lock/pid-identity"
+  touch "$FM_HOME/state/.last-watcher-beat"
+  printf "%s\n" "$watcher" > "$FM_HOME/state/healthy-watcher-pid"
 }
 
 arm_run_count() {
@@ -448,12 +438,6 @@ test_failed_close_rewakes_with_failure_banner() {
   pass "auto-arm: watcher: FAILED translates to an exit-2 alarm rewake"
 }
 
-kill_fake_watcher() {
-  local watcher
-  watcher=$(cat "$1/state/healthy-watcher-pid" 2>/dev/null || true)
-  [ -z "$watcher" ] || kill "$watcher" 2>/dev/null || true
-}
-
 arm_runs() {
   wc -l < "$1/state/arm-ran" 2>/dev/null | tr -d '[:space:]'
 }
@@ -471,7 +455,6 @@ test_absorbed_wake_reattaches_to_surviving_watcher() {
   write_arm_fixture "$dir" absorbed-healthy-race
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   watcher=$(cat "$dir/state/healthy-watcher-pid" 2>/dev/null || true)
-  kill_fake_watcher "$dir"
   [ -n "$watcher" ] || fail "fixture published no surviving watcher"
   [ "$(arm_runs "$dir")" = 2 ] || fail "a healthy verdict must re-arm exactly once, arm ran $(arm_runs "$dir") time(s)"
   [ "$(cat "$dir/state/arm-attached" 2>/dev/null || true)" = "$watcher" ] \
@@ -490,7 +473,6 @@ test_consecutive_absorbed_wakes_keep_re_attaching() {
   write_arm_fixture "$dir" absorbed-healthy-double-race
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   watcher=$(cat "$dir/state/healthy-watcher-pid" 2>/dev/null || true)
-  kill_fake_watcher "$dir"
   [ -n "$watcher" ] || fail "fixture published no surviving watcher"
   [ "$(arm_runs "$dir")" = 3 ] || fail "two consecutive absorbed-wake closes must re-arm twice, arm ran $(arm_runs "$dir") time(s)"
   [ "$(tail -1 "$dir/state/arm-attached" 2>/dev/null || true)" = "$watcher" ] \
@@ -509,7 +491,6 @@ test_rearm_bound_exhaustion_takes_the_alarm_path() {
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" absorbed-healthy-bound-exhausted
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  kill_fake_watcher "$dir"
   [ "$(arm_runs "$dir")" = "$((max + 1))" ] \
     || fail "an unending absorbed-wake chain must stop after $max re-arms, arm ran $(arm_runs "$dir") time(s)"
   expect_code 2 "$status" "an exhausted re-arm bound must fall back to the failure alarm"
@@ -528,7 +509,6 @@ test_healthy_verdict_alarms_when_reattach_is_unconfirmed() {
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" absorbed-healthy-reattach-unconfirmed
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  kill_fake_watcher "$dir"
   [ "$(arm_runs "$dir")" = 2 ] || fail "a healthy verdict must re-arm exactly once, arm ran $(arm_runs "$dir") time(s)"
   expect_code 2 "$status" "a re-arm that proves no watcher must fall back to the failure alarm"
   assert_contains "$out" "watcher cycle FAILED" "an unconfirmed re-attach must carry the failure banner"
@@ -542,7 +522,6 @@ test_unknown_nonzero_with_live_watcher_still_rewakes() {
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" unknown-nonzero-healthy
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  kill_fake_watcher "$dir"
   [ "$(arm_runs "$dir")" = 1 ] || fail "an untyped nonzero close must not re-arm, arm ran $(arm_runs "$dir") time(s)"
   expect_code 2 "$status" "an untyped nonzero close must remain a failure even if a watcher later appears healthy"
   assert_contains "$out" "watcher cycle FAILED" "unknown nonzero close must still carry the failure banner"

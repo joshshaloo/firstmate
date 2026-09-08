@@ -31,9 +31,8 @@ The `projects:` field is a non-exclusive clone list, not ownership.
 A remote row form with `host:` and `root:` fields is recognized by `bin/fm-secondmate-registry-lib.sh` solely as parser-only tolerance so the standup reader can report such entries without following them.
 No firstmate path provisions, spawns, or syncs a remote secondmate.
 `bin/fm-secondmate-registry-lib.sh` owns the single refusal wording for a local-home resolution attempt against such a row: `remote secondmate rows are parser-only tolerance; local home resolution is unsupported`.
-It is published as `secondmate_registry_remote_refusal` for resolvers that adopt the shared parser, and no resolver emits it yet.
-Every local-home resolver (`bin/fm-ff-lib.sh`, `bin/fm-spawn.sh`, `bin/fm-backlog-handoff.sh`, `bin/fm-public-followup.sh`, `bin/fm-teardown.sh`, `bin/fm-update.sh`, `bin/fm-home-seed.sh`) still extracts the home with private patterns and misses a remote row only incidentally, because those patterns require a literal `(home:` that the remote form never spells; they emit a generic missing-home error or skip the row silently, never the parser-owned wording.
-Migrating those resolvers and the seed validator onto the shared parser is tracked in `firstmate-registry-resolvers-adopt-shared-parser`.
+The `added` date must be zero-padded `YYYY-MM-DD`, and every reader refuses a row whose date is not.
+Migrating the remaining display-only resolvers and the seed validator onto the shared parser is tracked in `firstmate-registry-resolvers-adopt-shared-parser`.
 
 ## Charter and seed
 

@@ -727,11 +727,39 @@ SH
 # than a comfortable local one. Cases that need a different bound pass
 # FM_TEST_WATCH_TIMEOUT, like the FM_TEST_CHECK_INTERVAL and FM_TEST_WATCH_ROOT
 # seams beside it.
+# The child runs in its own process group so the timeout reaps only processes
+# spawned by this watcher fixture, by pid or pid-derived process group.
 run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
   local watch_timeout=${FM_TEST_WATCH_TIMEOUT:-30}
   shift 2
-  perl -e 'my $timeout=shift; my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm $timeout; waitpid $pid, 0; alarm 0; exit($? >> 8)' "$watch_timeout" \
+  perl -e '
+    my $timeout = shift;
+    my $pid = fork;
+    die "fork failed\n" unless defined $pid;
+    if (!$pid) {
+      setpgrp(0, 0) or die "setpgrp failed: $!\n";
+      exec @ARGV;
+      die "exec failed: $!\n";
+    }
+    my $stop = sub {
+      local $SIG{ALRM} = "IGNORE";
+      kill "TERM", -$pid;
+      kill "TERM", $pid;
+      select undef, undef, undef, 0.2;
+      kill "KILL", -$pid;
+      kill "KILL", $pid;
+      waitpid $pid, 0;
+      print STDERR "watcher fixture exceeded ${timeout}s and was terminated by pid $pid\n";
+      exit 124;
+    };
+    local $SIG{ALRM} = $stop;
+    alarm $timeout;
+    waitpid $pid, 0;
+    my $status = $?;
+    alarm 0;
+    exit($status >> 8);
+  ' "$watch_timeout" \
     env FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT=1 \
       FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "$WATCH" "$@"
 }

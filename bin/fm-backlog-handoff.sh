@@ -70,8 +70,17 @@ secondmate_home() {
   [ -f "$REG" ] || { echo "error: no secondmate registry at $REG" >&2; return 1; }
   line=$(grep -E "^- $id( |$)" "$REG" | tail -1 || true)
   [ -n "$line" ] || { echo "error: secondmate $id is not registered in $REG" >&2; return 1; }
-  if ! secondmate_registry_parse_line "$line"; then
+  local status=0
+  secondmate_registry_parse_line "$line" || status=$?
+  # The owner distinguishes its two refusals: status 2 is a row it cannot read,
+  # any other non-zero status is a registered row carrying no structured home
+  # field, which keeps its own long-standing wording.
+  if [ "$status" -eq 2 ]; then
     echo "error: secondmate $id is $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" >&2
+    return 1
+  fi
+  if [ "$status" -ne 0 ]; then
+    echo "error: secondmate $id has no home in $REG" >&2
     return 1
   fi
   if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then

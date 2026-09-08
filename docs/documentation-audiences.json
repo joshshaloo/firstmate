@@ -256,10 +256,6 @@
       "audience": "operator-current"
     },
     {
-      "path": "docs/verification/forge-merge-watch.md",
-      "audience": "maintainer-verification"
-    },
-    {
       "path": "docs/orca-backend.md",
       "audience": "operator-current"
     },
@@ -309,6 +305,10 @@
     },
     {
       "path": "docs/verification/dispatch-auth.md",
+      "audience": "maintainer-verification"
+    },
+    {
+      "path": "docs/verification/forge-merge-watch.md",
       "audience": "maintainer-verification"
     },
     {

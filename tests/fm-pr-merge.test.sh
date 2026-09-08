@@ -29,7 +29,14 @@ make_case() {
   local name=$1 case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/user/.config/firstmate" "$fakebin"
+  cat > "$case_dir/user/.config/firstmate/bkt.env" <<'ENV'
+BKT_HOST=https://bitbucket.org
+BKT_USERNAME=test@example.invalid
+BKT_TOKEN=test-token-not-secret
+BKT_AUTH_METHOD=basic
+ENV
+  chmod 0600 "$case_dir/user/.config/firstmate/bkt.env"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
@@ -84,12 +91,39 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
+add_bkt_mock() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/bkt" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_BKT_LOG"
+[ "${FM_TEST_BKT_FAIL:-0}" = 0 ] || exit 1
+case "${1:-} ${2:-}" in
+  "api"*)
+    case "${2:-}" in
+      */pullrequests/*)
+        printf '%s\n' '{"state":"OPEN","source":{"branch":{"name":"feature/bitbucket"},"commit":{"hash":"bbbbbbbbbbbb"}},"destination":{"branch":{"name":"main"}}}'
+        ;;
+      */commit/*)
+        printf '%s\n' '{"hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+        ;;
+      *) printf '{}\n' ;;
+    esac
+    ;;
+  "pr merge")
+    exit "${FM_TEST_BKT_MERGE_RC:-0}"
+    ;;
+  *) printf '{"statuses":[]}\n' ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/bkt"
+}
+
 run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
-  PATH="$case_dir/fakebin:$PATH" \
+  FM_TEST_BKT_LOG="$case_dir/bkt.log" HOME="$case_dir/user" PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
   rc=$?
   if [ "${case_dir##*/}" = unsafe-url-segment ] && [ "$rc" -eq 2 ]; then
@@ -301,6 +335,51 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_bitbucket_merge_records_and_merges() {
+  local case_dir
+  case_dir=$(make_case bitbucket-merge)
+  add_bkt_mock "$case_dir"
+  : > "$case_dir/bkt.log"
+
+  run_pr_merge "$case_dir" task-x1 https://bitbucket.org/acme/widgets/pull-requests/77 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "bitbucket-merge: fm-pr-merge failed"
+
+  assert_grep 'pr=https://bitbucket.org/acme/widgets/pull-requests/77' "$case_dir/state/task-x1.meta" \
+    "bitbucket-merge: pr= was not recorded"
+  assert_grep 'pr_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$case_dir/state/task-x1.meta" \
+    "bitbucket-merge: full Bitbucket pr_head= was not recorded"
+  assert_grep 'landing_branch=main' "$case_dir/state/task-x1.meta" \
+    "bitbucket-merge: target branch was not recorded"
+  grep -qxF 'pr merge 77 --workspace acme --repo widgets --strategy squash' "$case_dir/bkt.log" \
+    || fail "bitbucket-merge: bkt pr merge was not invoked with derived workspace/repo and default strategy"
+  pass "fm-pr-merge records Bitbucket metadata before invoking bkt pr merge"
+}
+
+test_bitbucket_merge_explicit_strategy_and_failure() {
+  local case_dir rc
+  case_dir=$(make_case bitbucket-strategy)
+  add_bkt_mock "$case_dir"
+  : > "$case_dir/bkt.log"
+
+  run_pr_merge "$case_dir" task-x1 https://bitbucket.org/acme/widgets/pull-requests/78 -- --strategy fast_forward \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "bitbucket-strategy: fm-pr-merge failed"
+  grep -qxF 'pr merge 78 --workspace acme --repo widgets --strategy fast_forward' "$case_dir/bkt.log" \
+    || fail "bitbucket-strategy: explicit strategy was not forwarded without default squash"
+
+  case_dir=$(make_case bitbucket-fails)
+  add_bkt_mock "$case_dir"
+  : > "$case_dir/bkt.log"
+  set +e
+  FM_TEST_BKT_MERGE_RC=1 run_pr_merge "$case_dir" task-x1 https://bitbucket.org/acme/widgets/pull-requests/79 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "bitbucket-fails: fm-pr-merge should propagate bkt merge failure"
+  assert_grep 'pr=https://bitbucket.org/acme/widgets/pull-requests/79' "$case_dir/state/task-x1.meta" \
+    "bitbucket-fails: pr= should already be recorded even though merge failed"
+  pass "fm-pr-merge preserves explicit Bitbucket strategies and propagates merge failures"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -311,3 +390,5 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_bitbucket_merge_records_and_merges
+test_bitbucket_merge_explicit_strategy_and_failure

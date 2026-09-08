@@ -55,7 +55,14 @@ make_case() {
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
   fake_root="$dir/root"
-  mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
+  mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/user/.config/firstmate" "$dir/wt" "$fakebin" "$fake_root/bin"
+  cat > "$dir/user/.config/firstmate/bkt.env" <<'ENV'
+BKT_HOST=https://bitbucket.org
+BKT_USERNAME=test@example.invalid
+BKT_TOKEN=test-token-not-secret
+BKT_AUTH_METHOD=basic
+ENV
+  chmod 0600 "$dir/user/.config/firstmate/bkt.env"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
@@ -87,10 +94,55 @@ printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
-  chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
+  cat > "$fakebin/bkt" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_BKT_LOG"
+[ "${FM_TEST_BKT_FAIL:-0}" = 0 ] || exit 1
+case "${1:-} ${2:-}" in
+  "api"*)
+    case "${2:-}" in
+      */pullrequests/*)
+        if [ -n "${FM_TEST_BKT_PR_JSON:-}" ]; then
+          printf '%s\n' "$FM_TEST_BKT_PR_JSON"
+        else
+          printf '%s\n' '{"state":"OPEN","source":{"branch":{"name":"feature/bitbucket"},"commit":{"hash":"bbbbbbbbbbbb"}},"destination":{"branch":{"name":"main"}}}'
+        fi
+        ;;
+      */commit/*)
+        if [ -n "${FM_TEST_BKT_COMMIT_JSON:-}" ]; then
+          printf '%s\n' "$FM_TEST_BKT_COMMIT_JSON"
+        else
+          printf '%s\n' '{"hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+        fi
+        ;;
+      *) printf '{}\n' ;;
+    esac
+    ;;
+  "pr checks")
+    if [ -n "${FM_TEST_BKT_CHECKS_JSON:-}" ]; then
+      printf '%s\n' "$FM_TEST_BKT_CHECKS_JSON"
+    else
+      printf '%s\n' '{"commit":"bbbbbbbbbbbb","statuses":[]}'
+    fi
+    ;;
+  "pr merge")
+    exit "${FM_TEST_BKT_MERGE_RC:-0}"
+    ;;
+  "pipeline list")
+    if [ -n "${FM_TEST_BKT_PIPELINES_JSON:-}" ]; then
+      printf '%s\n' "$FM_TEST_BKT_PIPELINES_JSON"
+    else
+      printf '%s\n' '{"pipelines":[]}'
+    fi
+    ;;
+  *) printf '{}\n' ;;
+esac
+SH
+  chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab" "$fakebin/bkt"
   : > "$dir/gh.log"
   : > "$dir/gh-axi.log"
   : > "$dir/glab.log"
+  : > "$dir/bkt.log"
   : > "$dir/guard.log"
   printf '%s\n' "$dir"
 }
@@ -238,7 +290,7 @@ run_check_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
-    PATH="$dir/fakebin:$BASE_PATH" \
+    FM_TEST_BKT_LOG="$dir/bkt.log" HOME="$dir/user" PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" "$@"
 }
 
@@ -248,7 +300,7 @@ run_merge_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
-    PATH="$dir/fakebin:$BASE_PATH" \
+    FM_TEST_BKT_LOG="$dir/bkt.log" HOME="$dir/user" PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
 }
 
@@ -271,6 +323,20 @@ INVALID_URLS=(
   'https://.gitlab.com/g/p/-/merge_requests/1'
   'https://gitlab.com./g/p/-/merge_requests/1'
   'http://gitlab.com/g/p/-/merge_requests/1'
+  'https://bitbucket.org/w/r/pull-requests/0'
+  'https://bitbucket.org/w/r/pull-requests/01'
+  'https://Bitbucket.org/w/r/pull-requests/1'
+  'https://bitbucket.org/w/r/pull-requests/1/'
+  'https://bitbucket.org/w/r/pull-requests/1?x=1'
+  'https://bitbucket.org/w/r/pull/1'
+  'https://bitbucket.org/w/r/pullrequests/1'
+  'https://bitbucket.org/w/.git/pull-requests/1'
+  'https://bitbucket.org/-w/r/pull-requests/1'
+  'https://bitbucket.org/w/r/x/pull-requests/1'
+  'https://bitbucket.org//r/pull-requests/1'
+  'https://bitbucket.org:443/w/r/pull-requests/1'
+  'https://user@bitbucket.org/w/r/pull-requests/1'
+  'http://bitbucket.org/w/r/pull-requests/1'
   'https://github.com/o/r/pull/1/'
   ' https://github.com/o/r/pull/1'
   'https://github.com/o/r/pull/1 '
@@ -406,6 +472,20 @@ https://gitlab.com/group/project/-/merge_requests/1|gitlab.com|group/project|1
 https://gitlab.com/group/sub/deep/project/-/merge_requests/42|gitlab.com|group/sub/deep/project|42
 https://gitlab.example.co.uk/g/p/-/merge_requests/7|gitlab.example.co.uk|g/p|7
 https://code.internal/team/tools/ci-runner/-/merge_requests/123456|code.internal|team/tools/ci-runner|123456
+EOF
+  while IFS='|' read -r url workspace repo number; do
+    [ -n "$url" ] || continue
+    fm_pr_url_parse "$url" || fail "parser rejected a canonical Bitbucket pull request URL"
+    [ "$FM_PR_PROVIDER" = bitbucket ] || fail "parser did not tag a Bitbucket pull request URL as bitbucket"
+    [ "$FM_PR_URL" = "$url" ] || fail "parser changed a canonical Bitbucket pull request URL"
+    [ "$FM_PR_HOST" = bitbucket.org ] || fail "parser returned wrong Bitbucket host"
+    [ "$FM_PR_PATH" = "$workspace/$repo" ] || fail "parser returned wrong Bitbucket path"
+    [ "$FM_PR_OWNER" = "$workspace" ] || fail "parser returned wrong Bitbucket workspace"
+    [ "$FM_PR_REPO" = "$repo" ] || fail "parser returned wrong Bitbucket repository"
+    [ "$FM_PR_NUMBER" = "$number" ] || fail "parser returned wrong Bitbucket PR number"
+  done <<'EOF'
+https://bitbucket.org/acme/widgets/pull-requests/1|acme|widgets|1
+https://bitbucket.org/team-space/repo_name.with-dots/pull-requests/42|team-space|repo_name.with-dots|42
 EOF
   fm_pr_url_parse https://github.com/a/b/pull/1 || fail "parser rejected canonical URL"
   [ "$FM_PR_PROVIDER" = github ] || fail "parser did not tag a pull request URL as github"
@@ -705,7 +785,7 @@ make_poll_fixture() {
 run_poll() {
   local dir=$1
   FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
-    PATH="$dir/fakebin:$BASE_PATH" \
+    FM_TEST_BKT_LOG="$dir/bkt.log" HOME="$dir/user" PATH="$dir/fakebin:$BASE_PATH" \
     bash "$dir/home/state/task-a.check.sh"
 }
 
@@ -2885,6 +2965,127 @@ EOF
   pass "GitLab merge requests are followed on any instance and never wake falsely"
 }
 
+# Bitbucket Cloud PRs use the same authenticated static poll publication as the
+# other forges, while their remote reads go through bkt with environment-backed
+# credentials. The JSON fixtures mirror bkt's Cloud output shape.
+test_bitbucket_cloud_watch() {
+  local dir state out rc url sidecar nobkt entry bindir name
+  dir=$(make_case bitbucket-cloud-watch)
+  state="$dir/home/state"
+  url=https://bitbucket.org/acme/widgets/pull-requests/7
+
+  write_task_meta "$dir" task-b
+  run_check_entry "$dir" task-b "$url" > "$dir/check.out" 2> "$dir/check.err" \
+    || fail "Bitbucket arming failed: $(cat "$dir/check.err")"
+  grep -qxF "pr=$url" "$state/task-b.meta" || fail "Bitbucket pr metadata was not exact"
+  grep -qxF 'pr_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$state/task-b.meta" \
+    || fail "Bitbucket pr_head metadata was not exact"
+  grep -qxF 'landing_branch=main' "$state/task-b.meta" \
+    || fail "Bitbucket landing branch metadata was not exact"
+  fm_pr_poll_artifacts_valid "$state" task-b "$POLL" \
+    || fail "Bitbucket poll provenance or metadata binding was invalid"
+  sidecar=$(cat "$state/task-b.pr-poll")
+  [ "$sidecar" = $'bitbucket\nhttps://bitbucket.org/acme/widgets/pull-requests/7\nbitbucket.org\nacme/widgets\n7' ] \
+    || fail "Bitbucket sidecar bytes were not exact"
+
+  cp "$POLL" "$state/task-a.check.sh"
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" bitbucket.org acme/widgets 7 \
+    > "$state/task-a.pr-poll"
+  chmod 0600 "$state/task-a.check.sh" "$state/task-a.pr-poll"
+
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[{"state":"SUCCESSFUL","name":"buildkite"}]}' run_poll "$dir")
+  [ "$out" = green ] || fail "Bitbucket poll did not emit green for successful statuses: $out"
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[{"state":"FAILED","name":"unit tests"}]}' run_poll "$dir")
+  [ "$out" = 'red: unit tests FAILED' ] || fail "Bitbucket poll did not name the failing build: $out"
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[{"state":"INPROGRESS","name":"unit tests"}]}' run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted while a build was still running"
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[]}' \
+    FM_TEST_BKT_PIPELINES_JSON='{"pipelines":[{"build_number":22,"state":{"result":{"name":"SUCCESSFUL"}},"target":{"ref":{"name":"feature/bitbucket"}}}]}' \
+    run_poll "$dir")
+  [ "$out" = green ] || fail "Bitbucket poll did not fall back to a successful source-branch pipeline: $out"
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[]}' \
+    FM_TEST_BKT_PIPELINES_JSON='{"pipelines":[{"build_number":23,"state":{"result":{"name":"FAILED"}},"target":{"ref":{"name":"feature/bitbucket"}}}]}' \
+    run_poll "$dir")
+  [ "$out" = 'red: pipeline 23 FAILED' ] || fail "Bitbucket pipeline fallback did not name the failing run: $out"
+  out=$(FM_TEST_BKT_PR_JSON='{"state":"MERGED","source":{"branch":{"name":"feature/bitbucket"},"commit":{"hash":"bbbbbbbbbbbb"}},"destination":{"branch":{"name":"main"}}}' run_poll "$dir")
+  [ "$out" = merged ] || fail "Bitbucket poll did not emit merged for a merged pull request: $out"
+
+  grep -qF -- 'pr checks 7 --json --workspace acme --repo widgets' "$dir/bkt.log" \
+    || fail "Bitbucket checks were not addressed by workspace and repository"
+  grep -qF -- 'api /repositories/acme/widgets/pullrequests/7 --json' "$dir/bkt.log" \
+    || fail "Bitbucket PR details were not read from the canonical workspace and repository"
+
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" evil.example acme/widgets 7 \
+    > "$state/task-a.pr-poll"
+  out=$(FM_TEST_BKT_PR_JSON='{"state":"MERGED"}' run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted for a sidecar whose host was swapped"
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" bitbucket.org acme/other 7 \
+    > "$state/task-a.pr-poll"
+  out=$(FM_TEST_BKT_PR_JSON='{"state":"MERGED"}' run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted for a sidecar whose repository was swapped"
+
+  rm -f "$dir/user/.config/firstmate/bkt.env"
+  write_task_meta "$dir" task-c
+  set +e
+  out=$(run_check_entry "$dir" task-c "$url" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "Bitbucket arming succeeded with no environment-backed auth"
+  case "$out" in
+    *"BKT_HOST=https://bitbucket.org"*"BKT_USERNAME"*"BKT_TOKEN"*"BKT_AUTH_METHOD=basic"*|*"BKT_USERNAME"*"BKT_TOKEN"*"BKT_HOST=https://bitbucket.org"*"BKT_AUTH_METHOD=basic"*) ;;
+    *) fail "Bitbucket arming did not report the missing bkt environment: $out" ;;
+  esac
+  [ ! -e "$state/task-c.check.sh" ] || fail "refused Bitbucket arming left a poll armed"
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" bitbucket.org acme/widgets 7 \
+    > "$state/task-a.pr-poll"
+  out=$(run_poll "$dir")
+  case "$out" in bitbucket-auth-missing:*) ;; *) fail "Bitbucket poll did not surface missing environment-backed auth" ;; esac
+
+  cat > "$dir/user/.config/firstmate/bkt.env" <<'ENV'
+BKT_HOST=https://bitbucket.org
+BKT_USERNAME=test@example.invalid
+BKT_TOKEN=test-token-not-secret
+BKT_AUTH_METHOD=basic
+ENV
+  chmod 0600 "$dir/user/.config/firstmate/bkt.env"
+  nobkt="$dir/nobkt"
+  mkdir -p "$nobkt"
+  while IFS= read -r bindir; do
+    [ -d "$bindir" ] || continue
+    for entry in "$bindir"/*; do
+      [ -e "$entry" ] || continue
+      name=$(basename "$entry")
+      [ "$name" = bkt ] && continue
+      [ -e "$nobkt/$name" ] || ln -s "$entry" "$nobkt/$name" 2>/dev/null
+    done
+  done <<EOF
+$dir/fakebin
+$(printf '%s\n' "$BASE_PATH" | tr ':' '\n')
+EOF
+  write_task_meta "$dir" task-d
+  set +e
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" HOME="$dir/user" \
+    FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_BKT_LOG="$dir/bkt.log" PATH="$nobkt" \
+    "$PR_CHECK" task-d "$url" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "Bitbucket arming succeeded with bkt absent"
+  case "$out" in *"requires bkt on PATH"*) ;; *) fail "Bitbucket arming did not report missing bkt" ;; esac
+
+  : > "$dir/bkt.log"
+  run_merge_entry "$dir" task-b "$url" > "$dir/merge.out" 2> "$dir/merge.err" \
+    || fail "Bitbucket merge wrapper failed: $(cat "$dir/merge.err")"
+  grep -qxF 'pr merge 7 --workspace acme --repo widgets --strategy squash' "$dir/bkt.log" \
+    || fail "Bitbucket merge wrapper did not derive workspace, repository, and default strategy"
+  : > "$dir/bkt.log"
+  run_merge_entry "$dir" task-b "$url" -- --strategy fast_forward > /dev/null 2> "$dir/merge-strategy.err" \
+    || fail "Bitbucket merge wrapper rejected an explicit strategy: $(cat "$dir/merge-strategy.err")"
+  grep -qxF 'pr merge 7 --workspace acme --repo widgets --strategy fast_forward' "$dir/bkt.log" \
+    || fail "Bitbucket merge wrapper did not preserve an explicit strategy"
+
+  pass "Bitbucket Cloud pull requests are armed, checked, merged, and never wake falsely"
+}
+
 seed_canonical_poll() {
   local dir=$1 id=$2 url=$3 template=${4:-$POLL} state provider host path number
   state="$dir/home/state"
@@ -3327,6 +3528,7 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_gitlab_merge_watch
+test_bitbucket_cloud_watch
 test_merged_poll_retires_once
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery

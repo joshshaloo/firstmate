@@ -4,8 +4,9 @@
 # exposes the PR base branch, then atomically arm a static merge poll.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
-# A GitHub pull request URL and a GitLab merge request URL are both accepted,
-# including a merge request on a self-hosted GitLab instance.
+# A GitHub pull request URL, a GitLab merge request URL, and a Bitbucket Cloud
+# pull request URL are accepted, including a merge request on a self-hosted
+# GitLab instance.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -48,13 +49,27 @@ fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh" || 
   exit 1
 }
 
-# Refuse to arm a GitLab watch with no glab on PATH. The poll is silent on
-# every error by design, so a missing CLI would be indistinguishable from a
-# merge request that is never merged. Arming is the one point where that can be
-# reported, so the absent tool stops the watch here instead of watching nothing.
+# Refuse to arm forge watches whose standard CLI or authenticated context is
+# absent. The poll is silent on ordinary forge read errors by design, so arming
+# is the one point where a missing local requirement can be reported instead of
+# watching nothing.
 if [ "$PROVIDER" = gitlab ] && ! command -v glab >/dev/null 2>&1; then
   echo "error: watching a GitLab merge request requires glab on PATH" >&2
   exit 1
+fi
+if [ "$PROVIDER" = bitbucket ]; then
+  if ! command -v bkt >/dev/null 2>&1; then
+    echo "error: watching a Bitbucket pull request requires bkt on PATH" >&2
+    exit 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "error: watching a Bitbucket pull request requires jq on PATH" >&2
+    exit 1
+  fi
+  if ! fm_pr_bkt_auth_ready; then
+    echo "error: watching a Bitbucket pull request requires $FM_PR_BKT_AUTH_MISSING in the environment or ~/.config/firstmate/bkt.env" >&2
+    exit 1
+  fi
 fi
 
 # Neutralize any pre-fix poll before recording or arming this task. The
@@ -63,14 +78,15 @@ fi
 "$SCRIPT_DIR/fm-pr-check-migrate.sh" --checks-safe || exit 1
 "$FM_ROOT/bin/fm-guard.sh" || true
 
-# pr_head and landing_branch are recorded only when the forge's CLI can supply
-# them. gh exposes both the head commit and base branch as selectable fields;
-# plain glab exposes equivalent data only inside its JSON output, which would
-# need a JSON processor firstmate does not require, so a GitLab task records
-# neither field. Consumers treat both as optional: bin/fm-teardown.sh reads the
-# head from the forge at teardown, defaults the landing target when no branch is
-# recorded, and falls back to its provider-agnostic content check, while
-# bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
+# pr_head and landing_branch are recorded when the forge's CLI can supply them.
+# gh exposes both the head commit and base branch as selectable fields; Bitbucket
+# Cloud exposes an abbreviated PR source hash, so the full commit hash is read in
+# a second authenticated request before arming. Plain glab exposes equivalent
+# data only inside its JSON output, which would need a JSON processor firstmate
+# did not require when GitLab watching was added, so a GitLab task records
+# neither field. Consumers treat both as optional for GitHub and GitLab, while a
+# Bitbucket task must record pr_head because its CI poll is keyed to that source
+# commit.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
 LANDING_BRANCH=
@@ -83,6 +99,43 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
     && fm_pr_branch_name_valid "$REMOTE_BASE"; then
     LANDING_BRANCH=$REMOTE_BASE
   fi
+elif [ "$PROVIDER" = bitbucket ]; then
+  WORKSPACE=${PROJECT_PATH%%/*}
+  REPO=${PROJECT_PATH#*/}
+  PR_JSON=$(bkt api "/repositories/$WORKSPACE/$REPO/pullrequests/$NUMBER" --json 2>/dev/null) || {
+    echo "error: Bitbucket pull request details could not be read" >&2
+    exit 1
+  }
+  REMOTE_SHORT_HEAD=$(printf '%s' "$PR_JSON" | jq -r '.source.commit.hash // empty' 2>/dev/null) || {
+    echo "error: Bitbucket pull request details could not be parsed" >&2
+    exit 1
+  }
+  REMOTE_BASE=$(printf '%s' "$PR_JSON" | jq -r '.destination.branch.name // empty' 2>/dev/null) || {
+    echo "error: Bitbucket pull request details could not be parsed" >&2
+    exit 1
+  }
+  [ -n "$REMOTE_SHORT_HEAD" ] && [ -n "$REMOTE_BASE" ] || {
+    echo "error: Bitbucket pull request details did not include a head and target branch" >&2
+    exit 1
+  }
+  COMMIT_JSON=$(bkt api "/repositories/$WORKSPACE/$REPO/commit/$REMOTE_SHORT_HEAD" --json 2>/dev/null) || {
+    echo "error: Bitbucket pull request head commit could not be read" >&2
+    exit 1
+  }
+  REMOTE_HEAD=$(printf '%s' "$COMMIT_JSON" | jq -r '.hash // empty' 2>/dev/null) || {
+    echo "error: Bitbucket pull request head commit could not be parsed" >&2
+    exit 1
+  }
+  fm_pr_head_valid "$REMOTE_HEAD" || {
+    echo "error: Bitbucket pull request head commit was not a full hash" >&2
+    exit 1
+  }
+  fm_pr_branch_name_valid "$REMOTE_BASE" || {
+    echo "error: Bitbucket pull request target branch was not a valid branch name" >&2
+    exit 1
+  }
+  PR_HEAD=$REMOTE_HEAD
+  LANDING_BRANCH=$REMOTE_BASE
 fi
 
 META_TMP=

@@ -1,7 +1,8 @@
-# GitLab merge request watch verification
+# GitLab and Bitbucket merge watch verification
 
-Empirical record for the merge watch on GitLab, alongside the existing GitHub watch.
-Every command below was run on 2026-07-21 and its output is reproduced exactly.
+Empirical record for the merge watch on GitLab and Bitbucket Cloud, alongside the existing GitHub watch.
+The GitLab command transcript below was run on 2026-07-21 and its output is reproduced exactly.
+The Bitbucket Cloud behavior was added on 2026-09-08 and is covered by hermetic bkt JSON fixtures in `tests/fm-pr-check-security.test.sh` and `tests/fm-pr-merge.test.sh`.
 
 ## Versions
 
@@ -190,10 +191,39 @@ merged
 
 No armed watch is lost by upgrading.
 
+## Bitbucket Cloud pull requests
+
+Bitbucket Cloud pull requests are accepted only in the canonical form `https://bitbucket.org/<workspace>/<repo>/pull-requests/<number>`.
+`bin/fm-pr-lib.sh` is the single forge owner and parses that URL into the same provider-tagged sidecar fields as GitHub and GitLab: `provider`, `url`, `host`, `path`, and `number`.
+The host is fixed to `bitbucket.org`, and `path` is the two-segment `<workspace>/<repo>` value.
+
+The Bitbucket Cloud path uses `bkt` for all remote reads and writes.
+The supported authentication shape is environment-backed, not keychain-backed.
+The exact required environment is `BKT_HOST=https://bitbucket.org`, `BKT_USERNAME`, `BKT_TOKEN`, and `BKT_AUTH_METHOD=basic`.
+If those variables are not already in the process environment, the scripts source `~/.config/firstmate/bkt.env` only when it is an ordinary mode-0600 file.
+Secret values are never printed, stored in state, or copied into tests.
+
+`bin/fm-pr-check.sh` refuses a Bitbucket watch before arming when `bkt` is absent, `jq` is absent, the required environment is absent or wrong, the pull request details cannot be read, or the full source commit hash cannot be resolved.
+The refusal names the concrete missing requirement, for example `bkt on PATH`, `jq on PATH`, or the missing `BKT_*` variable names.
+It never arms a silent poll when the authenticated Bitbucket context is missing.
+If that environment disappears after arming, the poll emits `bitbucket-auth-missing: ...` with the missing variable names instead of silently skipping the check.
+
+The Bitbucket poll first reads the pull request state through `bkt api /repositories/<workspace>/<repo>/pullrequests/<number> --json`.
+A `MERGED` state emits `merged` and uses the same watcher retirement path as the other forges.
+An open pull request reads the full source head through `bkt api /repositories/<workspace>/<repo>/commit/<hash> --json`, then reads attached build statuses through `bkt pr checks <number> --json --workspace <workspace> --repo <repo>`.
+A fully successful set emits `green`.
+A failed, stopped, cancelled, or errored status emits `red: <build name> <state>`.
+Pending, running, unreadable, malformed, or absent statuses produce no readiness wake.
+When no build status exists yet, the poll falls back to the latest source-branch pipeline from `bkt pipeline list --json --workspace <workspace> --repo <repo> --limit 20` and emits the same `green` or `red: pipeline <number> <result>` result only when that pipeline is terminal.
+
+`bin/fm-pr-merge.sh` merges Bitbucket Cloud pull requests through `bkt pr merge <number> --workspace <workspace> --repo <repo>` after first recording the same metadata through `bin/fm-pr-check.sh`.
+The default Bitbucket merge strategy is `--strategy squash`, unless the caller passes an explicit `--strategy` after `--`.
+Repository selector overrides such as `--workspace`, `--repo`, `--project`, and `-R` are refused because the repository identity comes only from the validated URL.
+
 ## What this change does not cover
 
-`bin/fm-pr-merge.sh` still addresses GitHub only, by owner and repository.
-It refuses a GitLab merge request URL rather than sending it to the wrong forge, so merging a merge request stays a deliberate manual step until merge parity lands separately.
+`bin/fm-pr-merge.sh` still refuses a GitLab merge request URL rather than sending it to the wrong forge, so merging a GitLab merge request stays a deliberate manual step until merge parity lands separately.
+Teaching no-mistakes to open Bitbucket pull requests is a separate no-mistakes change; it would need the same environment-backed `bkt` context available inside the no-mistakes run.
 
 A GitLab task records no `pr_head=` or `landing_branch=`.
 `gh` exposes the head commit and base branch as selectable fields, while plain `glab` exposes equivalent data only inside its JSON output, which would need a JSON processor firstmate does not require.

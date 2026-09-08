@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # fm-test-run.sh - single owner of Firstmate's behavior-test runner, lane
 # composition for portable CI shards, local --jobs for the proven-isolated set,
-# timing markers, and the complete-regression coverage guard.
+# timing markers, the CI budget fraction, and the complete-regression coverage guard.
 #
 # Selection modes (exactly one of: --all, --family, --changed, --lane,
 # --proven-isolated, or script paths):
 #   fm-test-run.sh --all
 #   fm-test-run.sh --family <name>
 #   fm-test-run.sh --changed [--base <git-ref>]
-#   fm-test-run.sh --lane portable-parallel-1|portable-parallel-2|portable-serial
+#   fm-test-run.sh --lane portable-parallel-1|portable-parallel-2|portable-serial-1|portable-serial-2|portable-serial
 #   fm-test-run.sh --proven-isolated
 #   fm-test-run.sh tests/<name>.test.sh [more scripts...]
 #
@@ -16,6 +16,7 @@
 #   fm-test-run.sh --list --all
 #   fm-test-run.sh --list --family <name>
 #   fm-test-run.sh --list --lane portable-parallel-1
+#   fm-test-run.sh --ci-budget-fraction
 #   fm-test-run.sh --list-families
 #   fm-test-run.sh --list-lanes
 #   fm-test-run.sh --check-coverage
@@ -31,6 +32,9 @@
 #                   drop scripts whose primary family matches <name> after selection
 #                   (repeatable; portable CI lanes exclude real-herdr-gated so the
 #                   dedicated required Herdr lane owns that coverage)
+#   --ci-budget-fraction
+#                   print the single CI test-lane budget fraction and exit.
+#                   bin/fm-ci-budget-guard.sh consumes this value.
 #   --fail-on-gate-skip <token>
 #                   after each script, fail the run if any output line contains
 #                   "skip: <token>" (e.g. --fail-on-gate-skip 'herdr not found').
@@ -56,10 +60,13 @@
 # --fail-on-gate-skip token appears. Other gate skips (first meaningful line
 # matching ^skip:) remain successful and are counted as skipped_gate.
 #
-# Family labels, the changed-file map, and production portable-shard composition
-# live in this script only (one owner). The proven-isolated candidate set remains
-# owned by bin/fm-test-isolation-proof.sh; portable parallel shards are a
-# duration-balanced partition of that exact set (see docs/fm-test-portable-shards.md).
+# Family labels, the changed-file map, production portable-shard composition,
+# and the CI test-lane budget fraction live in this script only (one owner).
+# The proven-isolated candidate set remains owned by bin/fm-test-isolation-proof.sh.
+# Portable parallel shards are a duration-balanced partition of that exact set;
+# portable serial shards are a duration-balanced partition of the serial remainder
+# from the timing artifact at docs/fm-test-portable-serial-timing.json.
+# See docs/fm-test-portable-shards.md.
 # --changed is conservative: it over-selects related families rather than
 # under-selecting, and never expands to the complete suite unless --all.
 set -eu
@@ -72,6 +79,7 @@ LIST_ONLY=0
 LIST_FAMILIES=0
 LIST_LANES=0
 CHECK_COVERAGE=0
+PRINT_CI_BUDGET_FRACTION=0
 AGGREGATE_OUT=
 FAMILY=
 LANE=
@@ -82,6 +90,8 @@ EXCLUDE_FAMILIES=()
 FAIL_ON_GATE_SKIP=
 JOBS=1
 JOBS_MAX=8
+PORTABLE_SERIAL_TIMING_JSON="$ROOT/docs/fm-test-portable-serial-timing.json"
+FM_CI_BUDGET_FRACTION="3/4"
 
 usage() {
   awk '
@@ -227,6 +237,8 @@ list_known_lanes() {
   cat <<'EOF'
 portable-parallel-1
 portable-parallel-2
+portable-serial-1
+portable-serial-2
 portable-serial
 real-herdr-gated
 EOF
@@ -310,6 +322,61 @@ is_proven_isolated_script() {
   return 1
 }
 
+list_portable_serial_remainder() {
+  local s base fam
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    base=$(basename "$s")
+    fam=$(family_for_basename "$base")
+    if [ "$fam" = "real-herdr-gated" ]; then
+      continue
+    fi
+    if is_proven_isolated_script "$s"; then
+      continue
+    fi
+    printf '%s\n' "$s"
+  done < <(all_repo_tests)
+}
+
+list_portable_serial_shard() {
+  local shard=$1 tmp
+  case "$shard" in
+    1|2) ;;
+    *) die "portable serial shard must be 1 or 2" ;;
+  esac
+  [ -f "$PORTABLE_SERIAL_TIMING_JSON" ] || die "portable serial timing artifact not found: $PORTABLE_SERIAL_TIMING_JSON"
+  command -v python3 >/dev/null 2>&1 || die "portable serial shard selection requires python3"
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-serial-shard.XXXXXX")
+  list_portable_serial_remainder >"$tmp/current"
+  python3 - "$PORTABLE_SERIAL_TIMING_JSON" "$tmp/current" "$shard" <<'PY'
+import json, sys
+from pathlib import Path
+
+timing_path = Path(sys.argv[1])
+current_path = Path(sys.argv[2])
+want = int(sys.argv[3]) - 1
+current = [line.strip() for line in current_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+doc = json.loads(timing_path.read_text(encoding="utf-8"))
+durations = {}
+for row in doc.get("scripts") or []:
+    path = row.get("path")
+    if path:
+        durations[path] = int(row.get("duration_ms") or 0)
+
+# Longest-processing-time balance from measured artifact durations.
+# New serial-remainder tests have duration 0 and still land automatically.
+lanes = [[], []]
+totals = [0, 0]
+for path in sorted(current, key=lambda p: (-durations.get(p, 0), p)):
+    idx = 0 if totals[0] <= totals[1] else 1
+    lanes[idx].append(path)
+    totals[idx] += durations.get(path, 0)
+for path in lanes[want]:
+    print(path)
+PY
+  rm -rf "$tmp"
+}
+
 select_proven_isolated() {
   local s
   while IFS= read -r s; do
@@ -335,23 +402,28 @@ select_lane() {
         found=1
       done < <(list_portable_parallel_2)
       ;;
-    portable-serial)
-      # Everything in the complete suite that is not proven-isolated and not
-      # real-herdr-gated. Watcher/lock/AFK/tmux/daemon/ambiguous/stateful work
-      # stays here, serial only.
+    portable-serial-1)
       while IFS= read -r s; do
         [ -n "$s" ] || continue
-        base=$(basename "$s")
-        fam=$(family_for_basename "$base")
-        if [ "$fam" = "real-herdr-gated" ]; then
-          continue
-        fi
-        if is_proven_isolated_script "$s"; then
-          continue
-        fi
         add_script "$s"
         found=1
-      done < <(all_repo_tests)
+      done < <(list_portable_serial_shard 1)
+      ;;
+    portable-serial-2)
+      while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        add_script "$s"
+        found=1
+      done < <(list_portable_serial_shard 2)
+      ;;
+    portable-serial)
+      # Compatibility alias: the complete serial remainder. CI uses the two
+      # measured-duration shards above so neither serial job rides its timeout.
+      while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        add_script "$s"
+        found=1
+      done < <(list_portable_serial_remainder)
       ;;
     real-herdr-gated)
       select_family real-herdr-gated
@@ -395,8 +467,28 @@ run_coverage_guard() {
   # Serial + Herdr lane listings without disturbing a caller's selection.
   saved_scripts=("${SCRIPTS[@]+"${SCRIPTS[@]}"}")
   SCRIPTS=()
+  select_lane portable-serial-1
+  printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/serial1"
+  SCRIPTS=()
+  select_lane portable-serial-2
+  printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/serial2"
+  cat "$tmp/serial1" "$tmp/serial2" | LC_ALL=C sort | uniq -d >"$tmp/serial_dups"
+  if [ -s "$tmp/serial_dups" ]; then
+    log "coverage guard: portable serial shards share scripts:"
+    cat "$tmp/serial_dups" >&2
+    rm -rf "$tmp"
+    return 1
+  fi
+  cat "$tmp/serial1" "$tmp/serial2" | LC_ALL=C sort -u >"$tmp/serial"
+  SCRIPTS=()
   select_lane portable-serial
-  printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/serial"
+  printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/serial_compat"
+  if ! cmp -s "$tmp/serial" "$tmp/serial_compat"; then
+    log "coverage guard: portable serial shards must equal the serial remainder"
+    LC_ALL=C comm -3 "$tmp/serial" "$tmp/serial_compat" >&2 || true
+    rm -rf "$tmp"
+    return 1
+  fi
   SCRIPTS=()
   select_family real-herdr-gated
   printf '%s\n' "${SCRIPTS[@]+"${SCRIPTS[@]}"}" | LC_ALL=C sort -u >"$tmp/herdr"
@@ -994,6 +1086,10 @@ while [ "$#" -gt 0 ]; do
       CHECK_COVERAGE=1
       shift
       ;;
+    --ci-budget-fraction)
+      PRINT_CI_BUDGET_FRACTION=1
+      shift
+      ;;
     --aggregate-json)
       [ "$#" -gt 1 ] || die "--aggregate-json requires an output path"
       AGGREGATE_OUT=$2
@@ -1050,6 +1146,11 @@ done
 
 if [ "$LIST_FAMILIES" -eq 1 ]; then
   list_known_families
+  exit 0
+fi
+
+if [ "$PRINT_CI_BUDGET_FRACTION" -eq 1 ]; then
+  printf '%s\n' "$FM_CI_BUDGET_FRACTION"
   exit 0
 fi
 

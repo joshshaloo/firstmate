@@ -5,8 +5,10 @@
 
 ## Verification inputs
 
-The current candidate timings came from the 2026-07-29 concurrent proof recorded in [fm-test-isolation-proof.md](fm-test-isolation-proof.md).
+The current portable parallel candidate timings came from the 2026-07-29 concurrent proof recorded in [fm-test-isolation-proof.md](fm-test-isolation-proof.md).
 The proof ran 24 candidates with four workers and no failures.
+The current portable serial shard timings came from the uploaded `fm-test-timing-portable-serial` artifact in main run 34169543250 for commit 775500ab08ed05ccef73fc99444608bc300cc314.
+The tracked copy at [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json) is the single measured-duration input for portable serial shard assignment.
 
 | duration_ms | script |
 |---:|---|
@@ -51,6 +53,15 @@ The two parallel lanes use longest-processing-time assignment from those measure
 
 `portable-serial` includes every `tests/*.test.sh` that is neither proven-isolated nor `real-herdr-gated`.
 It keeps watcher, lock, AFK, real tmux, daemon, secondmate lifecycle, bootstrap, live-harness opt-in, GUI-backend, and other unproven work serial.
+CI runs that remainder as `portable-serial-1` and `portable-serial-2`.
+Those two lanes are generated with longest-processing-time assignment from [fm-test-portable-serial-timing.json](fm-test-portable-serial-timing.json), not from hand-maintained lane lists.
+New serial-remainder tests with no recorded duration still land automatically in one serial shard, and the budget guard catches timing drift after they run.
+
+| Lane | Script count | Estimated duration from run 34169543250 |
+|---|---:|---:|
+| `portable-serial-1` | 33 | 570780 ms (~9.5 min) |
+| `portable-serial-2` | 35 | 570767 ms (~9.5 min) |
+| imbalance | | 13 ms |
 
 ## Coverage guard
 
@@ -59,7 +70,7 @@ It also verifies that the parallel lanes, portable serial lane, and real-Herdr f
 
 ## Timing artifacts
 
-Portable shards, the portable serial lane, and the Herdr lane upload runner-generated timing JSON.
+Portable shards, the portable serial lanes, and the Herdr lane upload runner-generated timing JSON.
 `bin/fm-test-run.sh --aggregate-json` creates the combined summary artifact.
 `.github/workflows/ci.yml` owns the exact artifact names and aggregation wiring.
 
@@ -68,12 +79,14 @@ Portable shards, the portable serial lane, and the Herdr lane upload runner-gene
 [CONTRIBUTING.md](../CONTRIBUTING.md) owns the local test policy and common entry points.
 `bin/fm-test-run.sh --help` owns exact lane names, selection flags, and bounded `--jobs` mechanics.
 
-## Timeouts
+## Timeouts and budget guard
 
-| Job | timeout-minutes | Rationale |
-|---|---:|---|
-| portable parallel 1/2 | 10 | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial | 20 | The serial remainder needs a larger hang tripwire. |
-| Herdr | 40 | The real-Herdr lane keeps its dedicated timeout. |
+| Job | timeout-minutes | Guard threshold | Rationale |
+|---|---:|---:|---|
+| portable parallel 1/2 | 10 | 7.5 min | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
+| portable serial 1/2 | 20 | 15 min | The measured serial shards are about 9.5 minutes each and the timeout is a hang tripwire. |
+| Herdr | 40 | 30 min | The real-Herdr lane keeps its dedicated timeout. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
+The CI test-lane guard fails when a timing artifact exceeds 3/4 of the job's timeout budget.
+`bin/fm-test-run.sh --ci-budget-fraction` is the single owner of that fraction, and `bin/fm-ci-budget-guard.sh` enforces it in the workflow.

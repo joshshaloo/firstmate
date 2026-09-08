@@ -1243,7 +1243,7 @@ SH
 # accept and refuse exactly the rows bootstrap and the fast-forward library do: a
 # hand-edited row the shared parser rejects must not still resolve a home and launch.
 test_secondmate_spawn_registry_resolution_matches_shared_parser() {
-  local home subhome subhome_abs fakebin log err row
+  local home subhome subhome_abs fakebin log err row rc
   home="$TMP_ROOT/spawn-registry-row-home"
   subhome="$TMP_ROOT/spawn-registry-row-subhome"
   mkdir -p "$home/data" "$home/state" "$subhome/data"
@@ -1280,6 +1280,24 @@ test_secondmate_spawn_registry_resolution_matches_shared_parser() {
     grep -F 'new-window' "$log" >/dev/null && fail "spawn created a window for a registry row it must refuse"
     [ -e "$home/state/domain.meta" ] && fail "spawn wrote meta for a registry row it must refuse"
   done
+
+  # The two refusals are not the same fact, so they do not share a status: a row
+  # this home cannot serve because the mate lives on another host reports 2, and
+  # every unusable row reports 1. Callers that surface the reason depend on that
+  # split; callers that only want a value still see "non-zero means no value".
+  printf '%s\n' \
+    "- domain - domain work (host: elsewhere; root: /srv/fm; home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
+    > "$home/data/secondmates.md"
+  rc=0
+  bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "a remote-placed row must report the remote refusal status, got $rc"
+  printf '%s\n' "- domain (home: $subhome_abs; scope: domain scope; projects: alpha; added 2026-06-22)" \
+    > "$home/data/secondmates.md"
+  rc=0
+  bash -c '. "$1/bin/fm-ff-lib.sh"; secondmate_registry_field "$2" domain home' \
+    _ "$ROOT" "$home/data/secondmates.md" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 1 ] || fail "an unusable row must report the plain no-value status, got $rc"
 
   # The canonical row still resolves, so the refusals above are about row syntax
   # and not about this home.

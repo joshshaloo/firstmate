@@ -697,6 +697,48 @@ test_bootstrap_sweep_surfaces_skipped_home() {
   pass "T9 bootstrap surfaces a skipped dirty live secondmate home"
 }
 
+# A live meta with no home= falls back to data/secondmates.md. When the row found
+# there places that secondmate on ANOTHER host, this home cannot serve it - and
+# must say so. Both surfaces that meet the fallback (the pending-nudge retry and
+# the sweep's live-record listing) report the shared parser's one refusal wording
+# instead of a generic unsafe-home line or a silent skip.
+test_bootstrap_reports_remote_registry_row_refusal() {
+  local w c1 fakebin out marker refusal meta
+  w=$(new_world remote-registry-row)
+  c1=$(head_of "$w/main")
+  add_sm_worktree "$w" sm-instr "$c1"
+  bump_primary "$w" instr
+  fakebin=$(make_fake_toolchain "$w")
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
+    FM_SEND_SETTLE=0 FM_FAKE_TMUX_FAIL_LITERAL=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "NUDGE_SECONDMATES: secondmate sm-instr: send failed:" \
+    "precondition: first nudge should fail"
+  marker="$w/home/state/.secondmate-nudge-pending/sm-instr.pending"
+  assert_present "$marker" "precondition: failed nudge should leave marker"
+
+  meta="$w/home/state/sm-instr.meta"
+  grep -v '^home=' "$meta" > "$meta.next"
+  mv "$meta.next" "$meta"
+  printf '%s\n' \
+    "- sm-instr - remote mate (host: elsewhere; root: /srv/fm; home: /srv/fm/sm-instr; scope: remote scope; projects: alpha; added 2026-06-22)" \
+    > "$w/home/data/secondmates.md"
+  refusal=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"' \
+    _ "$ROOT")
+  [ -n "$refusal" ] || fail "the registry parser must own the remote refusal wording"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
+    FM_SEND_SETTLE=0 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "NUDGE_SECONDMATES: secondmate sm-instr: send failed: $refusal" \
+    "a pending nudge for a remote-registered row names that refusal"
+  assert_not_contains "$out" "retry target home unsafe" \
+    "a remote-registered row is not reported as a generic unsafe home"
+  assert_contains "$out" "SECONDMATE_SYNC: secondmate sm-instr: skipped: $refusal" \
+    "the sweep names the remote refusal instead of skipping silently"
+  pass "T8g bootstrap names the remote-registered registry row it refuses"
+}
+
 # --- T10: spawning a secondmate fast-forwards its worktree before launch ------
 test_spawn_fast_forwards_before_launch() {
   local w c1 c2 fakebin
@@ -853,6 +895,7 @@ test_bootstrap_nudge_retry_rejects_malformed_marker_id
 test_bootstrap_nudge_failure_records_retry_marker
 test_bootstrap_nudge_retry_is_idempotent
 test_bootstrap_nudge_retry_refuses_changed_home
+test_bootstrap_reports_remote_registry_row_refusal
 test_nudge_retry_uses_fresh_herdr_endpoint_after_respawn
 test_bootstrap_sweep_surfaces_skipped_home
 test_spawn_fast_forwards_before_launch

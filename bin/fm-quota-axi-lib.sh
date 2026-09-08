@@ -13,6 +13,11 @@
 # what keeps an older build from reaching a dispatch intake at all.
 
 FM_QUOTA_AXI_MIN=0.1.16
+# The bound every caller of the version probe uses, owned here beside the floor
+# it guards: a wedged `quota-axi --version` must surface as the MISSING
+# diagnostic rather than stalling the startup check that reports it.
+# shellcheck disable=SC2034 # Read by sourcing callers, not by this file.
+FM_QUOTA_AXI_VERSION_TIMEOUT=5
 FM_QUOTA_AXI_LIB_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$FM_QUOTA_AXI_LIB_DIR/fm-timeout-lib.sh"

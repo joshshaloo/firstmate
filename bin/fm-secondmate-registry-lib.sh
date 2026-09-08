@@ -10,6 +10,12 @@
 # and semicolons, so field boundaries are anchored to the suffix markers rather
 # than to the first incidental punctuation.
 
+# The one wording every caller uses when a well formed row is refused because it
+# places its secondmate on another host. A reader on this home cannot answer a
+# remote row's local questions, and saying so is not the same as "malformed row"
+# or "no row at all", so the distinction is named here rather than re-invented.
+SECONDMATE_REGISTRY_REMOTE_REFUSAL='registered on another host: a remote secondmate row is not supported by this home'
+
 SECONDMATE_REGISTRY_ID=
 SECONDMATE_REGISTRY_SUMMARY=
 SECONDMATE_REGISTRY_HOST=

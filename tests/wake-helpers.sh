@@ -277,6 +277,42 @@ is_live_non_zombie() {
   return 0
 }
 
+# peer_program_name <pid>: the program the OS currently reports for <pid>,
+# basename only - /proc where it is readable (Linux, MSYS), ps elsewhere (macOS).
+# Empty while the process sits mid-exec.
+peer_program_name() {
+  local pid=$1 name
+  if [ -r "/proc/$pid/cmdline" ]; then
+    name=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | head -1)
+  else
+    name=$(ps -p "$pid" -o comm= 2>/dev/null | head -1)
+  fi
+  [ -n "$name" ] || return 1
+  printf '%s\n' "${name##*/}"
+}
+
+# start_settled_peer <program> [args...]: background a helper process and return
+# only once it is genuinely running its own program, publishing its pid in
+# PEER_PID. Between a shell's fork and the child's exec the child still reads as
+# the forking shell's image - /proc/<pid>/cmdline and ps report the test runner's
+# own argv - so a process identity captured immediately after `&` can record a
+# program the peer never runs under. A watcher lock seeded with that identity
+# mismatches every later read, and a live, healthy peer is then treated as stale.
+# Waiting for the exec to land closes that window instead of racing it.
+PEER_PID=
+start_settled_peer() {
+  local program=$1 i=0 seen=
+  "$@" &
+  PEER_PID=$!
+  while [ "$i" -lt 200 ]; do
+    seen=$(peer_program_name "$PEER_PID" || true)
+    [ "$seen" = "${program##*/}" ] && return 0
+    sleep 0.05
+    i=$((i + 1))
+  done
+  return 1
+}
+
 hash_text() {
   if command -v md5 >/dev/null 2>&1; then
     printf '%s' "$1" | md5 -q

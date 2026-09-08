@@ -444,8 +444,9 @@ test_watch_restart_attaches_to_healthy_peer() {
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
   mark_pr_check_migration_complete "$state"
-  node -e 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' &
-  peer=$!
+  start_settled_peer node -e 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' \
+    || fail "peer node process never reached its own image"
+  peer=$PEER_PID
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
@@ -721,8 +722,8 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   fakebin="$dir/fakebin"
   armout="$dir/arm.out"
   mark_pr_check_migration_complete "$state"
-  sleep 300 &
-  peer=$!
+  start_settled_peer sleep 300 || fail "peer sleep process never reached its own image"
+  peer=$PEER_PID
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
@@ -903,8 +904,8 @@ test_pid_identity_is_locale_invariant() {
   # locale like ko_KR.UTF-8 is not installed (the equality then holds trivially).
   local live no_proc fakebin locale_log baseline via_lc_all via_lc_time
   local real_first real_second observed
-  sleep 300 &
-  live=$!
+  start_settled_peer sleep 300 || fail "peer sleep process never reached its own image"
+  live=$PEER_PID
   no_proc="$TMP_ROOT/no-proc"
   fakebin="$TMP_ROOT/locale-ps"
   locale_log="$TMP_ROOT/locale-ps.observed"

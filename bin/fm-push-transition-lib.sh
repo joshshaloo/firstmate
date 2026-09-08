@@ -41,13 +41,21 @@ wake() {
   exit 0
 }
 
-# One-shot surfaced markers, the single owner of "this exact line has already
-# been shown to firstmate". Every family that needs a standing condition to wake
-# once - captain-relevant statuses (hb), run-step transitions behind a declared
-# pause, and non-terminal PR-poll emissions (check) - records its surfaced bytes
-# here rather than growing its own parallel marker. <kind> namespaces the family
-# and <key> identifies the subject; callers pass a key that is already safe as a
-# filename component.
+# One-shot surfaced markers: "this exact line has already been shown to
+# firstmate", so a standing condition wakes once and again only when it changes.
+# <kind> namespaces the family and <key> identifies the subject; callers pass a
+# key that is already safe as a filename component.
+#
+# Two families route through here today: captain-relevant statuses (hb, via
+# _hb_surfaced_path below) and non-terminal PR-poll emissions (check, from
+# bin/fm-watch.sh). Both resolve against this library's global $STATE, which is
+# also the limit of what this owner can serve: bin/fm-teardown.sh removes a
+# retired task's check marker by literal path because it works on a
+# caller-supplied state directory (a secondmate's, not $STATE), and the declared
+# pause's .paused-runstep-surfaced-<key> family still builds its own path in
+# bin/fm-watch.sh and bin/fm-supervise-daemon.sh. Neither is migrated here; do
+# not read this as a claim that every surfaced marker in the tree comes from
+# these functions.
 _fm_surfaced_path() {  # <kind> <key>
   printf '%s/.%s-surfaced-%s' "$STATE" "$1" "$2"
 }

@@ -3192,6 +3192,13 @@ queued_check_wakes() {  # <state> <id>
   printf '%s' "$count"
 }
 
+triage_first_sightings() {  # <state>
+  local state=$1 count=0
+  [ -f "$state/.watch-triage.log" ] || { printf '0'; return 0; }
+  count=$(grep -c 'surfaced PR poll emission once' "$state/.watch-triage.log") || count=0
+  printf '%s' "$count"
+}
+
 # Only `merged` retires a poll, so a red build - or any other non-terminal
 # emission - is a standing condition that every later sweep re-reads unchanged.
 # It must cost exactly one firstmate wake, and wake again only when the emitted
@@ -3212,8 +3219,12 @@ test_standing_poll_emission_wakes_once() {
   [ "$rc" -eq 0 ] || fail "first red watcher cycle failed: $(cat "$dir/watch-1.out.err")"
   grep -F "check: $state/task-a.check.sh: red: unit tests FAILED" "$dir/watch-1.out" >/dev/null \
     || fail "a red Bitbucket poll did not surface once: $(cat "$dir/watch-1.out")"
-  [ "$(cat "$state/.check-surfaced-task-a" 2>/dev/null || true)" = 'red: unit tests FAILED' ] \
-    || fail "the surfaced emission was not recorded"
+  case "$(cat "$state/.check-surfaced-task-a" 2>/dev/null || true)" in
+    *"|red: unit tests FAILED") ;;
+    *) fail "the surfaced emission was not recorded against its poll identity" ;;
+  esac
+  [ "$(triage_first_sightings "$state")" -eq 1 ] \
+    || fail "the first sighting was not logged exactly once"
 
   for cycle in 2 3; do
     rc=0
@@ -3221,6 +3232,8 @@ test_standing_poll_emission_wakes_once() {
     [ "$rc" -eq 0 ] || fail "red watcher cycle $cycle failed: $(cat "$dir/watch-$cycle.out.err")"
     ! grep -F 'task-a.check.sh: red' "$dir/watch-$cycle.out" >/dev/null \
       || fail "an unchanged red Bitbucket poll woke firstmate again on cycle $cycle"
+    [ "$(triage_first_sightings "$state")" -eq 1 ] \
+      || fail "an absorbed sweep appended another triage line on cycle $cycle"
     case "$(cat "$dir/watch-$cycle.out")" in
       *z-stop.check.sh:*stop-cycle) ;;
       *) fail "cycle $cycle did not reach the control check: $(cat "$dir/watch-$cycle.out")" ;;
@@ -3234,8 +3247,10 @@ test_standing_poll_emission_wakes_once() {
   [ "$rc" -eq 0 ] || fail "green watcher cycle failed: $(cat "$dir/watch-4.out.err")"
   grep -F "check: $state/task-a.check.sh: green" "$dir/watch-4.out" >/dev/null \
     || fail "a changed emission did not wake firstmate again: $(cat "$dir/watch-4.out")"
-  [ "$(cat "$state/.check-surfaced-task-a" 2>/dev/null || true)" = green ] \
-    || fail "the changed emission was not recorded"
+  case "$(cat "$state/.check-surfaced-task-a" 2>/dev/null || true)" in
+    *'|green') ;;
+    *) fail "the changed emission was not recorded against its poll identity" ;;
+  esac
   [ "$(queued_check_wakes "$state" task-a)" -eq 2 ] \
     || fail "red to green did not queue exactly one further wake"
 
@@ -3251,6 +3266,55 @@ test_standing_poll_emission_wakes_once() {
     || fail "the terminal merged notification was not queued exactly once"
 
   pass "a standing non-terminal poll emission wakes once and again only when it changes"
+}
+
+# The one-shot marker must never outlive the pull request it describes. Re-arming
+# the same task onto a replacement PR publishes a new registration, so the
+# replacement's first emission surfaces even when its bytes are identical to the
+# emission already absorbed for the previous PR.
+test_rearmed_poll_surfaces_its_first_emission() {
+  local dir state url_a url_b rc red marker_a marker_b
+  dir=$(make_case rearmed-poll-emission)
+  state="$dir/home/state"
+  url_a=https://bitbucket.org/acme/widgets/pull-requests/7
+  url_b=https://bitbucket.org/acme/widgets/pull-requests/8
+  red='{"statuses":[{"state":"FAILED","name":"unit tests"}]}'
+  write_poll_meta "$state" task-a "$url_a"
+  seed_canonical_poll "$dir" task-a "$url_a"
+  add_stop_custom_check "$dir"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-1.out" "$red" || rc=$?
+  [ "$rc" -eq 0 ] || fail "first red watcher cycle failed: $(cat "$dir/watch-1.out.err")"
+  grep -F "check: $state/task-a.check.sh: red: unit tests FAILED" "$dir/watch-1.out" >/dev/null \
+    || fail "the first pull request's red did not surface"
+  marker_a=$(cat "$state/.check-surfaced-task-a")
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-2.out" "$red" || rc=$?
+  [ "$rc" -eq 0 ] || fail "absorbed watcher cycle failed: $(cat "$dir/watch-2.out.err")"
+  ! grep -F 'task-a.check.sh: red' "$dir/watch-2.out" >/dev/null \
+    || fail "an unchanged red woke firstmate again before the re-arm"
+
+  # Re-arm the same task onto a replacement pull request, exactly as a crew
+  # re-running the documented arming command does.
+  rm -f "$state/task-a.check.sh" "$state/task-a.pr-poll" "$state/task-a.pr-poll-registration"
+  write_poll_meta "$state" task-a "$url_b"
+  seed_canonical_poll "$dir" task-a "$url_b"
+  [ -e "$state/.check-surfaced-task-a" ] \
+    || fail "re-arm fixture no longer exercises a surviving marker"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-3.out" "$red" || rc=$?
+  [ "$rc" -eq 0 ] || fail "re-armed watcher cycle failed: $(cat "$dir/watch-3.out.err")"
+  grep -F "check: $state/task-a.check.sh: red: unit tests FAILED" "$dir/watch-3.out" >/dev/null \
+    || fail "a replacement pull request's first emission was absorbed by the old marker: $(cat "$dir/watch-3.out")"
+  marker_b=$(cat "$state/.check-surfaced-task-a")
+  [ "$marker_a" != "$marker_b" ] || fail "the replacement poll reused the previous poll's marker bytes"
+  [ "$(queued_check_wakes "$state" task-a)" -eq 2 ] \
+    || fail "the re-armed poll did not queue exactly one further wake"
+
+  pass "a poll re-armed onto a replacement pull request always surfaces its first emission"
 }
 
 test_persistent_secondmate_retirement_is_poll_only() {
@@ -3615,6 +3679,7 @@ test_gitlab_merge_watch
 test_bitbucket_cloud_watch
 test_merged_poll_retires_once
 test_standing_poll_emission_wakes_once
+test_rearmed_poll_surfaces_its_first_emission
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery
 test_external_merge_transition_retires_only_terminal_poll

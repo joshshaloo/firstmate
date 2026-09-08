@@ -803,6 +803,7 @@ while :; do
       [ -e "$c" ] || continue
       is_pr_poll=0
       id=
+      poll_identity=
       if [ "$(basename "$c")" = x-watch.check.sh ]; then
         if fmx_poll_shim_valid "$c" "$FM_HOME" "$FM_ROOT" \
           && [ -f "$FM_ROOT/bin/fm-x-poll.sh" ] && [ ! -L "$FM_ROOT/bin/fm-x-poll.sh" ]; then
@@ -816,6 +817,7 @@ while :; do
         id=$(basename "$c" .check.sh)
         if fm_pr_poll_snapshot_capture "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
           is_pr_poll=1
+          poll_identity="$FM_PR_POLL_SNAPSHOT_REG_IDENTITY|$FM_PR_POLL_SNAPSHOT_REG_HASH"
           provider=$FM_PR_POLL_SNAPSHOT_PROVIDER
           url=$FM_PR_POLL_SNAPSHOT_URL
           host=$FM_PR_POLL_SNAPSHOT_HOST
@@ -844,9 +846,22 @@ while :; do
         # per CHECK_INTERVAL forever. Surface a non-terminal emission once and
         # again only when the line itself changes; the same rule covers every
         # forge because the emissions are compared, not interpreted.
+        #
+        # The recorded bytes carry the poll's registration identity, not just the
+        # emitted line, so the marker can never outlive the pull request it
+        # describes: re-arming the same task onto a replacement PR publishes a new
+        # registration (new identity and hash), which no prior marker can match,
+        # and the replacement's first emission surfaces even when its bytes are
+        # identical. That binding is what keeps the reset at the poll's own
+        # publication boundary instead of asking every arming call site to
+        # remember to clear a marker.
+        #
+        # Only the first sighting of a line is written to the triage log. The
+        # marker already records "nothing changed", so logging each unchanged
+        # sweep would just trade the wake storm for a log storm in the same
+        # bounded ring.
         if [ "$is_pr_poll" -eq 1 ] && [ "$out" != merged ] \
-          && ! fm_surfaced_is_new check "$id" "$out"; then
-          triage_log "absorbed unchanged PR poll emission ($out): $c"
+          && ! fm_surfaced_is_new check "$id" "$poll_identity|$out"; then
           continue
         fi
         fm_wake_append check "$c" "$reason" || exit 1
@@ -860,7 +875,8 @@ while :; do
               triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
             fi
           else
-            fm_surfaced_record check "$id" "$out"
+            fm_surfaced_record check "$id" "$poll_identity|$out"
+            triage_log "surfaced PR poll emission once, absorbing repeats until it changes ($out): $c"
           fi
         fi
         touch "$STATE/.last-check"

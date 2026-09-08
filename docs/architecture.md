@@ -152,7 +152,9 @@ Only a named non-default branch checked out in `FM_ROOT` is a worktree tangle.
 `fm-tangle-lib.sh` resolves the default branch from `origin/HEAD`, then local `main` or `master`, and classifies that named non-default primary branch as the tangle.
 `fm-guard.sh` prints the repair command on the next mutable fleet action, while `bin/fm-session-start.sh` reports the same condition through bootstrap as a `TANGLE:` line at session start.
 If another live session holds the fleet lock, both surfaces keep the alarm but switch to read-only wording with no repair command.
-Ship briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-toplevel` before creating `fm/<id>`, then stop with a blocked status if it landed in the primary checkout.
+Ship briefs also make the crewmate compare `pwd -P` exactly against two named paths before creating `fm/<id>`: it proceeds only in the expected task worktree, and stops with a blocked status in the primary checkout or anywhere else.
+`bin/fm-brief.sh` scaffolds those two paths as literal placeholders because the worktree does not exist yet, and `bin/fm-spawn.sh` fills them once it has allocated the worktree and before it launches the worker, refusing the launch if any placeholder is left standing.
+Linked-worktree git-dir and git-common-dir details never decide that check; both script headers own the exact mechanics.
 
 ## No-mistakes gate authority boundary
 

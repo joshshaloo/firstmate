@@ -128,6 +128,15 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
+# The scaffolded ship brief carries two more spawn-filled placeholders, in the brief
+# file itself rather than in the launch command:
+#     __FM_TASK_WORKTREE_PATH__     physical path of the worktree allocated for this task
+#     __FM_PRIMARY_CHECKOUT_PATH__  physical path of the primary checkout firstmate runs from
+# They are the two paths the brief's worktree-isolation check compares `pwd -P` against,
+# and bin/fm-brief.sh cannot know either at scaffold time. Both are filled in
+# data/<task-id>/brief.md once the worktree is known and before launch, keyed on the
+# brief's own contents rather than on --scout/--secondmate; any __FM_*__ token still
+# standing after the fill refuses the spawn instead of reaching the worker.
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
@@ -1772,6 +1781,42 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   done
   spawn_cleanup_worktree_record_guards
 fi
+
+# The scaffolded ship brief (bin/fm-brief.sh) states its worktree-isolation check as
+# an exact comparison against two paths it cannot know yet, so it carries them as
+# __FM_TASK_WORKTREE_PATH__ / __FM_PRIMARY_CHECKOUT_PATH__. Spawn owns the fill
+# because it is the only place that knows the allocated worktree.
+#
+# The fill is keyed on what the brief actually contains, never on this spawn's own
+# --scout/--secondmate flag: a brief scaffolded in one kind and spawned in another
+# would otherwise reach the worker with literal placeholder text that its `pwd -P`
+# can never equal, and the worker would hard-block a correctly isolated worktree
+# with a status line naming nothing actionable. For the same reason the fill is a
+# post-condition, not a best effort - any __FM_*__ token still standing in the brief
+# refuses the spawn here, where the diagnosis is still available, rather than
+# shipping an unverifiable isolation contract to the worker.
+brief_isolation_placeholders() {  # -> unfilled __FM_*__ tokens, one per line
+  grep -oE '__FM_[A-Z0-9_]*__' "$BRIEF" 2>/dev/null | sort -u
+}
+
+fill_brief_isolation_paths() {
+  local wt_real remaining
+  [ -n "$(brief_isolation_placeholders)" ] || return 0
+  wt_real=$(real_path_or_raw "$WT")
+  if [ -z "$WT" ] || [ "$wt_real" = "$PROJ_ABS_REAL" ]; then
+    echo "error: refusing to launch $ID: brief $BRIEF carries the worktree-isolation placeholders, but this spawn has no task worktree distinct from the primary checkout '$PROJ_ABS_REAL' (resolved worktree '${wt_real:-none}'), so the worker could not verify its isolation" >&2
+    exit 1
+  fi
+  FM_TASK_WORKTREE_PATH="$wt_real" FM_PRIMARY_CHECKOUT_PATH="$PROJ_ABS_REAL" \
+    perl -0pi -e 's/__FM_TASK_WORKTREE_PATH__/$ENV{FM_TASK_WORKTREE_PATH}/g; s/__FM_PRIMARY_CHECKOUT_PATH__/$ENV{FM_PRIMARY_CHECKOUT_PATH}/g' "$BRIEF"
+  remaining=$(brief_isolation_placeholders | tr '\n' ' ')
+  remaining=${remaining% }
+  if [ -n "$remaining" ]; then
+    echo "error: refusing to launch $ID: brief $BRIEF still carries unfilled placeholder(s) $remaining after the worktree-isolation fill; the worker's isolation check would compare its path against literal placeholder text and block" >&2
+    exit 1
+  fi
+}
+fill_brief_isolation_paths
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.

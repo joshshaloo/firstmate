@@ -61,6 +61,14 @@ slot_guarded() {
   done
   return 1
 }
+# The launch command is the only send carrying `... encode launch-brief < <brief>`.
+# Snapshotting the brief exactly then is what proves fm-spawn filled the
+# worktree-isolation placeholders BEFORE the worker could ever read the file.
+if [ -n "${FM_FAKE_BRIEF_SNAPSHOT:-}" ] && [ ! -f "$FM_FAKE_BRIEF_SNAPSHOT" ]; then
+  case "$*" in
+    *"launch-brief"*) cp "${FM_FAKE_BRIEF_FILE:?}" "$FM_FAKE_BRIEF_SNAPSHOT" ;;
+  esac
+fi
 case "$*" in
   *"send-keys"*" exit Enter"*)
     # Leaving the treehouse subshell puts the pane back in the project checkout,
@@ -161,6 +169,7 @@ make_claim_case() {
   SELECTED_FILE="$CASE_DIR/selected-path"
   VIOLATION_FILE="$CASE_DIR/claimed-get-violations"
   EXIT_SENDS_FILE="$CASE_DIR/exit-sends"
+  BRIEF_SNAPSHOT_FILE="$CASE_DIR/brief-at-launch"
   case_dir=$CASE_DIR
   FAKEBIN_DIR=$(make_claim_fakebin "$case_dir/fake")
   mkdir -p "$HOME_DIR/data" "$HOME_DIR/projects" "$HOME_DIR/state" "$HOME_DIR/config"
@@ -168,7 +177,8 @@ make_claim_case() {
   fm_git_worktree "$PROJ_DIR" "$SLOT_A" "slot-a-$name"
   git -C "$PROJ_DIR" worktree add --quiet -b "slot-b-$name" "$SLOT_B"
   mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  BRIEF_FILE="$HOME_DIR/data/$id/brief.md"
+  printf 'brief for %s\n' "$id" > "$BRIEF_FILE"
   touch "$HOME_DIR/state/.last-watcher-beat"
 }
 
@@ -211,6 +221,7 @@ run_claim_spawn() {  # <id> [windows] [command]
     FM_FAKE_SELECTED_FILE="$SELECTED_FILE" \
     FM_FAKE_CLAIM_VIOLATIONS="$VIOLATION_FILE" FM_FAKE_PROJECT_DIR="$PROJ_DIR" \
     FM_FAKE_EXIT_SENDS="$EXIT_SENDS_FILE" \
+    FM_FAKE_BRIEF_FILE="$BRIEF_FILE" FM_FAKE_BRIEF_SNAPSHOT="$BRIEF_SNAPSHOT_FILE" \
     FM_FAKE_WINDOWS="$windows" FM_FAKE_COMMAND="$command" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" 2>&1
@@ -566,6 +577,71 @@ test_unclaimed_slot_spawns_unchanged() {
     "meta did not record the unclaimed slot"
   [ "$(cat "$COUNTFILE")" = 1 ] || fail "an unclaimed slot took more than one treehouse get"
   pass "an unclaimed slot spawns on the first attempt, unchanged"
+}
+
+# The scaffolded ship brief states its isolation check as an exact `pwd -P`
+# comparison against two paths fm-brief.sh cannot know, carried as
+# __FM_TASK_WORKTREE_PATH__ / __FM_PRIMARY_CHECKOUT_PATH__. If spawn hands the
+# worker a brief that still carries them, the worker's own path equals neither
+# string and it hard-blocks a correctly isolated worktree. So the fill must have
+# happened by the time the launch command is sent, not merely by the time spawn
+# exits.
+write_isolation_brief() {  # <extra-line>...
+  {
+    printf 'Expected task worktree: __FM_TASK_WORKTREE_PATH__\n'
+    printf 'Primary checkout: __FM_PRIMARY_CHECKOUT_PATH__\n'
+    printf 'blocked: launched in unexpected path; expected __FM_TASK_WORKTREE_PATH__; primary __FM_PRIMARY_CHECKOUT_PATH__\n'
+    [ "$#" -eq 0 ] || printf '%s\n' "$@"
+  } > "$BRIEF_FILE"
+}
+
+test_isolation_placeholders_are_filled_before_launch() {
+  local id out status slot_real proj_real snapshot
+  id=fill-brief-z9
+  make_claim_case fill-brief "$id"
+  offer_slots "$SLOT_B"
+  write_isolation_brief
+
+  out=$(run_claim_spawn "$id" "" zsh)
+  status=$?
+  expect_code 0 "$status" "spawn should succeed on an unclaimed slot"
+  assert_contains "$out" "spawned $id" "spawn did not report success"
+
+  slot_real=$(cd "$SLOT_B" && pwd -P)
+  proj_real=$(cd "$PROJ_DIR" && pwd -P)
+  assert_present "$BRIEF_SNAPSHOT_FILE" \
+    "the launch command was never sent, so nothing proves when the brief was filled"
+  snapshot=$(cat "$BRIEF_SNAPSHOT_FILE")
+  assert_not_contains "$snapshot" "__FM_" \
+    "the brief still carried an unfilled isolation placeholder when the launch command was sent"
+  assert_contains "$snapshot" "Expected task worktree: $slot_real" \
+    "the brief sent to the worker does not name the allocated worktree's physical path"
+  assert_contains "$snapshot" "Primary checkout: $proj_real" \
+    "the brief sent to the worker does not name the primary checkout's physical path"
+  assert_contains "$snapshot" "expected $slot_real; primary $proj_real" \
+    "the unexpected-path stop line still reports placeholders instead of both real paths"
+  pass "the ship brief's isolation paths are resolved before the launch command is sent"
+}
+
+# The fill is keyed on the brief's own contents, not on the spawn's kind flag, and
+# it is a post-condition: a token spawn cannot resolve must refuse here, where the
+# diagnosis still exists, rather than reaching the worker as literal text.
+test_unfillable_isolation_placeholder_refuses_before_launch() {
+  local id out status
+  id=fill-brief-leftover-a1
+  make_claim_case fill-brief-leftover "$id"
+  offer_slots "$SLOT_B"
+  write_isolation_brief 'Report to: __FM_UNKNOWN_PATH__'
+
+  out=$(run_claim_spawn "$id" "" zsh)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a brief it cannot fully fill"
+  assert_contains "$out" "__FM_UNKNOWN_PATH__" \
+    "the refusal did not name the placeholder that survived the fill"
+  assert_not_contains "$out" "spawned $id" "an unfillable brief must not launch a worker"
+  assert_absent "$BRIEF_SNAPSHOT_FILE" \
+    "the launch command was sent despite an unfilled isolation placeholder"
+  pass "a placeholder spawn cannot fill refuses the launch instead of shipping literal text"
 }
 
 # A respawn of the SAME task re-claims the worktree its own record names: the
@@ -972,6 +1048,8 @@ test_live_claim_is_refused
 test_retry_lands_on_clean_slot
 test_ghost_claim_is_named_not_discarded
 test_unclaimed_slot_spawns_unchanged
+test_isolation_placeholders_are_filled_before_launch
+test_unfillable_isolation_placeholder_refuses_before_launch
 test_own_record_is_not_a_collision
 test_same_id_relaunch_refuses_missing_recorded_worktree_without_get
 test_same_id_relaunch_refuses_conflicting_record_claim_without_get

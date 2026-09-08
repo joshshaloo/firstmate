@@ -132,8 +132,11 @@ test_brief_assertion_precedes_branch() {
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "blocked: launched in primary checkout, not an isolated worktree" "$brief" \
     "brief is missing the isolation blocked-status contract"
-  assert_grep "The path check is authoritative" "$brief" \
-    "brief must make the path check authoritative"
+  # shellcheck disable=SC2016 # The literal brief wording, backticks included, is the contract.
+  assert_grep 'Run `pwd -P` and compare the physical path exactly against these two paths' "$brief" \
+    "brief must decide isolation by an exact pwd -P path comparison"
+  assert_grep "do not decide isolation" "$brief" \
+    "brief must state that the linked-worktree git-dir/common-dir details do not decide isolation"
   assert_no_grep "A reliable test that you are in a linked worktree" "$brief" \
     "brief must not present git-dir/common-dir as decisive"
   assert_no_grep "they are identical in the primary checkout" "$brief" \

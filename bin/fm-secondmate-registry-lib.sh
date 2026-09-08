@@ -22,7 +22,7 @@
 # places its secondmate on another host. A reader on this home cannot answer a
 # remote row's local questions, and saying so is not the same as "malformed row"
 # or "no row at all", so the distinction is named here rather than re-invented.
-SECONDMATE_REGISTRY_REMOTE_REFUSAL='registered on another host: a remote secondmate row is not supported by this home'
+SECONDMATE_REGISTRY_REMOTE_REFUSAL='remote secondmate rows are parser-only tolerance; local home resolution is unsupported'
 # The companion wording for a row this parser cannot read at all. What a valid
 # row looks like is this file's knowledge, so the message that names it belongs
 # here too rather than in each caller that has to report the refusal.
@@ -37,7 +37,6 @@ SECONDMATE_REGISTRY_SCOPE=
 SECONDMATE_REGISTRY_PROJECTS=
 SECONDMATE_REGISTRY_ADDED=
 SECONDMATE_REGISTRY_REMOTE=0
-SECONDMATE_REGISTRY_REMOTE_REFUSAL="remote secondmate rows are parser-only tolerance; local home resolution is unsupported"
 
 secondmate_registry_remote_refusal() {
   printf '%s\n' "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"

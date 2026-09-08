@@ -2236,16 +2236,16 @@ test_backlog_handoff_refuses_rows_the_shared_parser_refuses() {
   if out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" unreadable move-me 2>&1); then
     fail "handoff accepted a registry row the shared parser refuses"
   fi
-  printf '%s\n' "$out" | grep -F "$malformed_refusal" >/dev/null \
-    || fail "handoff did not name the unreadable row as the reason: $out"
+  printf '%s\n' "$out" | grep -Fx "error: secondmate unreadable: $malformed_refusal" >/dev/null \
+    || fail "handoff did not name the unreadable row as the reason on its own line: $out"
   cmp -s "$before" "$home/data/backlog.md" || fail "an unreadable row still mutated the main backlog"
   [ ! -e "$unreadable/data/backlog.md" ] || fail "handoff wrote into a home behind an unreadable row"
 
   if out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" faraway move-me 2>&1); then
     fail "handoff accepted a remote-registered secondmate row"
   fi
-  printf '%s\n' "$out" | grep -F "$remote_refusal" >/dev/null \
-    || fail "handoff did not name the remote placement as the reason: $out"
+  printf '%s\n' "$out" | grep -Fx "error: secondmate faraway: $remote_refusal" >/dev/null \
+    || fail "handoff did not name the remote placement as the reason on its own line: $out"
   printf '%s\n' "$out" | grep -F 'has no home' >/dev/null \
     && fail "a remote row must not be reported as a missing home field"
   cmp -s "$before" "$home/data/backlog.md" || fail "a remote row still mutated the main backlog"

@@ -76,7 +76,7 @@ secondmate_home() {
   # any other non-zero status is a registered row carrying no structured home
   # field, which keeps its own long-standing wording.
   if [ "$status" -eq 2 ]; then
-    echo "error: secondmate $id is $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" >&2
+    echo "error: secondmate $id: $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" >&2
     return 1
   fi
   if [ "$status" -ne 0 ]; then
@@ -84,7 +84,7 @@ secondmate_home() {
     return 1
   fi
   if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
-    echo "error: secondmate $id is $SECONDMATE_REGISTRY_REMOTE_REFUSAL" >&2
+    echo "error: secondmate $id: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" >&2
     return 1
   fi
   printf '%s\n' "$SECONDMATE_REGISTRY_HOME"

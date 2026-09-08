@@ -52,13 +52,9 @@ In the default Codex mode, a true value lets the second stop finish after one fo
 Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
 Claude Code sets `stop_hook_active=true` on every stop after any stop-hook continuation, including `asyncRewake` rewakes, which re-opened the 2026-07-21 blind window under the default one-shot behavior.
 The Claude mode waits up to `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` (default 800 milliseconds) and allows the stop when the watcher is healthy, `state/.claude-autoarm.lock` has a live owner, or `state/.claude-autoarm-epoch` contains a fresh rewake outcome.
-The Stop auto-arm also rechecks the same identity-matched fresh-beacon predicate before translating any typed `watcher: FAILED` close, so a cycle that started, beat, and left a live watcher after an absorbed wake counts as healthy instead of reporting supervision down.
-That healthy verdict never leaves the home without a wake translator: the auto-arm re-arms, so the hook attaches to the surviving watcher and blocks following it, and the close of that re-attached cycle is classified by the same rules.
-The recheck runs on every typed-failed close, never skipped because a re-arm already happened, because the absorbed-wake race can repeat one cycle deeper.
-The hook's own `REARM_MAX` constant (default 3, deliberately not an environment knob) bounds how many re-arms one firing may take, so an absorbed-wake chain that never resolves still ends in a visible alarm.
-The suppression is default closed: an exhausted bound, a close whose health cannot be proven, or a re-arm that reports neither a started nor an attached watcher and returns no actionable wake of its own all take the exit-2 failure alarm rather than a silent clean exit.
-That alarm never asserts a supervision state the firing did not measure: a close that proved a live watcher reports the absorbed-wake chain as unresolved after the re-arm bound and that the hook stopped translating wakes, and the `supervision is down` wording stays reserved for a close where no live watcher was proven.
-Both carry the same close evidence and the same repair command.
+The Stop auto-arm applies that same identity-matched fresh-beacon predicate to its own verdict: on every typed `watcher: FAILED` close it rechecks health, so a cycle that started, beat, and left a live watcher after an absorbed wake counts as healthy instead of waking the model with a `supervision is down` alarm.
+The suppression is default closed, so a close that cannot prove both a live watcher and a hook still translating its wakes stays an exit-2 alarm.
+[`watcher-continuity.md`](watcher-continuity.md) owns the re-arm chain behind that verdict, its bound, and which alarm banner each close prints.
 When none of those proofs appears, it re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override), then allows degraded with a visible `systemMessage`.
 Any allow resets the budget.
 

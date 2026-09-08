@@ -16,7 +16,7 @@ The stale-owner claim occurs only after the existing AFK and supervision-need ga
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
 A typed `watcher: FAILED` close also wakes the idle session unless a final identity-matched fresh-beacon check proves a watcher is already live for this home.
 On that healthy verdict the hook re-arms so it attaches to the surviving watcher and keeps owning wake translation, and it classifies the close of that re-attached cycle by the same rules, including the health check itself.
-The hook's `REARM_MAX` constant (default 3) bounds those re-arms per firing; an exhausted bound, a close with no health proof, or a re-arm that proves neither a started nor an attached watcher and returns no actionable wake falls back to the exit-2 failure alarm.
+The hook's `REARM_MAX` constant (fixed at 3, deliberately not an environment knob) bounds those re-arms per firing; an exhausted bound, a close with no health proof, or a re-arm that proves neither a started nor an attached watcher and returns no actionable wake falls back to the exit-2 failure alarm.
 That alarm reports the unresolved absorbed-wake chain when the closing cycle proved a live watcher and reports supervision down only when none was proven, so the banner never contradicts the measurement behind it.
 
 ## Actionable wake ordering

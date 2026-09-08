@@ -925,7 +925,11 @@ if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes
   fi
 fi
 if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible "$FM_QUOTA_AXI_VERSION_TIMEOUT"; then
-  echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
+  if [ -n "$FM_QUOTA_AXI_VERSION_TIMEOUT_DIAGNOSTIC" ]; then
+    echo "MISSING: quota-axi ($FM_QUOTA_AXI_VERSION_TIMEOUT_DIAGNOSTIC)"
+  else
+    echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
+  fi
 fi
 if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
   if [ -n "$FM_TASKS_AXI_VERSION_TIMEOUT_DIAGNOSTIC" ]; then

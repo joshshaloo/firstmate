@@ -448,7 +448,7 @@ ROWS
 
 # A version probe that never returns must not hold the whole startup diagnostic
 # hostage. Bootstrap passes the bound bin/fm-quota-axi-lib.sh owns, so a wedged
-# `quota-axi --version` becomes the same MISSING line an old build produces.
+# `quota-axi --version` becomes the same hung-version line its sibling probes produce.
 # The bound runs through the shared timeout owner's dependency-free mechanism
 # here, so this also proves bootstrap reaches the delegated bounded path. The
 # run uses the documented FM_QUOTA_AXI_VERSION_TIMEOUT override - read back from
@@ -456,7 +456,7 @@ ROWS
 # is what bootstrap actually waits on.
 test_quota_axi_hang_is_bounded_and_reported_missing() {
   local case_dir fakebin out missing bound started elapsed
-  missing='MISSING: quota-axi (install: npm install -g quota-axi)'
+  missing='MISSING: quota-axi (quota-axi --version hung for 3s)'
   case_dir="$TMP_ROOT/quota-axi-hang"
   mkdir -p "$case_dir/home/config"
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"

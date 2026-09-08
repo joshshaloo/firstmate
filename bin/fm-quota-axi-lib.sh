@@ -23,19 +23,30 @@ FM_QUOTA_AXI_MIN=0.1.16
 # shellcheck disable=SC2034 # Read by sourcing callers, not by this file.
 FM_QUOTA_AXI_VERSION_TIMEOUT=${FM_QUOTA_AXI_VERSION_TIMEOUT:-10}
 case "$FM_QUOTA_AXI_VERSION_TIMEOUT" in ''|*[!0-9]*|0) FM_QUOTA_AXI_VERSION_TIMEOUT=10 ;; esac
+# shellcheck disable=SC2034 # Read by sourcing callers after fm_quota_axi_compatible returns.
+FM_QUOTA_AXI_VERSION_TIMEOUT_DIAGNOSTIC=
 FM_QUOTA_AXI_LIB_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$FM_QUOTA_AXI_LIB_DIR/fm-timeout-lib.sh"
 
 fm_quota_axi_compatible() {
-  local timeout=${1:-} output parts major minor patch extra
+  local timeout=${1:-} output rc parts major minor patch extra
   local min_major min_minor min_patch min_extra
+  # shellcheck disable=SC2034 # Read by sourcing callers after fm_quota_axi_compatible returns.
+  FM_QUOTA_AXI_VERSION_TIMEOUT_DIAGNOSTIC=
   command -v quota-axi >/dev/null 2>&1 || return 1
   if [ -n "$timeout" ]; then
     case "$timeout" in
       ''|*[!0-9]*|0) return 1 ;;
     esac
-    output=$(fm_run_timed "$timeout" quota-axi --version 2>/dev/null </dev/null) || return 1
+    output=$(fm_run_timed "$timeout" quota-axi --version 2>/dev/null </dev/null)
+    rc=$?
+    if [ "$rc" -eq 124 ]; then
+      # shellcheck disable=SC2034 # Read by sourcing callers after fm_quota_axi_compatible returns.
+      FM_QUOTA_AXI_VERSION_TIMEOUT_DIAGNOSTIC="quota-axi --version hung for ${timeout}s"
+      return 1
+    fi
+    [ "$rc" -eq 0 ] || return 1
   else
     output=$(quota-axi --version 2>/dev/null </dev/null) || return 1
   fi

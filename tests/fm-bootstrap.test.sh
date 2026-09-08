@@ -15,12 +15,15 @@
 # Dedicated fleet-sync cases pin the computed bootstrap timeout, explicit
 # override, blank-env defaulting, partial-output relay, and pre-launch timeout
 # scan.
+# A dedicated harness case pins the suite's own hermeticity: the base PATH from
+# fm_test_set_base_path must not leak a real-path herdr into a fake toolchain,
+# so a host with herdr installed cannot silently satisfy a case that omits it.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+fm_test_set_base_path BASE_PATH
 fm_test_tmproot TMP_ROOT fm-bootstrap-tests
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
 
@@ -595,6 +598,53 @@ ROWS
   pass "bootstrap: a session-provider backend gates its own CLI, never a false tmux requirement"
 }
 
+test_fake_toolchain_base_path_does_not_leak_real_path_tools() {
+  local case_dir real_path fakebin old_real old_base old_real_set old_base_set hermetic_path out
+  case_dir="$TMP_ROOT/base-path-leak"
+  real_path="$case_dir/real-path"
+  mkdir -p "$case_dir/home/config" "$real_path"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' herdr > "$case_dir/home/config/backend"
+  cat > "$real_path/herdr" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$real_path/herdr"
+  fakebin=$(make_fake_toolchain_no_tmux "$case_dir")
+  old_real_set=0
+  old_base_set=0
+  old_real=
+  old_base=
+  if [ -n "${FM_TEST_REAL_BASE_PATH+x}" ]; then
+    old_real_set=1
+    old_real=$FM_TEST_REAL_BASE_PATH
+  fi
+  if [ -n "${FM_TEST_BASE_PATH+x}" ]; then
+    old_base_set=1
+    old_base=$FM_TEST_BASE_PATH
+  fi
+  FM_TEST_REAL_BASE_PATH="$real_path:$FM_TEST_DEFAULT_REAL_BASE_PATH"
+  unset FM_TEST_BASE_PATH
+  fm_test_set_base_path hermetic_path
+  if [ "$old_real_set" -eq 1 ]; then
+    FM_TEST_REAL_BASE_PATH=$old_real
+  else
+    unset FM_TEST_REAL_BASE_PATH
+  fi
+  if [ "$old_base_set" -eq 1 ]; then
+    FM_TEST_BASE_PATH=$old_base
+  else
+    unset FM_TEST_BASE_PATH
+  fi
+  out=$(PATH="$fakebin:$hermetic_path" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "MISSING_MANUAL: herdr (instructions: https://herdr.dev)" \
+    "an unlisted herdr on the real search path must not leak into the fake toolchain"
+  assert_not_contains "$out" "MISSING: tmux" "backend=herdr must still avoid a false tmux demand"
+  pass "test base path exposes only listed real tools"
+}
+
+
 test_herdr_install_requires_manual_action() {
   local out status
   out=$("$ROOT/bin/fm-bootstrap.sh" install herdr 2>&1)
@@ -1032,6 +1082,7 @@ test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux
 test_session_provider_backends_gate_own_cli_not_tmux
+test_fake_toolchain_base_path_does_not_leak_real_path_tools
 test_herdr_install_requires_manual_action
 test_cmux_bundled_cli_satisfies_dependency
 test_unknown_backend_reports_invalid_configuration

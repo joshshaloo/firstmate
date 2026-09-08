@@ -15,6 +15,10 @@ set -u
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the zellij adapter)"; exit 0; }
 
 fm_test_tmproot TMP_ROOT fm-backend-zellij-tests
+# Hermetic base PATH for the deliberately-missing-zellij case: a host-installed
+# zellij must not satisfy it. jq is opted in so the only tool the case removes
+# is zellij itself, keeping the "not installed" assertion about zellij.
+fm_test_set_base_path BASE_PATH jq
 
 # make_zellij_fakebin: a `zellij` stub that logs every invocation (one line,
 # unit-separated args, to $FM_ZELLIJ_LOG) and returns the canned response for
@@ -184,7 +188,7 @@ test_version_check_refuses_old_version() {
 test_version_check_refuses_missing_zellij() {
   local dir out status
   dir="$TMP_ROOT/version-missing"; mkdir -p "$dir/empty-fakebin"
-  out=$( PATH="$dir/empty-fakebin:/usr/bin:/bin" \
+  out=$( PATH="$dir/empty-fakebin:$BASE_PATH" \
     bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_version_check' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "version_check should refuse when zellij is not installed"

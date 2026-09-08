@@ -13,12 +13,9 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
-# The client under test uses the real jq; make it resolvable regardless of where
-# it is installed (Homebrew, Nix profile bins, etc.), which the bare BASE_PATH may
-# not include. Prepended after the fakebin so the fake curl still wins.
-JQ_DIR=$(command -v jq 2>/dev/null) && JQ_DIR=$(dirname "$JQ_DIR") || JQ_DIR=
-[ -n "$JQ_DIR" ] && BASE_PATH="$JQ_DIR:$BASE_PATH"
+# The client under test uses the real jq; list it explicitly so the hermetic
+# base path links that tool without exposing the host directory around it.
+fm_test_set_base_path BASE_PATH jq
 fm_test_tmproot TMP_ROOT fm-x-mode-tests
 
 # A fakebin `curl` that mimics the relay: it reads its behavior from env

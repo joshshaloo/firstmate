@@ -98,6 +98,8 @@ Use `bin/fm-test-run.sh --help` for lane names, `--jobs` rules, and required gat
 Discover tests by listing `tests/*.test.sh`: each is a self-contained bash script named `<subject>.test.sh`, and its header comment describes what it covers, so pass one to `bin/fm-test-run.sh` to focus on a subject with canonical timing output.
 Inside a `tests/*.test.sh` suite, allocate every fixture root under temp space with `fm_test_tmproot` from `tests/lib.sh`, and register extra teardown with `fm_test_at_exit`, never with a per-suite temp-dir trap.
 That library's header owns the contract - trap ownership, handler ordering, and the `FM_TEST_KEEP_TMP=1` debugging escape hatch - and `tests/fm-test-tmp-cleanup.test.sh` enforces it.
+A suite that prepends a fakebin must take its base PATH from `fm_test_set_base_path` in the same library, never a hand-rolled `/usr/bin:/bin` string, so a host-installed tool cannot satisfy a case that deliberately omits it.
+That helper's header owns the allowlist of real core tools, the per-suite opt-in for extra tools, and the `FM_TEST_BASE_PATH` override, and `tests/fm-bootstrap.test.sh` proves a real-path `herdr` does not leak into a fake toolchain.
 Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests, the live Pi regression) skip themselves and print the tool or environment gate needed to enable them, so the portable suite remains safe on machines without those tools.
 The [Herdr backend guide](docs/herdr-backend.md#destructive-lab-safety) owns the lane's isolation boundary, while [runtime backend verification](docs/verification/runtime-backends.md#herdr) owns active empirical evidence; live harness credential tests remain opt-in.
 

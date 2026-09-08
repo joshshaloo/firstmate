@@ -6,12 +6,12 @@
 #   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 #
 # It provides the boilerplate every test file used to re-roll: ok/not-ok
-# reporters, a self-cleaning temp root, fakebin/PATH-shim helpers, deterministic
-# git identity and fixture builders, state/<id>.meta writers, and the common
-# string/exit-code/file assertions. It deliberately does NOT bundle the
-# behavior-specific fake tmux/treehouse/no-mistakes mocks: those encode terminal
-# and lifecycle assumptions that differ per suite and belong with the tests that
-# own them.
+# reporters, a self-cleaning temp root, a hermetic base PATH, fakebin/PATH-shim
+# helpers, deterministic git identity and fixture builders, state/<id>.meta
+# writers, and the common string/exit-code/file assertions. It deliberately does
+# NOT bundle the behavior-specific fake tmux/treehouse/no-mistakes mocks: those
+# encode terminal and lifecycle assumptions that differ per suite and belong
+# with the tests that own them.
 #
 # ROOT is exported as the firstmate repo root (this file lives in tests/), so a
 # sourcing test can use "$ROOT/bin/..." without recomputing it.
@@ -164,9 +164,81 @@ fm_test_tmproot() {
 
 # --- fakebin / PATH shims ---------------------------------------------------
 #
+# fm_test_set_base_path <var> [extra-tool...] fills <var> with the hermetic base
+# PATH for suites that prepend a fakebin. FM_TEST_BASE_PATH remains an explicit
+# override. Otherwise the base PATH is a private bin directory holding only the
+# allowlisted real system tools symlinked by name, plus the extra tools the
+# caller opts into. That keeps host-installed tools such as herdr, tmux, gh, or
+# node from satisfying a test that meant to fake or omit them.
+#
+# FM_TEST_BASE_TOOL_ALLOWLIST names core tools bin/ invokes unconditionally, so
+# a missing one fails the suite. FM_TEST_BASE_TOOL_OPTIONAL_ALLOWLIST names the
+# platform-variant tools bin/ chooses between with command -v (md5/md5sum,
+# timeout/gtimeout); each is linked when the host has it and skipped when it does
+# not, because no single host ships both halves of those pairs.
+#
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to
 # shadow real tools with stubs. fm_fake_exit0 drops trivial exit-0 stubs for the
 # named tools into a fakebin dir.
+
+FM_TEST_DEFAULT_REAL_BASE_PATH='/usr/bin:/bin:/usr/sbin:/sbin'
+FM_TEST_BASE_TOOL_ALLOWLIST='awk base64 basename bash cat chmod cksum cmp cp cut date dd dirname env find git grep head id kill ln ls mkdir mktemp mv od openssl paste perl printf ps pwd readlink realpath rm rmdir sed seq sh shasum sleep sort stat tail tee touch tr uname uniq wc xargs'
+FM_TEST_BASE_TOOL_OPTIONAL_ALLOWLIST='gtimeout md5 md5sum timeout'
+FM_TEST_CORE_BIN=
+FM_TEST_CORE_BIN_KEY=
+
+fm_test_find_real_tool() {
+  local tool=$1 dir
+  local search_path=${FM_TEST_REAL_BASE_PATH:-$FM_TEST_DEFAULT_REAL_BASE_PATH}
+  while [ -n "$search_path" ]; do
+    dir=${search_path%%:*}
+    if [ "$search_path" = "$dir" ]; then
+      search_path=
+    else
+      search_path=${search_path#*:}
+    fi
+    [ -n "$dir" ] || continue
+    if [ -x "$dir/$tool" ]; then
+      printf '%s\n' "$dir/$tool"
+      return 0
+    fi
+  done
+  command -v "$tool" 2>/dev/null || return 1
+}
+
+fm_test_set_base_path() {
+  local __fm_var=$1 key tool real
+  shift
+  case "$__fm_var" in
+    ""|[!A-Za-z_]*|*[!A-Za-z0-9_]*) fail "fm_test_set_base_path requires a simple variable name" ;;
+    __fm_*) fail "fm_test_set_base_path cannot fill '$__fm_var': __fm_* names are the helper's own locals" ;;
+  esac
+  if [ -n "${FM_TEST_BASE_PATH:-}" ]; then
+    eval "$__fm_var=\$FM_TEST_BASE_PATH"
+    return 0
+  fi
+  key="${FM_TEST_REAL_BASE_PATH:-$FM_TEST_DEFAULT_REAL_BASE_PATH}|$*"
+  if [ -z "$FM_TEST_CORE_BIN" ] || [ "$FM_TEST_CORE_BIN_KEY" != "$key" ]; then
+    FM_TEST_CORE_BIN=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-base-path.XXXXXX") \
+      || fail "fm_test_set_base_path could not create a private bin dir"
+    FM_TEST_CORE_BIN_KEY=$key
+    FM_TEST_CLEANUP_DIRS+=("$FM_TEST_CORE_BIN")
+    fm_test_install_cleanup_trap
+    for tool in $FM_TEST_BASE_TOOL_ALLOWLIST "$@"; do
+      [ -n "$tool" ] || continue
+      [ ! -e "$FM_TEST_CORE_BIN/$tool" ] || continue
+      real=$(fm_test_find_real_tool "$tool") \
+        || fail "fm_test_set_base_path could not find required real tool: $tool"
+      ln -s "$real" "$FM_TEST_CORE_BIN/$tool"
+    done
+    for tool in $FM_TEST_BASE_TOOL_OPTIONAL_ALLOWLIST; do
+      [ ! -e "$FM_TEST_CORE_BIN/$tool" ] || continue
+      real=$(fm_test_find_real_tool "$tool") || continue
+      ln -s "$real" "$FM_TEST_CORE_BIN/$tool"
+    done
+  fi
+  eval "$__fm_var=\$FM_TEST_CORE_BIN"
+}
 
 fm_fakebin() {
   local dir=$1 fakebin="$1/fakebin"

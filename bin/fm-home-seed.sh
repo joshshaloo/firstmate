@@ -38,14 +38,16 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 REG="$DATA/secondmates.md"
 SUB_HOME_MARKER=".fm-secondmate-home"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
   echo "       fm-home-seed.sh validate" >&2
 }
 
-registry_home_for_line() {
-  sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p'
+registry_row_refusal() {  # <id> <wording>
+  printf 'error: secondmate %s: %s\n' "$1" "$2" >&2
 }
 
 normalize_registry_text() {
@@ -176,69 +178,106 @@ path_is_ancestor_of() {
 }
 
 registry_home_conflict_for_assignment() {
-  local id=$1 home=$2 target line registered_id registered_home registered_key
+  local id=$1 home=$2 target line row_rc registered_id registered_home registered_key
   [ -f "$REG" ] || return 1
   target=$(resolved_path "$home")
   while IFS= read -r line; do
     case "$line" in
-      "- "*)
-        registered_id=${line#- }
-        registered_id=${registered_id%% *}
-        registered_home=$(printf '%s\n' "$line" | registry_home_for_line)
-        [ -n "$registered_home" ] || continue
-        registered_key=$(resolved_path "$registered_home")
-        if [ "$registered_key" = "$target" ]; then
-          [ "$registered_id" = "$id" ] && continue
-          printf 'exact\t%s\t%s\n' "$registered_id" "$registered_key"
-          return 0
-        fi
-        if path_is_ancestor_of "$registered_key" "$target" || path_is_ancestor_of "$target" "$registered_key"; then
-          printf 'overlap\t%s\t%s\n' "$registered_id" "$registered_key"
-          return 0
-        fi
-        ;;
+      "- "*) ;;
+      *) continue ;;
     esac
+    row_rc=0
+    secondmate_registry_parse_line "$line" || row_rc=$?
+    if [ "$row_rc" -eq 2 ]; then
+      registry_row_refusal "${SECONDMATE_REGISTRY_ID:-unknown}" "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"
+      return 2
+    fi
+    [ "$row_rc" -eq 0 ] || continue
+    registered_id=$SECONDMATE_REGISTRY_ID
+    if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+      registry_row_refusal "$registered_id" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
+      return 2
+    fi
+    registered_home=$SECONDMATE_REGISTRY_HOME
+    [ -n "$registered_home" ] || continue
+    registered_key=$(resolved_path "$registered_home")
+    if [ "$registered_key" = "$target" ]; then
+      [ "$registered_id" = "$id" ] && continue
+      printf 'exact\t%s\t%s\n' "$registered_id" "$registered_key"
+      return 0
+    fi
+    if path_is_ancestor_of "$registered_key" "$target" || path_is_ancestor_of "$target" "$registered_key"; then
+      printf 'overlap\t%s\t%s\n' "$registered_id" "$registered_key"
+      return 0
+    fi
   done < "$REG"
   return 1
 }
 
 registry_id_conflict_for_assignment() {
-  local id=$1 home=$2 target line registered_id registered_home registered_key
+  local id=$1 home=$2 target line row_rc registered_id registered_home registered_key
   [ -f "$REG" ] || return 1
   target=$(resolved_path "$home")
   while IFS= read -r line; do
     case "$line" in
-      "- "*)
-        registered_id=${line#- }
-        registered_id=${registered_id%% *}
-        [ "$registered_id" = "$id" ] || continue
-        registered_home=$(printf '%s\n' "$line" | registry_home_for_line)
-        [ -n "$registered_home" ] || continue
-        registered_key=$(resolved_path "$registered_home")
-        [ "$registered_key" = "$target" ] && continue
-        printf '%s\n' "$registered_key"
-        return 0
-        ;;
+      "- "*) ;;
+      *) continue ;;
     esac
+    row_rc=0
+    secondmate_registry_parse_line "$line" || row_rc=$?
+    if [ "$row_rc" -eq 2 ]; then
+      registry_row_refusal "${SECONDMATE_REGISTRY_ID:-unknown}" "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"
+      return 2
+    fi
+    [ "$row_rc" -eq 0 ] || continue
+    registered_id=$SECONDMATE_REGISTRY_ID
+    [ "$registered_id" = "$id" ] || continue
+    if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+      registry_row_refusal "$registered_id" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
+      return 2
+    fi
+    registered_home=$SECONDMATE_REGISTRY_HOME
+    [ -n "$registered_home" ] || continue
+    registered_key=$(resolved_path "$registered_home")
+    [ "$registered_key" = "$target" ] && continue
+    printf '%s\n' "$registered_key"
+    return 0
   done < "$REG"
   return 1
 }
 
 validate_registry() {
-  local tmp line id registered_home home_key duplicate_homes duplicate_ids overlaps
+  local tmp tmp_local refusals line line_no id row_rc registered_home home_key duplicate_homes duplicate_ids overlaps
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-firstmates.XXXXXX")
+  tmp_local=$(mktemp "${TMPDIR:-/tmp}/fm-firstmates-local.XXXXXX")
+  refusals=
+  line_no=0
   if [ -f "$REG" ]; then
     while IFS= read -r line; do
+      line_no=$((line_no + 1))
       case "$line" in
-        "- "*)
-          id=${line#- }
-          id=${id%% *}
-          registered_home=$(printf '%s\n' "$line" | registry_home_for_line)
-          [ -n "$registered_home" ] || continue
-          home_key=$(resolved_path "$registered_home")
-          printf '%s\t%s\n' "$home_key" "$id" >> "$tmp"
-          ;;
+        "- "*) ;;
+        *) continue ;;
       esac
+      row_rc=0
+      secondmate_registry_parse_line "$line" || row_rc=$?
+      if [ "$row_rc" -eq 2 ]; then
+        id=${SECONDMATE_REGISTRY_ID:-unknown}
+        printf 'malformed:%s\t%s\n' "$line_no" "$id" >> "$tmp"
+        refusals=${refusals}${refusals:+$'\n'}"$id"$'\t'"$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"
+        continue
+      fi
+      [ "$row_rc" -eq 0 ] || continue
+      id=$SECONDMATE_REGISTRY_ID
+      if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+        printf 'remote:%s\t%s\n' "$SECONDMATE_REGISTRY_HOME" "$id" >> "$tmp"
+        refusals=${refusals}${refusals:+$'\n'}"$id"$'\t'"$SECONDMATE_REGISTRY_REMOTE_REFUSAL"
+        continue
+      fi
+      registered_home=$SECONDMATE_REGISTRY_HOME
+      home_key=$(resolved_path "$registered_home")
+      printf '%s\t%s\n' "$home_key" "$id" >> "$tmp"
+      printf '%s\t%s\n' "$home_key" "$id" >> "$tmp_local"
     done < "$REG"
   fi
   duplicate_homes=$(awk -F '\t' '
@@ -251,8 +290,8 @@ validate_registry() {
       }
     }
     END { exit bad ? 1 : 0 }
-  ' "$tmp" 2>/dev/null) || {
-    rm -f "$tmp"
+  ' "$tmp_local" 2>/dev/null) || {
+    rm -f "$tmp" "$tmp_local"
     printf 'error: duplicate secondmate home assignment:\n%s\n' "$duplicate_homes" >&2
     return 1
   }
@@ -267,10 +306,20 @@ validate_registry() {
     }
     END { exit bad ? 1 : 0 }
   ' "$tmp" 2>/dev/null) || {
-    rm -f "$tmp"
+    rm -f "$tmp" "$tmp_local"
     printf 'error: duplicate secondmate id assignment:\n%s\n' "$duplicate_ids" >&2
     return 1
   }
+  if [ -n "$refusals" ]; then
+    while IFS=$'\t' read -r id reason; do
+      [ -n "$id" ] || continue
+      registry_row_refusal "$id" "$reason"
+    done <<EOF
+$refusals
+EOF
+    rm -f "$tmp" "$tmp_local"
+    return 1
+  fi
   overlaps=$(awk -F '\t' '
     function ancestor(a, b) { return a != b && index(b, a "/") == 1 }
     {
@@ -288,12 +337,12 @@ validate_registry() {
       id[count]=$2
     }
     END { exit bad ? 1 : 0 }
-  ' "$tmp" 2>/dev/null) || {
-    rm -f "$tmp"
+  ' "$tmp_local" 2>/dev/null) || {
+    rm -f "$tmp" "$tmp_local"
     printf 'error: overlapping secondmate home assignment:\n%s\n' "$overlaps" >&2
     return 1
   }
-  rm -f "$tmp"
+  rm -f "$tmp" "$tmp_local"
   return 0
 }
 
@@ -507,7 +556,7 @@ verify_firstmate_home() {
 }
 
 validate_home_assignment() {
-  local id=$1 home=$2 marker_id id_conflict conflict conflict_type owner registered_home
+  local id=$1 home=$2 marker_id id_conflict conflict conflict_type owner registered_home rc
   if [ -f "$home/$SUB_HOME_MARKER" ]; then
     marker_id=$(cat "$home/$SUB_HOME_MARKER" 2>/dev/null || true)
     if [ "$marker_id" != "$id" ]; then
@@ -515,12 +564,16 @@ validate_home_assignment() {
       return 1
     fi
   fi
-  id_conflict=$(registry_id_conflict_for_assignment "$id" "$home" || true)
+  rc=0
+  id_conflict=$(registry_id_conflict_for_assignment "$id" "$home") || rc=$?
+  [ "$rc" -ne 2 ] || return 1
   if [ -n "$id_conflict" ]; then
     echo "error: secondmate id $id is already registered to home $id_conflict; retire it before assigning $home" >&2
     return 1
   fi
-  conflict=$(registry_home_conflict_for_assignment "$id" "$home" || true)
+  rc=0
+  conflict=$(registry_home_conflict_for_assignment "$id" "$home") || rc=$?
+  [ "$rc" -ne 2 ] || return 1
   [ -n "$conflict" ] || return 0
   IFS=$'\t' read -r conflict_type owner registered_home <<EOF
 $conflict

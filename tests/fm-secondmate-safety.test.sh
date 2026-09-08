@@ -167,6 +167,46 @@ EOF
   pass "home seed validation rejects duplicate id routes"
 }
 
+
+test_home_seed_validate_rejects_duplicate_id_across_local_and_remote_rows() {
+  local home local_home local_abs err
+  home="$TMP_ROOT/duplicate-id-remote-home"
+  local_home="$TMP_ROOT/duplicate-id-remote-local"
+  err="$TMP_ROOT/duplicate-id-remote.err"
+  mkdir -p "$home/data" "$local_home"
+  local_abs=$(cd "$local_home" && pwd -P)
+  cat > "$home/data/secondmates.md" <<EOF
+- design - local design domain (home: $local_abs; scope: design work; projects: alpha; added 2026-06-22)
+- design - remote design domain (host: elsewhere; root: /srv/fm; home: /srv/fm/design; scope: design work; projects: beta; added 2026-06-22)
+EOF
+
+  if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" validate >/dev/null 2>"$err"; then
+    fail "registry validation accepted a duplicate id split across local and remote rows"
+  fi
+  grep -F 'duplicate secondmate id assignment' "$err" >/dev/null \
+    || fail "registry validation did not report the duplicate id across local and remote rows"
+  pass "home seed validation rejects duplicate ids across local and remote rows"
+}
+
+
+test_home_seed_validate_refuses_remote_rows_with_parser_wording() {
+  local home err
+  home="$TMP_ROOT/validate-remote-row-home"
+  err="$TMP_ROOT/validate-remote-row.err"
+  mkdir -p "$home/data"
+  printf '%s
+' '- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+
+  if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" validate >/dev/null 2>"$err"; then
+    fail "registry validation accepted a remote secondmate row"
+  fi
+  grep -F "error: secondmate faraway: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$err" >/dev/null \
+    || fail "registry validation did not report the parser-owned remote refusal: $(cat "$err")"
+  pass "home seed validation refuses remote rows with parser-owned wording"
+}
+
+
+
 test_home_seed_validate_rejects_nested_homes() {
   local home ancestor descendant ancestor_abs descendant_abs err
   home="$TMP_ROOT/nested-home"
@@ -1918,6 +1958,40 @@ EOF
   pass "secondmate teardown refuses nested homes from the child registry"
 }
 
+test_secondmate_teardown_refuses_parser_rejected_child_registry_rows() {
+  local home subhome fakebin err log
+  home="$TMP_ROOT/parser-refusal-teardown-home"
+  subhome="$TMP_ROOT/parser-refusal-teardown-subhome"
+  err="$TMP_ROOT/parser-refusal-teardown.err"
+  mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/data"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$subhome
+project=$subhome
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$subhome
+projects=alpha
+EOF
+  printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+  printf '%s\n' '- faraway - remote nested domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: beta; added 2026-06-22)' > "$subhome/data/secondmates.md"
+  fakebin=$(make_fake_tmux "$TMP_ROOT/parser-refusal-teardown-fake")
+  log="$TMP_ROOT/parser-refusal-teardown-fake/tmux.log"
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/parser-refusal-teardown-fake/pane.txt" \
+    "$ROOT/bin/fm-teardown.sh" domain >/dev/null 2>"$err"; then
+    fail "teardown removed a home whose child registry contained a remote row"
+  fi
+  grep -F "secondmate faraway: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" "$err" >/dev/null \
+    || fail "teardown did not report the parser-owned remote refusal: $(cat "$err")"
+  [ -d "$subhome" ] || fail "teardown removed the home after parser-owned row refusal"
+  [ -e "$home/state/domain.meta" ] || fail "teardown cleared parent meta after parser-owned row refusal"
+  grep -F 'kill-window' "$log" >/dev/null && fail "teardown killed a window before parser-owned row refusal"
+  pass "secondmate teardown refuses parser-rejected rows before destructive home removal"
+}
+
 test_secondmate_force_teardown_prevalidates_before_child_cleanup() {
   local home subhome childproj childwt fakebin err log
   home="$TMP_ROOT/prevalidate-teardown-home"
@@ -2332,6 +2406,8 @@ test_lock_status_is_per_home
 test_seed_allows_overlapping_clones_and_drops_owner
 test_home_seed_validate_rejects_duplicate_homes
 test_home_seed_validate_rejects_duplicate_ids
+test_home_seed_validate_rejects_duplicate_id_across_local_and_remote_rows
+test_home_seed_validate_refuses_remote_rows_with_parser_wording
 test_home_seed_validate_rejects_nested_homes
 test_home_seed_uses_treehouse_acquired_home
 test_home_seed_returns_treehouse_acquired_home_on_assignment_failure
@@ -2378,6 +2454,7 @@ test_secondmate_force_teardown_allows_operational_dir_symlinks_inside_home
 test_secondmate_force_teardown_refuses_operational_dir_symlink_outside_home
 test_secondmate_teardown_refuses_registered_nested_home
 test_secondmate_teardown_refuses_child_registry_nested_home
+test_secondmate_teardown_refuses_parser_rejected_child_registry_rows
 test_secondmate_force_teardown_prevalidates_before_child_cleanup
 test_secondmate_force_teardown_refuses_child_active_home_descendant
 test_secondmate_force_teardown_refuses_child_repo_descendant

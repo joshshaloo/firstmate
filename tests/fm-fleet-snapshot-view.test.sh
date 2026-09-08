@@ -5,6 +5,8 @@ set -u
 # shellcheck source=tests/lib.sh
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$ROOT/bin/fm-secondmate-registry-lib.sh"
 
 SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
 VIEW="$ROOT/bin/fm-fleet-view.sh"
@@ -632,6 +634,27 @@ test_view_renders_dead_secondmate_agent_status() {
 # append-only stream. This is the fmdev masking bug: last-event-wins read the trailing
 # `done` and reported pending_decision=false while a needs-decision was still open. The
 # durable keyed fold (fm-classify-lib.sh) keeps it open until an explicit resolution.
+test_registry_snapshot_reports_parser_refusals() {
+  local home fakebin out
+  home=$(make_home registry-parser-refusals)
+  cat > "$home/data/secondmates.md" <<EOF
+- local - local domain (home: $home/secondmate-home; scope: local; projects: alpha; added 2026-07-11)
+- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: alpha; added 2026-07-11)
+- malformed - bad date (home: $home/bad; scope: bad; projects: alpha; added 2026-7-11)
+EOF
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e --arg remote "$SECONDMATE_REGISTRY_REMOTE_REFUSAL" '
+    .secondmate_current.registry.records[] | select(.id == "faraway")
+    | .home == null and .registry_error == $remote
+  ' >/dev/null || fail "snapshot did not report the parser-owned remote refusal: $out"
+  printf '%s' "$out" | jq -e --arg malformed "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL" '
+    .secondmate_current.registry.records[] | select(.id == "malformed")
+    | .home == null and .registry_error == $malformed
+  ' >/dev/null || fail "snapshot did not report the parser-owned malformed refusal: $out"
+  pass "fleet snapshot reports parser-owned registry row refusals"
+}
+
 test_open_decision_survives_later_unrelated_event() {
   local home fakebin out
   home=$(make_home masking)
@@ -819,3 +842,4 @@ test_backlog_tasks_axi_forms_and_overrides
 test_large_backlog_does_not_use_json_as_jq_argv
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
+test_registry_snapshot_reports_parser_refusals

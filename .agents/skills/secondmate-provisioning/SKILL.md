@@ -31,12 +31,9 @@ The `projects:` field is a non-exclusive clone list, not ownership.
 A remote row form with `host:` and `root:` fields is recognized by `bin/fm-secondmate-registry-lib.sh` solely as parser-only tolerance so the standup reader can report such entries without following them.
 No firstmate path provisions, spawns, or syncs a remote secondmate.
 `bin/fm-secondmate-registry-lib.sh` owns the single refusal wording for a local-home resolution attempt against such a row: `remote secondmate rows are parser-only tolerance; local home resolution is unsupported`.
-The `added` date must be zero-padded `YYYY-MM-DD`, and the readers that delegate to that parser (`bin/fm-ff-lib.sh`, `bin/fm-spawn.sh`, `bin/fm-update.sh`, `bin/fm-backlog-handoff.sh`, and their consumers) refuse a row whose date is not.
-Spawn, backlog handoff, config push, the bootstrap sweep, and `/updatefirstmate` resolve rows through the one row parser (`bin/fm-secondmate-registry-lib.sh`) and refuse exactly the same rows: a row that parser cannot read, and a row placing its secondmate on another host, whose `home:` path this home never resolves as a local path.
-Readers that print a skip or a send failure name which of those two refusals applied instead of reporting an anonymous missing home.
-`bin/fm-teardown.sh`'s descendant-home and parent-binding lookups, `bin/fm-public-followup.sh`'s home resolution, and `bin/fm-home-seed.sh` still extract the home with private patterns that never read `added`, so they miss a remote or malformed row only incidentally, because those patterns require a literal `(home:` that the remote form never spells; they emit a generic missing-home error or skip the row silently, never a parser-owned wording.
-These are not display-only: teardown's lookups gate a destructive home removal and the primary-binding decision, and public-followup's resolves the home used for commitment registration.
-Migrating those resolvers and the seed validator onto the shared parser is tracked in `firstmate-registry-resolvers-adopt-shared-parser`.
+The `added` date must be zero-padded `YYYY-MM-DD`, and every reader that consumes `data/secondmates.md` delegates row parsing to `bin/fm-secondmate-registry-lib.sh`, so they refuse a row whose date is not.
+Spawn, backlog handoff, config push, the bootstrap sweep, `/updatefirstmate`, teardown's descendant-home and parent-binding lookups, public-followup home resolution, home-seed validation, and fleet snapshot display all resolve rows through the one row parser and refuse exactly the same rows: a row that parser cannot read, and a row placing its secondmate on another host, whose `home:` path this home never resolves as a local path.
+Readers that print a skip, send failure, validation error, cleanup refusal, or display error name which of those two refusals applied instead of reporting an anonymous missing home.
 
 ## Charter and seed
 

@@ -15,6 +15,8 @@ set -u
 # shellcheck source=tests/lib.sh
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$ROOT/bin/fm-secondmate-registry-lib.sh"
 
 PF="$ROOT/bin/fm-public-followup.sh"
 EMIT="$ROOT/bin/fm-public-followup-emit.sh"
@@ -723,6 +725,47 @@ test_secondmate_parent_binding_matches_literal_id() {
   pass "secondmate parent resolution matches the durable registry id literally"
 }
 
+test_secondmate_parent_binding_refuses_remote_registry_row() {
+  local parent child
+  parent=$(make_home teardown-remote-parent)
+  child=$(make_home teardown-remote-child)
+  printf '%s\n' remote-mate > "$child/.fm-secondmate-home"
+  printf -- '- remote-mate - synthetic (host: elsewhere; root: /srv/fm; home: /srv/fm/remote-mate; scope: synthetic; projects: ; added 2026-07-30)\n' \
+    > "$parent/data/secondmates.md"
+  seed_commitment "$parent" pf-teardown-remote req-teardown-remote x secondmate:remote-mate work-remote
+  fm_write_meta "$parent/state/remote-mate.meta" "kind=secondmate" "home=$child"
+  fm_write_meta "$child/state/work-remote.meta" \
+    "window=firstmate:fm-work-remote" "endpoint_task_id=work-remote" \
+    "worktree=$child" "project=$child" "kind=ship" "mode=local-only"
+
+  PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
+    FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" \
+    FM_CONFIG_OVERRIDE="$child/config" FM_PUBLIC_FOLLOWUP_PRIMARY_HOME="$parent" \
+    expect_failure "a remote registry row must not satisfy parent binding" \
+    "$TEARDOWN" work-remote
+  assert_contains "$EXPECT_OUT" "error: secondmate remote-mate: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" \
+    "parent binding must report the parser-owned remote refusal"
+  assert_present "$child/state/work-remote.meta" \
+    "a remote-row parent binding refusal must preserve child work metadata"
+  pass "secondmate parent binding refuses remote registry rows with parser-owned wording"
+}
+
+test_public_followup_secondmate_home_refuses_remote_registry_row() {
+  local home out
+  home=$(make_home pf-remote-home)
+  seed_commitment "$home" pf-remote req-remote x secondmate:faraway work-remote
+  printf -- '- faraway - remote domain (host: elsewhere; root: /srv/fm; home: /srv/fm/faraway; scope: remote; projects: alpha; added 2026-07-30)\n' \
+    > "$home/data/secondmates.md"
+
+  out=$(run_pf "$home" retire pf-remote --force 2>&1) && \
+    fail "public-followup retired a secondmate registration whose home came from a remote row"
+  assert_contains "$out" "fm-public-followup: secondmate faraway: $SECONDMATE_REGISTRY_REMOTE_REFUSAL" \
+    "public-followup must report the parser-owned remote refusal"
+  assert_present "$home/state/public-followup/registry/pf-remote" \
+    "a remote-row refusal must retain the registration for reconciliation"
+  pass "public-followup refuses remote secondmate registry rows during home resolution"
+}
+
 test_traversal_registration_is_refused_before_delivery() {
   local home log out
   home=$(make_home traversal-registration)
@@ -1022,6 +1065,8 @@ test_secondmate_teardown_requires_parent_binding
 test_relay_disabled_unmarked_teardown_skips_public_path
 test_relay_disabled_parent_allows_marked_child_teardown
 test_secondmate_parent_binding_matches_literal_id
+test_secondmate_parent_binding_refuses_remote_registry_row
+test_public_followup_secondmate_home_refuses_remote_registry_row
 test_traversal_registration_is_refused_before_delivery
 test_pending_rejects_malformed_listing
 test_private_context_survives_inbox_cleanup

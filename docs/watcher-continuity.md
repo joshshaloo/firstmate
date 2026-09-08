@@ -13,7 +13,11 @@ Claude's `.claude/settings.json` Stop `asyncRewake` hook (`bin/fm-claude-stop-au
 The hook fires on every Stop, and an eligible primary with supervision need admits one home-scoped owner that foregrounds `bin/fm-watch-arm.sh` inside the hook-owned process tree.
 A numeric session-lock owner that fails the shared `fm_harness_pid_alive` predicate is reclaimed through `bin/fm-lock.sh` before auto-arm state changes, while a live owner, absent lock, or malformed lock keeps the competing hook inert.
 The stale-owner claim occurs only after the existing AFK and supervision-need gates pass.
-While supervision is still needed and away mode remains inactive, an actionable close or typed failure wakes the idle session through exit 2.
+While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
+A typed `watcher: FAILED` close also wakes the idle session unless a final identity-matched fresh-beacon check proves a watcher is already live for this home.
+On that healthy verdict the hook re-arms so it attaches to the surviving watcher and keeps owning wake translation, and it classifies the close of that re-attached cycle by the same rules, including the health check itself.
+The hook's `REARM_MAX` constant (fixed at 3, deliberately not an environment knob) bounds those re-arms per firing; an exhausted bound, a close with no health proof, or a re-arm that proves neither a started nor an attached watcher and returns no actionable wake falls back to the exit-2 failure alarm.
+That alarm reports the unresolved absorbed-wake chain when the closing cycle proved a live watcher and reports supervision down only when none was proven, so the banner never contradicts the measurement behind it.
 
 ## Actionable wake ordering
 
@@ -40,6 +44,7 @@ The turn-end guard remains the final backstop rather than the normal continuity 
 `bin/fm-watch-arm.sh` never returns a clean empty success.
 An actionable child output returns that reason normally.
 A zero/empty child return rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, or emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
+The Claude Stop auto-arm repeats that same health proof before translating the typed failure, because a concurrent absorbed-wake cycle can leave a healthy watcher even after an empty-cycle verdict was printed, and it re-arms on that verdict, up to its own bound, so the surviving watcher keeps a translator.
 An attached arm follows verified identity-matched successors and reports the same typed failure if that chain ends without one.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
@@ -56,7 +61,7 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
-`tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, and exit-2 translation.
+`tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, exit-2 translation, the healthy-watcher recheck on every typed-failed close, the bounded re-arms that keep re-attaching to the surviving watcher across consecutive absorbed wakes, the default-closed alarm when a re-attach is unconfirmed or the bound is exhausted, and each alarm banner matching the health proof behind it.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard.
 

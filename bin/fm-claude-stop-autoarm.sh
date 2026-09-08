@@ -28,10 +28,21 @@
 #     this hook-owned process tree (never shell &); Claude owns the process
 #     group, so its timeout/session teardown kills arm and watcher together.
 #   - Translation: while supervision is still needed and AFK remains inactive,
-#     an actionable arm close (signal:/stale:/check:/heartbeat) or a typed
-#     watcher: FAILED prints one rewake banner to stderr and exits 2, which
-#     wakes Claude even while idle ("Stop hook feedback"). A clean close with
-#     no actionable reason and no remaining need exits 0 silently.
+#     an actionable arm close (signal:/stale:/check:/heartbeat) prints one
+#     rewake banner to stderr and exits 2, which wakes Claude even while idle
+#     ("Stop hook feedback"). A typed watcher: FAILED is also rewoken unless a
+#     final identity-matched fresh-beacon check proves a watcher is already live
+#     for this home. A clean close with no actionable reason and no remaining
+#     need exits 0 silently.
+#   - Continuity: a suppressed typed failure never ends the hook while a live
+#     watcher has no translator. Every cycle close consults the health predicate,
+#     and each proof re-arms so this hook attaches to the surviving watcher and
+#     keeps translating its wakes; the close of THAT cycle is classified the same
+#     way. REARM_MAX bounds how many re-arms one firing may take. An exhausted
+#     bound, a close with no health proof, or a re-arm that cannot prove it
+#     started or attached to a watcher all run the failure alarm path, which
+#     reports the unresolved absorbed-wake chain rather than supervision being
+#     down whenever the closing cycle did prove a live watcher.
 #
 # The epoch ledger state/.claude-autoarm-epoch records the latest claim and
 # outcome so the synchronous Stop guard (bin/fm-turnend-guard.sh --claude) can
@@ -53,6 +64,10 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 GRACE=${FM_GUARD_GRACE:-300}
 OWNER_LOCK="$STATE/.claude-autoarm.lock"
 EPOCH="$STATE/.claude-autoarm-epoch"
+# The single owner of how many proven-healthy re-arms one firing may take before
+# an absorbed-wake chain stops being credible and becomes the failure alarm.
+# Deliberately not an environment knob: the bound is a contract, not a tuning.
+REARM_MAX=3
 
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
@@ -136,31 +151,81 @@ write_epoch arming
 # NO shell &: this hook process tree is the harness-owned lifecycle. The arm
 # forks the watcher as its own tracked child exactly as it does for the
 # model-driven background-task path, and propagates the wake reason on close.
-OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
-if [ -n "$OUT" ]; then
-  "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1
-  RC=$?
-else
-  "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1
-  RC=$?
-fi
-
-# --- classify and translate ---------------------------------------------------
-# AFK may have appeared mid-cycle: the daemon owns triage now, so suppress the
-# rewake even for an actionable close.
-if [ -e "$STATE/.afk" ]; then
-  write_epoch afk
+OUT=
+RC=0
+run_arm() {
   [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  exit 0
-fi
+  OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
+  if [ -n "$OUT" ]; then
+    "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1
+    RC=$?
+  else
+    "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1
+    RC=$?
+  fi
+  return 0
+}
 
 ACTIONABLE=0
 FAILED=0
-if [ -n "$OUT" ]; then
-  grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" 2>/dev/null && ACTIONABLE=1
-  grep -q '^watcher: FAILED' "$OUT" 2>/dev/null && FAILED=1
+TYPED_FAILED=0
+ATTACHED=0
+classify_arm_close() {
+  ACTIONABLE=0
+  FAILED=0
+  TYPED_FAILED=0
+  ATTACHED=0
+  if [ -n "$OUT" ]; then
+    grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" 2>/dev/null && ACTIONABLE=1
+    grep -q '^watcher: FAILED' "$OUT" 2>/dev/null && TYPED_FAILED=1
+    grep -Eq '^watcher: (started|attached) pid=' "$OUT" 2>/dev/null && ATTACHED=1
+  fi
+  [ "$TYPED_FAILED" -eq 0 ] || FAILED=1
+  [ "$RC" -ne 0 ] && FAILED=1
+  return 0
+}
+
+# --- classify and translate ---------------------------------------------------
+# An absorbed-wake race can print the typed empty-cycle failure while this home
+# still holds an identity-matched watcher with a fresh beacon: that cycle
+# started, beat, and had its wake absorbed, so it is healthy, never FAILED. The
+# same race can repeat one cycle deeper, so the health predicate is consulted on
+# EVERY typed-failed close, never skipped because a re-arm already happened. A
+# healthy verdict must not leave that watcher without a wake translator, so each
+# proof re-arms (the arm reports attached and blocks following the surviving
+# watcher) and the close of that cycle is classified the same way, up to
+# REARM_MAX re-arms per firing.
+REARMS=0
+HEALTHY_AT_CLOSE=0
+while :; do
+  run_arm
+
+  # AFK may have appeared mid-cycle: the daemon owns triage now, so suppress the
+  # rewake even for an actionable close.
+  if [ -e "$STATE/.afk" ]; then
+    write_epoch afk
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  fi
+
+  classify_arm_close
+  HEALTHY_AT_CLOSE=0
+
+  [ "$ACTIONABLE" -eq 0 ] || break
+  [ "$TYPED_FAILED" -eq 1 ] || break
+  fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME" || break
+  HEALTHY_AT_CLOSE=1
+  [ "$REARMS" -lt "$REARM_MAX" ] || break
+  REARMS=$((REARMS + 1))
+  write_epoch arming
+done
+
+# Default closed: the suppression only holds when the re-arm proved it owns a
+# watcher, by reporting the one it started or attached to, or by returning an
+# actionable wake it translated. An unproven re-attach takes the alarm path.
+if [ "$REARMS" -gt 0 ] && [ "$ACTIONABLE" -eq 0 ] && [ "$ATTACHED" -eq 0 ]; then
+  FAILED=1
 fi
-[ "$RC" -ne 0 ] && FAILED=1
 
 if [ "$ACTIONABLE" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
   write_epoch clean
@@ -177,11 +242,23 @@ if ! need_supervision; then
 fi
 
 write_epoch rewake
+# The banner never asserts a supervision state this firing did not measure: the
+# "supervision is down" wording is reserved for a close where no live watcher was
+# proven, and a close that did prove one names the unresolved absorbed-wake chain
+# instead. Both carry the same close evidence and repair.
+print_failure_detail() {
+  [ -n "$OUT" ] && grep -E '^(watcher:|signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
+  printf 'Run bin/fm-wake-drain.sh first. Then repair supervision with bin/fm-watch-arm.sh as its own Claude Code background task (never shell &). If the failure repeats, treat it as a blocker and report it instead of ending blind.\n'
+}
+
 if [ "$FAILED" -eq 1 ]; then
   {
-    printf 'firstmate watcher cycle FAILED - supervision is down while this home still needs it.\n'
-    [ -n "$OUT" ] && grep -E '^(watcher:|signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
-    printf 'Run bin/fm-wake-drain.sh first. Then repair supervision with bin/fm-watch-arm.sh as its own Claude Code background task (never shell &). If the failure repeats, treat it as a blocker and report it instead of ending blind.\n'
+    if [ "$HEALTHY_AT_CLOSE" -eq 1 ]; then
+      printf 'firstmate watcher absorbed-wake chain unresolved after %s re-arms - a live watcher still holds this home, but this Stop hook stopped translating its wakes.\n' "$REARMS"
+    else
+      printf 'firstmate watcher cycle FAILED - supervision is down while this home still needs it.\n'
+    fi
+    print_failure_detail
   } >&2
 else
   {

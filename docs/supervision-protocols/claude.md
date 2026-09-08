@@ -9,6 +9,7 @@ When this session owns supervision and away mode is not active:
    Do not run `bin/fm-watch-arm.sh` after an ordinary wake; the next turn end re-arms automatically when supervision is still needed.
    Do not invent a wake from an attach-status line alone; drain and act only on real wake records or a real watcher reason line.
 4. On a `Stop hook feedback` watcher-failure wake (`watcher: FAILED ...`), treat it as an alarm: drain, then repair supervision before ending the turn.
+   Its banner reports supervision down when no live watcher was proven, or an unresolved absorbed-wake chain when one still holds this home but the hook stopped translating its wakes; both need the same repair.
 5. Manual arm is recovery only.
    When a repair is genuinely needed - the Stop hook did not claim this home, or a forced restart is required - run `bin/fm-watch-arm.sh` (or `bin/fm-watch-arm.sh --restart`) as its own Claude Code background task, never bundled with other commands, never with shell `&`.
    Source `__FM_X_MODE_ENV__` first when X mode is active.

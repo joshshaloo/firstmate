@@ -4,13 +4,13 @@
 # constructing task paths or performing any side effect.
 #
 # The stored identity is provider-tagged: provider, url, host, path, number.
-# "path" is the full project path, which is owner/repository on GitHub and an
-# arbitrarily nested group/subgroup/project namespace on GitLab. A GitLab
-# project can sit at any depth, so no owner/repository pair can address one and
-# the sidecar carries the whole path instead. GitLab also runs on self-hosted
-# instances, so the host is part of that identity rather than a constant. Every
-# consumer re-derives the identity from the stored URL and refuses any record
-# whose parts do not reconstruct that exact URL.
+# "path" is the full project path, which is owner/repository on GitHub and
+# Bitbucket Cloud, and an arbitrarily nested group/subgroup/project namespace on
+# GitLab. A GitLab project can sit at any depth, so no owner/repository pair can
+# address one and the sidecar carries the whole path instead. GitLab also runs on
+# self-hosted instances, so the host is part of that identity rather than a
+# constant. Every consumer re-derives the identity from the stored URL and
+# refuses any record whose parts do not reconstruct that exact URL.
 #
 # A validated exact merged result is retired through a private receipt only
 # after its durable wake is appended.
@@ -89,6 +89,7 @@ FM_PR_RETIRE_REG_IDENTITY=
 FM_PR_RETIRE_RECEIPT_HASH=
 FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_POLL_RETIREMENT_REJECTED=
+FM_PR_BKT_AUTH_MISSING=
 
 fm_task_id_path_safe() {
   local id=${1-}
@@ -156,15 +157,60 @@ fm_pr_gitlab_path_valid() {
   done
 }
 
+fm_pr_bitbucket_segment_valid() {
+  local segment=${1-}
+  local LC_ALL=C
+  [ "${#segment}" -ge 1 ] && [ "${#segment}" -le 100 ] || return 1
+  case "$segment" in
+    .|..|-*|*.git|*.atom|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+}
+
+fm_pr_bkt_env_load() {
+  local env_file
+  [ -n "${BKT_HOST:-}" ] && [ -n "${BKT_USERNAME:-}" ] \
+    && [ -n "${BKT_TOKEN:-}" ] && [ -n "${BKT_AUTH_METHOD:-}" ] && return 0
+  [ -n "${HOME:-}" ] || return 0
+  env_file=$HOME/.config/firstmate/bkt.env
+  [ -f "$env_file" ] && [ ! -L "$env_file" ] || return 0
+  [ "$(fm_pr_file_mode "$env_file")" = 600 ] || return 0
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_file"
+  set +a
+}
+
+fm_pr_bkt_auth_ready() {
+  local missing='' var
+  FM_PR_BKT_AUTH_MISSING=
+  fm_pr_bkt_env_load || return 1
+  for var in BKT_USERNAME BKT_TOKEN; do
+    if [ -z "${!var:-}" ]; then
+      missing="$missing${missing:+, }$var"
+    fi
+  done
+  if [ "${BKT_HOST:-}" != https://bitbucket.org ]; then
+    missing="$missing${missing:+, }BKT_HOST=https://bitbucket.org"
+  fi
+  if [ "${BKT_AUTH_METHOD:-}" != basic ]; then
+    missing="$missing${missing:+, }BKT_AUTH_METHOD=basic"
+  fi
+  # shellcheck disable=SC2034 # Consumed by callers after this sourced helper returns.
+  FM_PR_BKT_AUTH_MISSING=$missing
+  [ -z "$missing" ]
+}
+
 # Parse a canonical PR or MR URL into the provider-tagged identity. Validation
 # is strict and per provider: the GitHub username and repository rules are
-# unchanged, and GitLab gets its own host and namespace rules rather than a
-# loosened GitHub rule.
+# unchanged, Bitbucket Cloud gets its own two-segment workspace/repository rule,
+# and GitLab gets its own host and namespace rules rather than a loosened GitHub
+# rule.
 #
-# FM_PR_OWNER and FM_PR_REPO are additionally set for github because
-# bin/fm-pr-merge.sh addresses GitHub by owner/repository. A gitlab URL leaves
-# them empty; teaching the merge path about GitLab is a separate change, and
-# until then it refuses a GitLab URL rather than merging anything.
+# FM_PR_OWNER and FM_PR_REPO are additionally set for github and bitbucket
+# because bin/fm-pr-merge.sh addresses those providers by owner/workspace and
+# repository. A gitlab URL leaves them empty; teaching the merge path about
+# GitLab is a separate change, and until then it refuses a GitLab URL rather than
+# merging anything.
 fm_pr_url_parse() {
   local raw=${1-} pattern host path
   local LC_ALL=C
@@ -184,6 +230,22 @@ fm_pr_url_parse() {
     FM_PR_HOST=github.com
     FM_PR_PATH="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
     # Consumed by bin/fm-pr-merge.sh, which addresses GitHub by owner/repository.
+    # shellcheck disable=SC2034
+    FM_PR_OWNER=${BASH_REMATCH[1]}
+    # shellcheck disable=SC2034
+    FM_PR_REPO=${BASH_REMATCH[2]}
+    FM_PR_NUMBER=${BASH_REMATCH[3]}
+    return 0
+  fi
+  pattern='^https://bitbucket\.org/([A-Za-z0-9._-]{1,100})/([A-Za-z0-9._-]{1,100})/pull-requests/([1-9][0-9]*)$'
+  if [[ "$raw" =~ $pattern ]]; then
+    fm_pr_bitbucket_segment_valid "${BASH_REMATCH[1]}" || return 1
+    fm_pr_bitbucket_segment_valid "${BASH_REMATCH[2]}" || return 1
+    FM_PR_PROVIDER=bitbucket
+    FM_PR_URL=$raw
+    FM_PR_HOST=bitbucket.org
+    FM_PR_PATH="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    # Consumed by bin/fm-pr-merge.sh, which addresses Bitbucket by workspace/repository.
     # shellcheck disable=SC2034
     FM_PR_OWNER=${BASH_REMATCH[1]}
     # shellcheck disable=SC2034

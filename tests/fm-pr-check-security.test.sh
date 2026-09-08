@@ -55,7 +55,14 @@ make_case() {
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
   fake_root="$dir/root"
-  mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/wt" "$fakebin" "$fake_root/bin"
+  mkdir -p "$dir/home/state" "$dir/home/data" "$dir/home/config" "$dir/user/.config/firstmate" "$dir/wt" "$fakebin" "$fake_root/bin"
+  cat > "$dir/user/.config/firstmate/bkt.env" <<'ENV'
+BKT_HOST=https://bitbucket.org
+BKT_USERNAME=test@example.invalid
+BKT_TOKEN=test-token-not-secret
+BKT_AUTH_METHOD=basic
+ENV
+  chmod 0600 "$dir/user/.config/firstmate/bkt.env"
   cat > "$fake_root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
@@ -87,10 +94,55 @@ printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
-  chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
+  cat > "$fakebin/bkt" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_BKT_LOG"
+[ "${FM_TEST_BKT_FAIL:-0}" = 0 ] || exit 1
+case "${1:-} ${2:-}" in
+  "api"*)
+    case "${2:-}" in
+      */pullrequests/*)
+        if [ -n "${FM_TEST_BKT_PR_JSON:-}" ]; then
+          printf '%s\n' "$FM_TEST_BKT_PR_JSON"
+        else
+          printf '%s\n' '{"state":"OPEN","source":{"branch":{"name":"feature/bitbucket"},"commit":{"hash":"bbbbbbbbbbbb"}},"destination":{"branch":{"name":"main"}}}'
+        fi
+        ;;
+      */commit/*)
+        if [ -n "${FM_TEST_BKT_COMMIT_JSON:-}" ]; then
+          printf '%s\n' "$FM_TEST_BKT_COMMIT_JSON"
+        else
+          printf '%s\n' '{"hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+        fi
+        ;;
+      *) printf '{}\n' ;;
+    esac
+    ;;
+  "pr checks")
+    if [ -n "${FM_TEST_BKT_CHECKS_JSON:-}" ]; then
+      printf '%s\n' "$FM_TEST_BKT_CHECKS_JSON"
+    else
+      printf '%s\n' '{"commit":"bbbbbbbbbbbb","statuses":[]}'
+    fi
+    ;;
+  "pr merge")
+    exit "${FM_TEST_BKT_MERGE_RC:-0}"
+    ;;
+  "pipeline list")
+    if [ -n "${FM_TEST_BKT_PIPELINES_JSON:-}" ]; then
+      printf '%s\n' "$FM_TEST_BKT_PIPELINES_JSON"
+    else
+      printf '%s\n' '{"pipelines":[]}'
+    fi
+    ;;
+  *) printf '{}\n' ;;
+esac
+SH
+  chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab" "$fakebin/bkt"
   : > "$dir/gh.log"
   : > "$dir/gh-axi.log"
   : > "$dir/glab.log"
+  : > "$dir/bkt.log"
   : > "$dir/guard.log"
   printf '%s\n' "$dir"
 }
@@ -238,7 +290,7 @@ run_check_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
-    PATH="$dir/fakebin:$BASE_PATH" \
+    FM_TEST_BKT_LOG="$dir/bkt.log" HOME="$dir/user" PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_CHECK" "$@"
 }
 
@@ -248,7 +300,7 @@ run_merge_entry() {
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
-    PATH="$dir/fakebin:$BASE_PATH" \
+    FM_TEST_BKT_LOG="$dir/bkt.log" HOME="$dir/user" PATH="$dir/fakebin:$BASE_PATH" \
     "$PR_MERGE" "$@"
 }
 
@@ -271,6 +323,20 @@ INVALID_URLS=(
   'https://.gitlab.com/g/p/-/merge_requests/1'
   'https://gitlab.com./g/p/-/merge_requests/1'
   'http://gitlab.com/g/p/-/merge_requests/1'
+  'https://bitbucket.org/w/r/pull-requests/0'
+  'https://bitbucket.org/w/r/pull-requests/01'
+  'https://Bitbucket.org/w/r/pull-requests/1'
+  'https://bitbucket.org/w/r/pull-requests/1/'
+  'https://bitbucket.org/w/r/pull-requests/1?x=1'
+  'https://bitbucket.org/w/r/pull/1'
+  'https://bitbucket.org/w/r/pullrequests/1'
+  'https://bitbucket.org/w/.git/pull-requests/1'
+  'https://bitbucket.org/-w/r/pull-requests/1'
+  'https://bitbucket.org/w/r/x/pull-requests/1'
+  'https://bitbucket.org//r/pull-requests/1'
+  'https://bitbucket.org:443/w/r/pull-requests/1'
+  'https://user@bitbucket.org/w/r/pull-requests/1'
+  'http://bitbucket.org/w/r/pull-requests/1'
   'https://github.com/o/r/pull/1/'
   ' https://github.com/o/r/pull/1'
   'https://github.com/o/r/pull/1 '
@@ -406,6 +472,20 @@ https://gitlab.com/group/project/-/merge_requests/1|gitlab.com|group/project|1
 https://gitlab.com/group/sub/deep/project/-/merge_requests/42|gitlab.com|group/sub/deep/project|42
 https://gitlab.example.co.uk/g/p/-/merge_requests/7|gitlab.example.co.uk|g/p|7
 https://code.internal/team/tools/ci-runner/-/merge_requests/123456|code.internal|team/tools/ci-runner|123456
+EOF
+  while IFS='|' read -r url workspace repo number; do
+    [ -n "$url" ] || continue
+    fm_pr_url_parse "$url" || fail "parser rejected a canonical Bitbucket pull request URL"
+    [ "$FM_PR_PROVIDER" = bitbucket ] || fail "parser did not tag a Bitbucket pull request URL as bitbucket"
+    [ "$FM_PR_URL" = "$url" ] || fail "parser changed a canonical Bitbucket pull request URL"
+    [ "$FM_PR_HOST" = bitbucket.org ] || fail "parser returned wrong Bitbucket host"
+    [ "$FM_PR_PATH" = "$workspace/$repo" ] || fail "parser returned wrong Bitbucket path"
+    [ "$FM_PR_OWNER" = "$workspace" ] || fail "parser returned wrong Bitbucket workspace"
+    [ "$FM_PR_REPO" = "$repo" ] || fail "parser returned wrong Bitbucket repository"
+    [ "$FM_PR_NUMBER" = "$number" ] || fail "parser returned wrong Bitbucket PR number"
+  done <<'EOF'
+https://bitbucket.org/acme/widgets/pull-requests/1|acme|widgets|1
+https://bitbucket.org/team-space/repo_name.with-dots/pull-requests/42|team-space|repo_name.with-dots|42
 EOF
   fm_pr_url_parse https://github.com/a/b/pull/1 || fail "parser rejected canonical URL"
   [ "$FM_PR_PROVIDER" = github ] || fail "parser did not tag a pull request URL as github"
@@ -705,7 +785,7 @@ make_poll_fixture() {
 run_poll() {
   local dir=$1
   FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
-    PATH="$dir/fakebin:$BASE_PATH" \
+    FM_TEST_BKT_LOG="$dir/bkt.log" HOME="$dir/user" PATH="$dir/fakebin:$BASE_PATH" \
     bash "$dir/home/state/task-a.check.sh"
 }
 
@@ -2617,6 +2697,7 @@ test_teardown_removes_poll_artifacts() {
   printf 'data\n' > "$dir/home/state/task-a.pr-poll"
   printf 'registration\n' > "$dir/home/state/task-a.pr-poll-registration"
   printf 'trust\n' > "$dir/home/state/task-a.check-trust"
+  printf 'red: unit tests FAILED' > "$dir/home/state/.check-surfaced-task-a"
   mkdir -p "$dir/home/state/.pr-check-quarantine"
   chmod 0700 "$dir/home/state/.pr-check-quarantine"
   printf 'legacy\n' > "$dir/home/state/.pr-check-quarantine/task-a.check.abc123"
@@ -2635,6 +2716,7 @@ SH
   [ ! -e "$dir/home/state/task-a.pr-poll" ] || fail "teardown left the sidecar"
   [ ! -e "$dir/home/state/task-a.pr-poll-registration" ] || fail "teardown left the PR poll registration"
   [ ! -e "$dir/home/state/task-a.check-trust" ] || fail "teardown left the custom check registration"
+  [ ! -e "$dir/home/state/.check-surfaced-task-a" ] || fail "teardown left the poll surfaced marker"
   ! find "$dir/home/state/.pr-check-quarantine" -name 'task-a.*' -print 2>/dev/null | grep . >/dev/null \
     || fail "teardown left task quarantine artifacts"
 
@@ -2707,7 +2789,7 @@ SH
       'kind=ship' \
       'mode=local-only'
     if [ "$artifact" = check.sh ]; then
-      counterpart=pr-poll
+      counterpart='pr-poll'
     else
       counterpart=check.sh
     fi
@@ -2784,7 +2866,7 @@ SH
 # follows a pull request, on any instance, and must never turn an unreadable
 # merge request into a merge. Its evidence against the public fixture project
 # https://gitlab.com/KarotKris/gitlab-merge-watch-fixture is in
-# docs/gitlab-merge-watch.md; this exercises the same paths hermetically.
+# docs/merge-watch.md; this exercises the same paths hermetically.
 test_gitlab_merge_watch() {
   local dir state out rc url value noglab entry bindir name
   dir=$(make_case gitlab-merge-watch)
@@ -2885,6 +2967,127 @@ EOF
   pass "GitLab merge requests are followed on any instance and never wake falsely"
 }
 
+# Bitbucket Cloud PRs use the same authenticated static poll publication as the
+# other forges, while their remote reads go through bkt with environment-backed
+# credentials. The JSON fixtures mirror bkt's Cloud output shape.
+test_bitbucket_cloud_watch() {
+  local dir state out rc url sidecar nobkt entry bindir name
+  dir=$(make_case bitbucket-cloud-watch)
+  state="$dir/home/state"
+  url=https://bitbucket.org/acme/widgets/pull-requests/7
+
+  write_task_meta "$dir" task-b
+  run_check_entry "$dir" task-b "$url" > "$dir/check.out" 2> "$dir/check.err" \
+    || fail "Bitbucket arming failed: $(cat "$dir/check.err")"
+  grep -qxF "pr=$url" "$state/task-b.meta" || fail "Bitbucket pr metadata was not exact"
+  grep -qxF 'pr_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$state/task-b.meta" \
+    || fail "Bitbucket pr_head metadata was not exact"
+  grep -qxF 'landing_branch=main' "$state/task-b.meta" \
+    || fail "Bitbucket landing branch metadata was not exact"
+  fm_pr_poll_artifacts_valid "$state" task-b "$POLL" \
+    || fail "Bitbucket poll provenance or metadata binding was invalid"
+  sidecar=$(cat "$state/task-b.pr-poll")
+  [ "$sidecar" = $'bitbucket\nhttps://bitbucket.org/acme/widgets/pull-requests/7\nbitbucket.org\nacme/widgets\n7' ] \
+    || fail "Bitbucket sidecar bytes were not exact"
+
+  cp "$POLL" "$state/task-a.check.sh"
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" bitbucket.org acme/widgets 7 \
+    > "$state/task-a.pr-poll"
+  chmod 0600 "$state/task-a.check.sh" "$state/task-a.pr-poll"
+
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[{"state":"SUCCESSFUL","name":"buildkite"}]}' run_poll "$dir")
+  [ "$out" = green ] || fail "Bitbucket poll did not emit green for successful statuses: $out"
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[{"state":"FAILED","name":"unit tests"}]}' run_poll "$dir")
+  [ "$out" = 'red: unit tests FAILED' ] || fail "Bitbucket poll did not name the failing build: $out"
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[{"state":"INPROGRESS","name":"unit tests"}]}' run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted while a build was still running"
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[]}' \
+    FM_TEST_BKT_PIPELINES_JSON='{"pipelines":[{"build_number":22,"state":{"result":{"name":"SUCCESSFUL"}},"target":{"ref":{"name":"feature/bitbucket"}}}]}' \
+    run_poll "$dir")
+  [ "$out" = green ] || fail "Bitbucket poll did not fall back to a successful source-branch pipeline: $out"
+  out=$(FM_TEST_BKT_CHECKS_JSON='{"statuses":[]}' \
+    FM_TEST_BKT_PIPELINES_JSON='{"pipelines":[{"build_number":23,"state":{"result":{"name":"FAILED"}},"target":{"ref":{"name":"feature/bitbucket"}}}]}' \
+    run_poll "$dir")
+  [ "$out" = 'red: pipeline 23 FAILED' ] || fail "Bitbucket pipeline fallback did not name the failing run: $out"
+  out=$(FM_TEST_BKT_PR_JSON='{"state":"MERGED","source":{"branch":{"name":"feature/bitbucket"},"commit":{"hash":"bbbbbbbbbbbb"}},"destination":{"branch":{"name":"main"}}}' run_poll "$dir")
+  [ "$out" = merged ] || fail "Bitbucket poll did not emit merged for a merged pull request: $out"
+
+  grep -qF -- 'pr checks 7 --json --workspace acme --repo widgets' "$dir/bkt.log" \
+    || fail "Bitbucket checks were not addressed by workspace and repository"
+  grep -qF -- 'api /repositories/acme/widgets/pullrequests/7 --json' "$dir/bkt.log" \
+    || fail "Bitbucket PR details were not read from the canonical workspace and repository"
+
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" evil.example acme/widgets 7 \
+    > "$state/task-a.pr-poll"
+  out=$(FM_TEST_BKT_PR_JSON='{"state":"MERGED"}' run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted for a sidecar whose host was swapped"
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" bitbucket.org acme/other 7 \
+    > "$state/task-a.pr-poll"
+  out=$(FM_TEST_BKT_PR_JSON='{"state":"MERGED"}' run_poll "$dir")
+  [ -z "$out" ] || fail "Bitbucket poll emitted for a sidecar whose repository was swapped"
+
+  rm -f "$dir/user/.config/firstmate/bkt.env"
+  write_task_meta "$dir" task-c
+  set +e
+  out=$(run_check_entry "$dir" task-c "$url" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "Bitbucket arming succeeded with no environment-backed auth"
+  case "$out" in
+    *"BKT_HOST=https://bitbucket.org"*"BKT_USERNAME"*"BKT_TOKEN"*"BKT_AUTH_METHOD=basic"*|*"BKT_USERNAME"*"BKT_TOKEN"*"BKT_HOST=https://bitbucket.org"*"BKT_AUTH_METHOD=basic"*) ;;
+    *) fail "Bitbucket arming did not report the missing bkt environment: $out" ;;
+  esac
+  [ ! -e "$state/task-c.check.sh" ] || fail "refused Bitbucket arming left a poll armed"
+  printf '%s\n%s\n%s\n%s\n%s\n' bitbucket "$url" bitbucket.org acme/widgets 7 \
+    > "$state/task-a.pr-poll"
+  out=$(run_poll "$dir")
+  case "$out" in bitbucket-auth-missing:*) ;; *) fail "Bitbucket poll did not surface missing environment-backed auth" ;; esac
+
+  cat > "$dir/user/.config/firstmate/bkt.env" <<'ENV'
+BKT_HOST=https://bitbucket.org
+BKT_USERNAME=test@example.invalid
+BKT_TOKEN=test-token-not-secret
+BKT_AUTH_METHOD=basic
+ENV
+  chmod 0600 "$dir/user/.config/firstmate/bkt.env"
+  nobkt="$dir/nobkt"
+  mkdir -p "$nobkt"
+  while IFS= read -r bindir; do
+    [ -d "$bindir" ] || continue
+    for entry in "$bindir"/*; do
+      [ -e "$entry" ] || continue
+      name=$(basename "$entry")
+      [ "$name" = bkt ] && continue
+      [ -e "$nobkt/$name" ] || ln -s "$entry" "$nobkt/$name" 2>/dev/null
+    done
+  done <<EOF
+$dir/fakebin
+$(printf '%s\n' "$BASE_PATH" | tr ':' '\n')
+EOF
+  write_task_meta "$dir" task-d
+  set +e
+  out=$(FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" HOME="$dir/user" \
+    FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_BKT_LOG="$dir/bkt.log" PATH="$nobkt" \
+    "$PR_CHECK" task-d "$url" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "Bitbucket arming succeeded with bkt absent"
+  case "$out" in *"requires bkt on PATH"*) ;; *) fail "Bitbucket arming did not report missing bkt" ;; esac
+
+  : > "$dir/bkt.log"
+  run_merge_entry "$dir" task-b "$url" > "$dir/merge.out" 2> "$dir/merge.err" \
+    || fail "Bitbucket merge wrapper failed: $(cat "$dir/merge.err")"
+  grep -qxF 'pr merge 7 --workspace acme --repo widgets --strategy squash' "$dir/bkt.log" \
+    || fail "Bitbucket merge wrapper did not derive workspace, repository, and default strategy"
+  : > "$dir/bkt.log"
+  run_merge_entry "$dir" task-b "$url" -- --strategy fast_forward > /dev/null 2> "$dir/merge-strategy.err" \
+    || fail "Bitbucket merge wrapper rejected an explicit strategy: $(cat "$dir/merge-strategy.err")"
+  grep -qxF 'pr merge 7 --workspace acme --repo widgets --strategy fast_forward' "$dir/bkt.log" \
+    || fail "Bitbucket merge wrapper did not preserve an explicit strategy"
+
+  pass "Bitbucket Cloud pull requests are armed, checked, merged, and never wake falsely"
+}
+
 seed_canonical_poll() {
   local dir=$1 id=$2 url=$3 template=${4:-$POLL} state provider host path number
   state="$dir/home/state"
@@ -2966,6 +3169,152 @@ test_merged_poll_retires_once() {
   [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
     || fail "merged poll did not queue exactly one terminal notification"
   pass "validated merged polls notify once and retire before the next watcher cycle"
+}
+
+# One bounded watcher cycle against the Bitbucket fixtures. The fixture
+# environment is exported inside a subshell so it cannot leak into the test
+# shell's own HOME.
+run_bitbucket_watch_cycle() {  # <dir> <out> <checks-json> [pr-json]
+  local dir=$1 out=$2 checks=$3 pr=${4:-} rc=0
+  rm -f "$dir/home/state/.last-check"
+  (
+    export FM_TEST_BKT_LOG="$dir/bkt.log" HOME="$dir/user" FM_TEST_BKT_CHECKS_JSON="$checks"
+    [ -z "$pr" ] || export FM_TEST_BKT_PR_JSON="$pr"
+    run_watcher_bounded "$dir/home" "$dir/fakebin"
+  ) > "$out" 2> "$out.err" || rc=$?
+  return "$rc"
+}
+
+queued_check_wakes() {  # <state> <id>
+  local state=$1 id=$2 count=0
+  [ -f "$state/.wake-queue" ] || { printf '0'; return 0; }
+  count=$(grep -c "$(printf '\tcheck\t')[^$(printf '\t')]*$id.check.sh$(printf '\t')" "$state/.wake-queue") || count=0
+  printf '%s' "$count"
+}
+
+triage_first_sightings() {  # <state>
+  local state=$1 count=0
+  [ -f "$state/.watch-triage.log" ] || { printf '0'; return 0; }
+  count=$(grep -c 'surfaced PR poll emission once' "$state/.watch-triage.log") || count=0
+  printf '%s' "$count"
+}
+
+# Only `merged` retires a poll, so a red build - or any other non-terminal
+# emission - is a standing condition that every later sweep re-reads unchanged.
+# It must cost exactly one firstmate wake, and wake again only when the emitted
+# line itself changes.
+test_standing_poll_emission_wakes_once() {
+  local dir state url rc cycle red green
+  dir=$(make_case standing-poll-emission)
+  state="$dir/home/state"
+  url=https://bitbucket.org/acme/widgets/pull-requests/7
+  red='{"statuses":[{"state":"FAILED","name":"unit tests"}]}'
+  green='{"statuses":[{"state":"SUCCESSFUL","name":"unit tests"}]}'
+  write_poll_meta "$state" task-a "$url"
+  seed_canonical_poll "$dir" task-a "$url"
+  add_stop_custom_check "$dir"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-1.out" "$red" || rc=$?
+  [ "$rc" -eq 0 ] || fail "first red watcher cycle failed: $(cat "$dir/watch-1.out.err")"
+  grep -F "check: $state/task-a.check.sh: red: unit tests FAILED" "$dir/watch-1.out" >/dev/null \
+    || fail "a red Bitbucket poll did not surface once: $(cat "$dir/watch-1.out")"
+  case "$(cat "$state/.check-surfaced-task-a" 2>/dev/null || true)" in
+    *"|red: unit tests FAILED") ;;
+    *) fail "the surfaced emission was not recorded against its poll identity" ;;
+  esac
+  [ "$(triage_first_sightings "$state")" -eq 1 ] \
+    || fail "the first sighting was not logged exactly once"
+
+  for cycle in 2 3; do
+    rc=0
+    run_bitbucket_watch_cycle "$dir" "$dir/watch-$cycle.out" "$red" || rc=$?
+    [ "$rc" -eq 0 ] || fail "red watcher cycle $cycle failed: $(cat "$dir/watch-$cycle.out.err")"
+    ! grep -F 'task-a.check.sh: red' "$dir/watch-$cycle.out" >/dev/null \
+      || fail "an unchanged red Bitbucket poll woke firstmate again on cycle $cycle"
+    [ "$(triage_first_sightings "$state")" -eq 1 ] \
+      || fail "an absorbed sweep appended another triage line on cycle $cycle"
+    case "$(cat "$dir/watch-$cycle.out")" in
+      *z-stop.check.sh:*stop-cycle) ;;
+      *) fail "cycle $cycle did not reach the control check: $(cat "$dir/watch-$cycle.out")" ;;
+    esac
+  done
+  [ "$(queued_check_wakes "$state" task-a)" -eq 1 ] \
+    || fail "a standing red condition queued more than one wake across three sweeps"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-4.out" "$green" || rc=$?
+  [ "$rc" -eq 0 ] || fail "green watcher cycle failed: $(cat "$dir/watch-4.out.err")"
+  grep -F "check: $state/task-a.check.sh: green" "$dir/watch-4.out" >/dev/null \
+    || fail "a changed emission did not wake firstmate again: $(cat "$dir/watch-4.out")"
+  case "$(cat "$state/.check-surfaced-task-a" 2>/dev/null || true)" in
+    *'|green') ;;
+    *) fail "the changed emission was not recorded against its poll identity" ;;
+  esac
+  [ "$(queued_check_wakes "$state" task-a)" -eq 2 ] \
+    || fail "red to green did not queue exactly one further wake"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-5.out" "$green" \
+    '{"state":"MERGED","source":{"branch":{"name":"feature/bitbucket"},"commit":{"hash":"bbbbbbbbbbbb"}},"destination":{"branch":{"name":"main"}}}' || rc=$?
+  [ "$rc" -eq 0 ] || fail "merged watcher cycle failed: $(cat "$dir/watch-5.out.err")"
+  grep -F "check: $state/task-a.check.sh: merged" "$dir/watch-5.out" >/dev/null \
+    || fail "merged did not surface: $(cat "$dir/watch-5.out")"
+  assert_poll_absent "$state" task-a
+  [ ! -e "$state/.check-surfaced-task-a" ] || fail "retirement left the poll surfaced marker"
+  [ "$(queued_check_wakes "$state" task-a)" -eq 3 ] \
+    || fail "the terminal merged notification was not queued exactly once"
+
+  pass "a standing non-terminal poll emission wakes once and again only when it changes"
+}
+
+# The one-shot marker must never outlive the pull request it describes. Re-arming
+# the same task onto a replacement PR publishes a new registration, so the
+# replacement's first emission surfaces even when its bytes are identical to the
+# emission already absorbed for the previous PR.
+test_rearmed_poll_surfaces_its_first_emission() {
+  local dir state url_a url_b rc red marker_a marker_b
+  dir=$(make_case rearmed-poll-emission)
+  state="$dir/home/state"
+  url_a=https://bitbucket.org/acme/widgets/pull-requests/7
+  url_b=https://bitbucket.org/acme/widgets/pull-requests/8
+  red='{"statuses":[{"state":"FAILED","name":"unit tests"}]}'
+  write_poll_meta "$state" task-a "$url_a"
+  seed_canonical_poll "$dir" task-a "$url_a"
+  add_stop_custom_check "$dir"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-1.out" "$red" || rc=$?
+  [ "$rc" -eq 0 ] || fail "first red watcher cycle failed: $(cat "$dir/watch-1.out.err")"
+  grep -F "check: $state/task-a.check.sh: red: unit tests FAILED" "$dir/watch-1.out" >/dev/null \
+    || fail "the first pull request's red did not surface"
+  marker_a=$(cat "$state/.check-surfaced-task-a")
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-2.out" "$red" || rc=$?
+  [ "$rc" -eq 0 ] || fail "absorbed watcher cycle failed: $(cat "$dir/watch-2.out.err")"
+  ! grep -F 'task-a.check.sh: red' "$dir/watch-2.out" >/dev/null \
+    || fail "an unchanged red woke firstmate again before the re-arm"
+
+  # Re-arm the same task onto a replacement pull request, exactly as a crew
+  # re-running the documented arming command does.
+  rm -f "$state/task-a.check.sh" "$state/task-a.pr-poll" "$state/task-a.pr-poll-registration"
+  write_poll_meta "$state" task-a "$url_b"
+  seed_canonical_poll "$dir" task-a "$url_b"
+  [ -e "$state/.check-surfaced-task-a" ] \
+    || fail "re-arm fixture no longer exercises a surviving marker"
+
+  rc=0
+  run_bitbucket_watch_cycle "$dir" "$dir/watch-3.out" "$red" || rc=$?
+  [ "$rc" -eq 0 ] || fail "re-armed watcher cycle failed: $(cat "$dir/watch-3.out.err")"
+  grep -F "check: $state/task-a.check.sh: red: unit tests FAILED" "$dir/watch-3.out" >/dev/null \
+    || fail "a replacement pull request's first emission was absorbed by the old marker: $(cat "$dir/watch-3.out")"
+  marker_b=$(cat "$state/.check-surfaced-task-a")
+  [ "$marker_a" != "$marker_b" ] || fail "the replacement poll reused the previous poll's marker bytes"
+  [ "$(queued_check_wakes "$state" task-a)" -eq 2 ] \
+    || fail "the re-armed poll did not queue exactly one further wake"
+
+  pass "a poll re-armed onto a replacement pull request always surfaces its first emission"
 }
 
 test_persistent_secondmate_retirement_is_poll_only() {
@@ -3327,7 +3676,10 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_gitlab_merge_watch
+test_bitbucket_cloud_watch
 test_merged_poll_retires_once
+test_standing_poll_emission_wakes_once
+test_rearmed_poll_surfaces_its_first_emission
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery
 test_external_merge_transition_retires_only_terminal_poll

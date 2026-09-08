@@ -185,6 +185,24 @@ tests/fm-spawn-worktree-claim.test.sh
 Observed guarantee on 2026-09-07 with the fake Herdr suite: a restored no-agent tab is closed only after the idle-shell process proof succeeds and the recorded pane is proven to be its tab's only pane, the close runs through the focus-preserving owner under the named-session presentation lock and restores the captain's exact pre-close tab before releasing it, and the recorded worktree is reused.
 Live, unverified, foreground-job, active-tab, tab-sharing, presentation-lock-contended, and cross-backend relaunches all refuse without treehouse allocation or pane closure, and a close whose pane is already gone is reported gone rather than left untouched.
 
+Pane-disappearance and husk classification is owned by:
+
+```sh
+tests/fm-backend-herdr-pane-disappearance-e2e.test.sh
+```
+
+Observed output on 2026-09-08 against Herdr 0.7.5 protocol 17 on Linux x86_64:
+
+```text
+ok - explicit pane close after done line: pane classifier=dead recovery mapping=missing
+ok - shell reap by killing own pane shell pid: pane classifier=dead recovery mapping=missing
+ok - session restart husk: pane classifier=no-agent recovery mapping=dead
+ok - Herdr pane disappearance recipes use one classifier and map vanished panes to missing, husks to dead
+```
+
+The shell-reap recipe kills only the lab pane's own shell pid after the backend's shared idle-shell proof succeeds.
+All lifecycle actions used the guarded non-default lab helper and left the default-session tripwire intact.
+
 ### Launcher workspace placement
 
 Herdr exports its pane identity into every process it manages, checked on 2026-07-30 against Herdr 0.7.5 protocol 17 inside a guarded lab pane:

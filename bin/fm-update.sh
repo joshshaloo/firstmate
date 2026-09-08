@@ -62,6 +62,7 @@ fi
 
 FF_NUDGE_WINDOWS=""
 FF_SEEN_HOMES=""
+FF_SEEN_REFUSALS=""
 
 # Live direct reports first: state/<id>.meta with kind=secondmate carries the
 # authoritative home= path.

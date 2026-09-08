@@ -398,10 +398,13 @@ ff_target() {
   return 0
 }
 
-# Sweep accumulators. The caller resets both before a sweep and reads
-# FF_NUDGE_WINDOWS after.
+# Sweep accumulators. The caller resets all three before a sweep and reads
+# FF_NUDGE_WINDOWS after. FF_SEEN_REFUSALS is the id set already reported as
+# refused: a secondmate reachable from both the live metas and a registry
+# backstop is one secondmate, so its refusal is stated once per run.
 FF_NUDGE_WINDOWS=""
 FF_SEEN_HOMES=""
+FF_SEEN_REFUSALS=""
 
 # Validate and fast-forward one secondmate home, accumulating its stable
 # fm-<id> task selector into FF_NUDGE_WINDOWS when it should be live-converged.
@@ -418,6 +421,10 @@ process_secondmate() {
   [ -n "$id" ] || return 0
   if [ -z "$home" ]; then
     if [ -n "$home_refusal" ]; then
+      case " $FF_SEEN_REFUSALS " in
+        *" $id "*) return 0 ;;
+      esac
+      FF_SEEN_REFUSALS="$FF_SEEN_REFUSALS $id"
       echo "secondmate $id: skipped: $home_refusal"
     fi
     return 0

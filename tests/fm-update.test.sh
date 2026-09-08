@@ -242,12 +242,18 @@ test_registry_backstop_dedup_and_self_exclusion() {
 # mate on another host is reported with the owner's refusal wording instead of
 # silently resolving whatever same-named path happens to exist on this host.
 test_registry_backstop_refuses_rows_the_shared_parser_refuses() {
-  local w out refusal before_unreadable before_remote
+  local w out refusal before_unreadable before_remote refusal_lines
   w=$(new_world t12)
   git -C "$w/main" worktree add -q --detach "$w/unreadable" main
   printf 'unreadable\n' > "$w/unreadable/.fm-secondmate-home"
   git -C "$w/main" worktree add -q --detach "$w/faraway" main
   printf 'faraway\n' > "$w/faraway/.fm-secondmate-home"
+  # A live meta with no home= makes the live sweep and the registry backstop
+  # reach the same secondmate, so the refusal has two chances to print.
+  {
+    printf 'kind=secondmate\n'
+    printf 'harness=codex\n'
+  } > "$w/home/state/faraway.meta"
   {
     printf -- '- unreadable - domain supervisor (home: %s/unreadable; scope: things; projects: p; added 2026-6-23)\n' "$w"
     printf -- '- faraway - remote mate (host: elsewhere; root: /srv/fm; home: %s/faraway; scope: things; projects: p; added 2026-06-23)\n' "$w"
@@ -270,6 +276,9 @@ test_registry_backstop_refuses_rows_the_shared_parser_refuses() {
     "a remote-registered row is refused by name, not by an empty home"
   [ "$(git -C "$w/faraway" rev-parse HEAD)" = "$before_remote" ] \
     || fail "a remote-registered home was fast-forwarded on this host"
+  refusal_lines=$(printf '%s\n' "$out" | grep -c "^secondmate faraway: skipped: " || true)
+  [ "$refusal_lines" -eq 1 ] \
+    || fail "one secondmate must be refused once, got $refusal_lines lines"
   assert_contains "$out" "nudge-secondmates: none" "refused registry rows are never nudged"
   pass "T12 update reads registry rows through their owner and names what it refuses"
 }

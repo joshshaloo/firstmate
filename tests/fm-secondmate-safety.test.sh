@@ -2185,6 +2185,54 @@ EOF
   pass "fm-backlog-handoff aborts atomically on unmatched, in-flight, and unregistered targets"
 }
 
+# data/secondmates.md row syntax has one owner (bin/fm-secondmate-registry-lib.sh),
+# and handoff MUTATES backlog state, so it must refuse exactly the rows fm-spawn
+# and /updatefirstmate refuse. A row the owner cannot read, and a row placing its
+# mate on another host, are both named refusals here - never a generic "has no
+# home" that reads as if the registry simply lacked a field.
+test_backlog_handoff_refuses_rows_the_shared_parser_refuses() {
+  local home unreadable unreadable_abs faraway faraway_abs before out
+  local malformed_refusal remote_refusal
+  home="$TMP_ROOT/handoff-registry-rows-main"
+  unreadable="$TMP_ROOT/handoff-registry-rows-unreadable"
+  faraway="$TMP_ROOT/handoff-registry-rows-faraway"
+  mkdir -p "$home/data" "$home/state"
+  seed_secondmate_home_marker "$unreadable" unreadable
+  seed_secondmate_home_marker "$faraway" faraway
+  unreadable_abs=$(cd "$unreadable" && pwd -P)
+  faraway_abs=$(cd "$faraway" && pwd -P)
+  printf '## Queued\n- [ ] move-me - a queued item (repo: alpha)\n' > "$home/data/backlog.md"
+  {
+    printf -- '- unreadable - domain work (home: %s; scope: things; projects: alpha; added 2026-6-23)\n' "$unreadable_abs"
+    printf -- '- faraway - remote mate (host: elsewhere; root: /srv/fm; home: %s; scope: things; projects: alpha; added 2026-06-23)\n' "$faraway_abs"
+  } > "$home/data/secondmates.md"
+  before="$TMP_ROOT/handoff-registry-rows.before"
+  cp "$home/data/backlog.md" "$before"
+  malformed_refusal=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_MALFORMED_REFUSAL"' _ "$ROOT")
+  remote_refusal=$(bash -c '. "$1/bin/fm-secondmate-registry-lib.sh"; printf "%s\n" "$SECONDMATE_REGISTRY_REMOTE_REFUSAL"' _ "$ROOT")
+  [ -n "$malformed_refusal" ] && [ -n "$remote_refusal" ] \
+    || fail "the registry parser must own both refusal wordings"
+
+  if out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" unreadable move-me 2>&1); then
+    fail "handoff accepted a registry row the shared parser refuses"
+  fi
+  printf '%s\n' "$out" | grep -F "$malformed_refusal" >/dev/null \
+    || fail "handoff did not name the unreadable row as the reason: $out"
+  cmp -s "$before" "$home/data/backlog.md" || fail "an unreadable row still mutated the main backlog"
+  [ ! -e "$unreadable/data/backlog.md" ] || fail "handoff wrote into a home behind an unreadable row"
+
+  if out=$(FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" faraway move-me 2>&1); then
+    fail "handoff accepted a remote-registered secondmate row"
+  fi
+  printf '%s\n' "$out" | grep -F "$remote_refusal" >/dev/null \
+    || fail "handoff did not name the remote placement as the reason: $out"
+  printf '%s\n' "$out" | grep -F 'has no home' >/dev/null \
+    && fail "a remote row must not be reported as a missing home field"
+  cmp -s "$before" "$home/data/backlog.md" || fail "a remote row still mutated the main backlog"
+  [ ! -e "$faraway/data/backlog.md" ] || fail "handoff wrote into a remote-registered home on this host"
+  pass "fm-backlog-handoff refuses registry rows through the shared parser and names each refusal"
+}
+
 test_backlog_handoff_refuses_done_items_and_non_secondmate_homes() {
   local home subhome subhome_abs projhome projhome_abs markerhome markerhome_abs symlinkhome symlinkhome_abs outside before_main before_sub out
   home="$TMP_ROOT/handoff-safety-main"
@@ -2319,3 +2367,4 @@ test_secondmate_idle_pane_is_not_stale
 test_secondmate_charter_brief_is_idle_by_default
 test_backlog_handoff_aborts_safely
 test_backlog_handoff_refuses_done_items_and_non_secondmate_homes
+test_backlog_handoff_refuses_rows_the_shared_parser_refuses

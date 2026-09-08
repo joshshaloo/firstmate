@@ -277,6 +277,7 @@ test_sweep_nudge_requires_instruction_change() {
   FM_ROOT="$w/main" FM_HOME="$w/home"
   FF_NUDGE_WINDOWS=""
   FF_SEEN_HOMES=""
+  FF_SEEN_REFUSALS=""
   sweep_live_secondmate_metas "$w/home/state" "$base" yes >/dev/null
 
   [ -z "$FF_NUDGE_WINDOWS" ] \
@@ -703,7 +704,7 @@ test_bootstrap_sweep_surfaces_skipped_home() {
 # the sweep's live-record listing) report the shared parser's one refusal wording
 # instead of a generic unsafe-home line or a silent skip.
 test_bootstrap_reports_remote_registry_row_refusal() {
-  local w c1 fakebin out marker refusal meta
+  local w c1 fakebin out marker refusal meta refusal_lines
   w=$(new_world remote-registry-row)
   c1=$(head_of "$w/main")
   add_sm_worktree "$w" sm-instr "$c1"
@@ -736,6 +737,9 @@ test_bootstrap_reports_remote_registry_row_refusal() {
     "a remote-registered row is not reported as a generic unsafe home"
   assert_contains "$out" "SECONDMATE_SYNC: secondmate sm-instr: skipped: $refusal" \
     "the sweep names the remote refusal instead of skipping silently"
+  refusal_lines=$(printf '%s\n' "$out" | grep -c ": skipped: $refusal" || true)
+  [ "$refusal_lines" -eq 1 ] \
+    || fail "one secondmate must be refused once, got $refusal_lines lines"
   pass "T8g bootstrap names the remote-registered registry row it refuses"
 }
 

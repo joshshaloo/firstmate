@@ -15,10 +15,13 @@
 # of bug fixed in PR #401 was exactly that drift).
 #
 # What this script still owns (never delegated):
-#   - resolving the secondmate home from data/secondmates.md;
-#   - proving the destination is a genuine seeded secondmate home
-#     (.fm-secondmate-home marker, AGENTS.md + bin/), never a project clone, the
-#     active home, or the firstmate repo;
+#   - looking the secondmate up in data/secondmates.md, whose ROW SYNTAX is read
+#     through its owner (bin/fm-secondmate-registry-lib.sh) so a row this home
+#     refuses here is exactly the row fm-spawn and /updatefirstmate refuse;
+#   - proving the destination is a genuine seeded secondmate home through the
+#     shared validator in bin/fm-ff-lib.sh (.fm-secondmate-home marker,
+#     AGENTS.md + bin/), never a project clone, the active home, or the
+#     firstmate repo;
 #   - moving only `## Queued` items, refusing `## In flight` and historical
 #     `## Done` records, which must stay with their home for pruning or
 #     archiving;
@@ -53,6 +56,10 @@ REG="$DATA/secondmates.md"
 MAIN_BACKLOG="$DATA/backlog.md"
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# fm-ff-lib.sh owns validating that a path really is this home's seeded
+# secondmate home, and sources the registry-row owner it resolves rows through.
+# shellcheck source=bin/fm-ff-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-ff-lib.sh"
 
 [ $# -ge 2 ] || { echo "usage: fm-backlog-handoff.sh <secondmate-id> <item-key>..." >&2; exit 1; }
 ID=$1
@@ -63,113 +70,15 @@ secondmate_home() {
   [ -f "$REG" ] || { echo "error: no secondmate registry at $REG" >&2; return 1; }
   line=$(grep -E "^- $id( |$)" "$REG" | tail -1 || true)
   [ -n "$line" ] || { echo "error: secondmate $id is not registered in $REG" >&2; return 1; }
-  # Match the (home: ...) field itself; do not require zero parentheses before it.
-  # Summary/scope prose often contains parentheticals (e.g. "(id is legacy)"), and
-  # ^[^(]* would leave those entries looking like "has no home". Greedy prefix so the
-  # last (home: ...) on the line wins. Empty when the field is absent.
-  printf '%s\n' "$line" | sed -n 's/.*(home:[[:space:]]*\([^;)]*\);.*/\1/p' | sed 's/[[:space:]]*$//'
-}
-
-path_is_ancestor_of() {
-  local ancestor=$1 path=$2
-  [ -n "$ancestor" ] || return 1
-  [ -n "$path" ] || return 1
-  [ "$ancestor" != "$path" ] || return 1
-  case "$path" in
-    "$ancestor"/*) return 0 ;;
-  esac
-  return 1
-}
-
-resolved_existing_dir() {
-  local path=$1
-  [ -d "$path" ] || { echo "error: firstmate home does not exist or is not a directory: $path" >&2; return 1; }
-  cd "$path" && pwd -P
-}
-
-validate_operational_dirs() {
-  local abs_home=$1 abs_active_home=$2 abs_root=$3 name dir abs_dir
-  for name in data state config projects; do
-    dir="$abs_home/$name"
-    if [ -L "$dir" ] && [ ! -e "$dir" ]; then
-      echo "error: secondmate $name directory must resolve inside the secondmate home: $dir" >&2
-      return 1
-    fi
-    if [ -d "$dir" ]; then
-      abs_dir=$(cd "$dir" && pwd -P)
-    elif [ -e "$dir" ]; then
-      echo "error: secondmate $name path is not a directory: $dir" >&2
-      return 1
-    else
-      abs_dir="$abs_home/$name"
-    fi
-    if ! path_is_ancestor_of "$abs_home" "$abs_dir"; then
-      echo "error: secondmate $name directory must resolve inside the secondmate home: $dir" >&2
-      return 1
-    fi
-    if [ "$abs_dir" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
-      echo "error: secondmate $name directory cannot be inside the active firstmate home: $dir" >&2
-      return 1
-    fi
-    if [ "$abs_dir" = "$abs_root" ] || path_is_ancestor_of "$abs_root" "$abs_dir"; then
-      echo "error: secondmate $name directory cannot be inside the firstmate repo: $dir" >&2
-      return 1
-    fi
-  done
-}
-
-validate_secondmate_home() {
-  local id=$1 home=$2 abs_home abs_active_home abs_root marker_id
-  abs_home=$(resolved_existing_dir "$home") || return 1
-  abs_active_home=$(resolved_existing_dir "$FM_HOME")
-  abs_root=$(resolved_existing_dir "$FM_ROOT")
-  if [ "$abs_home" = "/" ]; then
-    echo "error: secondmate home cannot be the filesystem root: $home" >&2
+  if ! secondmate_registry_parse_line "$line"; then
+    echo "error: secondmate $id is $SECONDMATE_REGISTRY_MALFORMED_REFUSAL" >&2
     return 1
   fi
-  if [ "$abs_home" = "$abs_active_home" ]; then
-    echo "error: secondmate home cannot be the active firstmate home: $home" >&2
+  if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+    echo "error: secondmate $id is $SECONDMATE_REGISTRY_REMOTE_REFUSAL" >&2
     return 1
   fi
-  if [ "$abs_home" = "$abs_root" ]; then
-    echo "error: secondmate home cannot be the firstmate repo: $home" >&2
-    return 1
-  fi
-  if path_is_ancestor_of "$abs_active_home" "$abs_home"; then
-    echo "error: secondmate home cannot be inside the active firstmate home: $home" >&2
-    return 1
-  fi
-  if path_is_ancestor_of "$abs_root" "$abs_home"; then
-    echo "error: secondmate home cannot be inside the firstmate repo: $home" >&2
-    return 1
-  fi
-  if path_is_ancestor_of "$abs_home" "$abs_active_home"; then
-    echo "error: secondmate home cannot be an ancestor of the active firstmate home: $home" >&2
-    return 1
-  fi
-  if path_is_ancestor_of "$abs_home" "$abs_root"; then
-    echo "error: secondmate home cannot be an ancestor of the firstmate repo: $home" >&2
-    return 1
-  fi
-  validate_operational_dirs "$abs_home" "$abs_active_home" "$abs_root" || return 1
-  if [ ! -f "$abs_home/.fm-secondmate-home" ]; then
-    echo "error: firstmate home $home is not a seeded secondmate home" >&2
-    return 1
-  fi
-  marker_id=$(cat "$abs_home/.fm-secondmate-home" 2>/dev/null || true)
-  if [ "$marker_id" != "$id" ]; then
-    echo "error: firstmate home $home is marked for secondmate ${marker_id:-unknown}, expected $id" >&2
-    return 1
-  fi
-  if [ ! -f "$abs_home/AGENTS.md" ]; then
-    echo "error: $home is not a firstmate home (missing AGENTS.md)" >&2
-    return 1
-  fi
-  if [ ! -d "$abs_home/bin" ]; then
-    echo "error: $home is not a firstmate home (missing bin/)" >&2
-    return 1
-  fi
-  printf '%s\n' "$abs_home"
+  printf '%s\n' "$SECONDMATE_REGISTRY_HOME"
 }
 
 validate_backlog_file() {
@@ -230,8 +139,11 @@ backlog_key_noncanonical_body_lines() {
 }
 
 RAW_HOME=$(secondmate_home "$ID") || exit 1
-[ -n "$RAW_HOME" ] || { echo "error: secondmate $ID has no home in $REG" >&2; exit 1; }
-SUB_HOME=$(validate_secondmate_home "$ID" "$RAW_HOME") || exit 1
+validate_secondmate_home "$ID" "$RAW_HOME" || {
+  echo "error: secondmate $ID home $RAW_HOME: $VALIDATION_ERROR" >&2
+  exit 1
+}
+SUB_HOME="$VALIDATED_HOME"
 SUB_BACKLOG="$SUB_HOME/data/backlog.md"
 validate_backlog_file "main backlog" "$MAIN_BACKLOG" || exit 1
 validate_backlog_file "secondmate backlog" "$SUB_BACKLOG" || exit 1

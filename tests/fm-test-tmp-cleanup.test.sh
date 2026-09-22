@@ -276,15 +276,21 @@ pass "no suite installs its own EXIT trap after fm_test_tmproot"
 # own - that is the whole shape of the 2026-09-21 incident, a watcher still
 # burning CPU 13 days later against a deleted fixture. Everything else a suite
 # backgrounds (a drain, a spawn, a bounded `sleep 30`) self-terminates long
-# before it could matter. So the two rules below are deliberately narrow, and
+# before it could matter. So the three rules below are deliberately narrow, and
 # together they cover every instance the review of this change turned up:
 #
-#   A. Any suite containing an UNBOUNDED loop - `while :`, `while true`,
-#      `while [ ! -e ... ]`, `until [ -e ... ]` - must register at least one
-#      tracker/reaper. Heredoc bodies count here on purpose: a fake tool a suite
-#      writes for the program under test to spawn is the one class that
-#      track-at-spawn cannot reach, because this shell never holds its pid.
-#   B. Any background spawn of a real long-running firstmate program must be
+#   A. Every background spawn whose own command contains an UNBOUNDED loop must
+#      be tracked within four executable lines. This is per SITE, not per file:
+#      a whole-file "does this suite track anything?" check goes blind the
+#      moment a suite gains its first tracker, which is exactly how the original
+#      untracked `( while :; do sleep 1; done ) &` could return to
+#      fm-pr-check-security.test.sh unnoticed.
+#   B. Any suite whose fixture text contains an unbounded loop must register at
+#      least one tracker/reaper. This is the backstop for the class rule A
+#      cannot see: a fake tool a suite writes for the program under test to
+#      spawn, where this shell never holds a pid and only the fixture's own
+#      environment marker can reach it.
+#   C. Any background spawn of a real long-running firstmate program must be
 #      tracked within four lines, or funnel through wake-helpers' wait_for_exit.
 #
 # Exemptions are per file and must state why the loop cannot outlive the suite.
@@ -306,48 +312,98 @@ unbounded_offenders=
 untracked_spawns=
 for suite in "$ROOT"/tests/*.sh; do
   bg_tracking_exempt "$suite" && continue
-  if grep -qE 'while[[:space:]]*:|while[[:space:]]+true|while[[:space:]]*\[[^]]*![[:space:]]*-e|until[[:space:]]*\[[^]]*-e' "$suite" \
-    && ! grep -qE 'fm_test_track_bg_pid|fm_test_track_fixture_bg_pid|fm_test_reap_env_at_exit' "$suite"; then
-    unbounded_offenders="$unbounded_offenders"$'\n'"  ${suite#"$ROOT"/}"
-  fi
   hits=$(awk -v progs="$LONG_RUNNING_PROGRAMS" '
-    { line[NR] = $0 }
-    # A suite names these programs through a variable far more often than
-    # inline, so resolve the assignments first - otherwise `nohup "$DAEMON" &`
-    # reads as an ordinary spawn and the rule silently covers nothing.
-    $0 ~ "^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*=.*(" progs ")" {
-      name = $0
-      sub(/^[[:space:]]*/, "", name)
-      sub(/=.*$/, "", name)
-      alias[name] = 1
+    # Single owner of "this loop never ends on its own". A test that also
+    # carries a counter bound terminates regardless of what it is waiting for.
+    function unbounded(t) {
+      if (t ~ /while[[:space:]]*:/ || t ~ /while[[:space:]]+true/) return 1
+      if (t ~ /-lt|-le|-gt|-ge/) return 0
+      if (t ~ /while[[:space:]]*\[[^]]*![[:space:]]*-[efsd][[:space:]]/) return 1
+      if (t ~ /until[[:space:]]*\[[^]]*[[:space:]]-[efsd][[:space:]]/) return 1
+      if (t ~ /while[[:space:]]*\[[^]]*-z[[:space:]]/) return 1
+      return 0
+    }
+    function tracked_after(n,   k, seen) {
+      # Count only lines that could actually run: a comment cannot leak a
+      # process, and spawn sites are routinely annotated.
+      seen = 0
+      for (k = n + 1; k <= NR && seen < 4; k++) {
+        if (line[k] ~ /^[[:space:]]*(#|$)/) continue
+        seen++
+        if (line[k] ~ /fm_test_track_bg_pid|fm_test_track_fixture_bg_pid|wait_for_exit/) return 1
+      }
+      return 0
+    }
+    {
+      line[NR] = $0
+      body = $0; sub(/^[ \t]+/, "", body)
+      # Heredoc bodies are the program under test being handed a fake tool, not
+      # this shell backgrounding something - rule A cannot apply, rule B can.
+      if (hd != "") {
+        if (body == hd) hd = ""
+        else if (unbounded($0)) spins = 1
+        inhd[NR] = 1; next
+      }
+      # Rule B is about FIXTURE text - a loop a suite writes for something else
+      # to run. A loop in statement position is this shell waiting on its own
+      # work: if that never ends the suite hangs, which is a visible failure,
+      # not a process still burning CPU after the suite is gone.
+      if (unbounded($0) && body !~ /^(while|until)[[:space:]]/) spins = 1
+      if ($0 ~ /fm_test_track_bg_pid|fm_test_track_fixture_bg_pid|fm_test_reap_env_at_exit/) registers = 1
+      if (match($0, /<<-?[ \t]*\047[^\047]+\047/)) {
+        d = substr($0, RSTART, RLENGTH); sub(/^<<-?[ \t]*\047/, "", d); sub(/\047$/, "", d); hd = d; next
+      }
+      if (match($0, /<<-?[ \t]*"[^"]+"/)) {
+        d = substr($0, RSTART, RLENGTH); sub(/^<<-?[ \t]*"/, "", d); sub(/"$/, "", d); hd = d; next
+      }
+      # A suite names the long-running programs through a variable far more
+      # often than inline, so resolve those assignments before rule C looks.
+      if ($0 ~ "^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*=.*(" progs ")") {
+        name = $0; sub(/^[[:space:]]*/, "", name); sub(/=.*$/, "", name); alias[name] = 1
+      }
+      if (match($0, /<<-?[A-Za-z_][A-Za-z0-9_]*/)) {
+        d = substr($0, RSTART, RLENGTH); sub(/^<<-?/, "", d); hd = d; next
+      }
     }
     END {
+      if (spins && !registers) printf "B %s\n", FILENAME
       for (n = 1; n <= NR; n++) {
-        if (line[n] !~ /&[[:space:]]*$/) continue
+        if (inhd[n]) continue
+        if (line[n] !~ /&[[:space:]]*$/ || line[n] ~ /&&[[:space:]]*$/) continue
+        # Walk back to the start of the backgrounded command. A spawn spans
+        # several lines in three shapes this tree uses: a `( ... ) &` subshell,
+        # a multi-line `bash -c ... &` script, and backslash continuations.
+        # Continuing while the joined text has an unclosed quote or paren, or
+        # the line above continues, covers all three without parsing the shell.
         spawn = line[n]
-        for (b = n - 1; b >= 1 && line[b] ~ /\\$/; b--) spawn = line[b] " " spawn
+        for (b = n - 1; b >= 1 && n - b < 40; b--) {
+          probe = spawn; q = gsub(/\047/, "", probe)
+          probe = spawn; o = gsub(/\(/, "", probe)
+          probe = spawn; c = gsub(/\)/, "", probe)
+          if (q % 2 == 0 && c <= o && line[b] !~ /\\$/) break
+          spawn = line[b] " " spawn
+        }
         named = (spawn ~ progs)
         for (name in alias)
           if (spawn ~ ("[$]\\{?" name "\\}?")) named = 1
-        if (!named) continue
-        # Count only lines that could actually run: a comment cannot leak a
-        # process, and spawn sites are routinely annotated.
-        ok = 0
-        seen = 0
-        for (k = n + 1; k <= NR && seen < 4; k++) {
-          if (line[k] ~ /^[[:space:]]*(#|$)/) continue
-          seen++
-          if (line[k] ~ /fm_test_track_bg_pid|fm_test_track_fixture_bg_pid|wait_for_exit/) ok = 1
-        }
-        if (!ok) printf "  %s:%d\n", FILENAME, n
+        if (!named && !unbounded(spawn)) continue
+        if (!tracked_after(n)) printf "%s %s:%d\n", (named ? "C" : "A"), FILENAME, n
       }
     }
   ' "$suite")
-  [ -z "$hits" ] || untracked_spawns="$untracked_spawns"$'\n'"$hits"
+  while read -r kind where; do
+    [ -n "$where" ] || continue
+    case "$kind" in
+      B) unbounded_offenders="$unbounded_offenders"$'\n'"  ${where#"$ROOT"/}" ;;
+      *) untracked_spawns="$untracked_spawns"$'\n'"  ${where#"$ROOT"/}" ;;
+    esac
+  done <<EOF
+$hits
+EOF
 done
 [ -z "$unbounded_offenders" ] || fail \
-  "suites with an unbounded background fixture must register cleanup (fm_test_track_bg_pid / fm_test_reap_env_at_exit) or be exempted in bg_tracking_exempt:$unbounded_offenders"
+  "suites whose fixture text spins forever must register cleanup (fm_test_track_bg_pid / fm_test_reap_env_at_exit) or be exempted in bg_tracking_exempt:$unbounded_offenders"
 [ -z "$untracked_spawns" ] || fail \
-  "background spawns of a long-running firstmate program must be tracked within four lines or funnel through wait_for_exit:$untracked_spawns"
+  "background spawns of an unbounded fixture or a long-running firstmate program must be tracked within four executable lines or funnel through wait_for_exit:$untracked_spawns"
 
 pass "every unbounded background fixture and long-running spawn registers cleanup"

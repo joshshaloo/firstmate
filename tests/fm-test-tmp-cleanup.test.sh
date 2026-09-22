@@ -239,6 +239,35 @@ rm -rf "$keep_dir"
 
 pass "bounded suites clean their fm-* temp dirs"
 
+# Single owner of "does this line open a heredoc?", shared by both tree-wide
+# scans below. `<<<` is a here-string, not a heredoc: without masking it first
+# awk's match() starts at the SECOND `<` of `<<<`, reads the here-string word as
+# a delimiter that no later line can ever equal, and every remaining line of the
+# file silently counts as heredoc body - so a scan that skips heredoc bodies
+# goes blind from there on while still reporting success.
+FM_TEST_HEREDOC_AWK='
+function heredoc_delimiter(text,   probe, d) {
+  probe = text
+  gsub(/<<</, "@@@", probe)
+  if (match(probe, /<<-?[ \t]*\047[^\047]+\047/)) {
+    d = substr(probe, RSTART, RLENGTH)
+    sub(/^<<-?[ \t]*\047/, "", d); sub(/\047$/, "", d)
+    return d
+  }
+  if (match(probe, /<<-?[ \t]*"[^"]+"/)) {
+    d = substr(probe, RSTART, RLENGTH)
+    sub(/^<<-?[ \t]*"/, "", d); sub(/"$/, "", d)
+    return d
+  }
+  if (match(probe, /<<-?[A-Za-z_][A-Za-z0-9_]*/)) {
+    d = substr(probe, RSTART, RLENGTH)
+    sub(/^<<-?/, "", d)
+    return d
+  }
+  return ""
+}
+'
+
 # tests/lib.sh owns EXIT for every suite that uses it: an EXIT trap installed
 # after the first fm_test_tmproot call replaces the library's handler, silently
 # dropping both the temp removal and the FM_TEST_KEEP_TMP=1 escape hatch. Such a
@@ -246,20 +275,10 @@ pass "bounded suites clean their fm-* temp dirs"
 # are skipped so traps inside fixture scripts written by a suite do not count.
 offenders=$(
   for suite in "$ROOT"/tests/*.test.sh; do
-    awk '
+    awk "$FM_TEST_HEREDOC_AWK"'
       { line = $0; sub(/^[ \t]+/, "", line) }
       heredoc != "" { if (line == heredoc) heredoc = ""; next }
-      match($0, /<<-?[ \t]*'"'"'[^'"'"']+'"'"'/) {
-        d = substr($0, RSTART, RLENGTH); sub(/^<<-?[ \t]*'"'"'/, "", d); sub(/'"'"'$/, "", d)
-        heredoc = d; next
-      }
-      match($0, /<<-?[ \t]*"[^"]+"/) {
-        d = substr($0, RSTART, RLENGTH); sub(/^<<-?[ \t]*"/, "", d); sub(/"$/, "", d)
-        heredoc = d; next
-      }
-      match($0, /<<-?[A-Za-z_][A-Za-z0-9_]*/) {
-        d = substr($0, RSTART, RLENGTH); sub(/^<<-?/, "", d); heredoc = d; next
-      }
+      { opened = heredoc_delimiter($0); if (opened != "") { heredoc = opened; next } }
       first == 0 && $0 ~ /fm_test_tmproot[ \t]/ { first = NR; next }
       first != 0 && line ~ /^trap[ \t]/ && $0 ~ /EXIT/ {
         printf "%s:%d: %s\n", FILENAME, NR, line
@@ -312,7 +331,7 @@ unbounded_offenders=
 untracked_spawns=
 for suite in "$ROOT"/tests/*.sh; do
   bg_tracking_exempt "$suite" && continue
-  hits=$(awk -v progs="$LONG_RUNNING_PROGRAMS" '
+  hits=$(awk -v progs="$LONG_RUNNING_PROGRAMS" "$FM_TEST_HEREDOC_AWK"'
     # Single owner of "this loop never ends on its own". A test that also
     # carries a counter bound terminates regardless of what it is waiting for.
     function unbounded(t) {
@@ -350,20 +369,13 @@ for suite in "$ROOT"/tests/*.sh; do
       # not a process still burning CPU after the suite is gone.
       if (unbounded($0) && body !~ /^(while|until)[[:space:]]/) spins = 1
       if ($0 ~ /fm_test_track_bg_pid|fm_test_track_fixture_bg_pid|fm_test_reap_env_at_exit/) registers = 1
-      if (match($0, /<<-?[ \t]*\047[^\047]+\047/)) {
-        d = substr($0, RSTART, RLENGTH); sub(/^<<-?[ \t]*\047/, "", d); sub(/\047$/, "", d); hd = d; next
-      }
-      if (match($0, /<<-?[ \t]*"[^"]+"/)) {
-        d = substr($0, RSTART, RLENGTH); sub(/^<<-?[ \t]*"/, "", d); sub(/"$/, "", d); hd = d; next
-      }
       # A suite names the long-running programs through a variable far more
       # often than inline, so resolve those assignments before rule C looks.
       if ($0 ~ "^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*=.*(" progs ")") {
         name = $0; sub(/^[[:space:]]*/, "", name); sub(/=.*$/, "", name); alias[name] = 1
       }
-      if (match($0, /<<-?[A-Za-z_][A-Za-z0-9_]*/)) {
-        d = substr($0, RSTART, RLENGTH); sub(/^<<-?/, "", d); hd = d; next
-      }
+      opened = heredoc_delimiter($0)
+      if (opened != "") { hd = opened; next }
     }
     END {
       if (spins && !registers) printf "B %s\n", FILENAME

@@ -165,6 +165,7 @@ fm_test_assert_no_process_for_env "FM_TEST_LEAK_HOME=$BG_SUITE_HOME" \
 pass "an untracked background fixture really does outlive its suite's fail()"
 
 tracked_suite="$PARENT_TMP/synthetic-bg-tracked-suite.sh"
+# shellcheck disable=SC2016 # $leak_pid and $leak expand in the generated suite, not here.
 bg_fixture_suite "$tracked_suite" \
   'fm_test_track_fixture_bg_pid "$leak_pid" "FM_TEST_LEAK_HOME=$leak"'
 run_bg_fixture_suite "$tracked_suite" "$PARENT_TMP/bg-tracked.meta"
@@ -212,6 +213,7 @@ assert_identity_refusal "$platform_suite" "$PARENT_TMP/identity-platform.meta" \
 pass "tracking refuses loudly, once, on a platform with no process-identity source"
 
 pid_suite="$PARENT_TMP/synthetic-identity-pid-suite.sh"
+# shellcheck disable=SC2016 # $1 and $$ expand in the generated suite's override, not here.
 identity_refusal_suite "$pid_suite" \
   '[ "$1" = "$$" ] || return 2; printf "starttime=synthetic\\n";'
 assert_identity_refusal "$pid_suite" "$PARENT_TMP/identity-pid.meta" \

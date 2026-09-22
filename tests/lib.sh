@@ -101,6 +101,37 @@ fm_test_at_exit() {
   FM_TEST_EXIT_HOOK_COUNT=$((FM_TEST_EXIT_HOOK_COUNT + 1))
 }
 
+# fm_test_track_bg_pid <pid>: guarantee a backgrounded real process (a watcher,
+# a daemon, any long-running fixture) cannot outlive the suite, on ANY exit
+# path - normal completion, fail()'s exit 1, or a signal - not just the
+# happy path where the test's own cleanup line is reached. A test that starts
+# a real background process and only kills it at the bottom of the test
+# function leaks that process (with its FM_HOME fixture directory removed out
+# from under it) whenever an assertion between spawn and cleanup calls fail()
+# or the suite is interrupted. Call this immediately after capturing the pid
+# (right after "... &"; pid=$!), before any assertion that could fail.
+# Scoped to exactly this one pid - never a broad process sweep - so it can
+# never reach a sibling fixture's watcher, let alone a live firstmate home's.
+# Idempotent by construction: if the test's own cleanup already reaped the
+# pid, the registered hook's kill/wait are silent no-ops.
+fm_test_track_bg_pid() {
+  local pid=$1
+  [ -n "$pid" ] || return 0
+  fm_test_at_exit "fm_test_reap_bg_pid $pid"
+}
+
+fm_test_reap_bg_pid() {
+  local pid=$1 i=0
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null || true
+}
+
 fm_test_run_exit_hooks() {
   local i=$FM_TEST_EXIT_HOOK_COUNT
   FM_TEST_EXIT_HOOK_COUNT=0

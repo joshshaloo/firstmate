@@ -173,6 +173,7 @@ start_daemon() {
   FM_STALE_ESCALATE_SECS=999999 \
   nohup "$DAEMON" >"$STATE_DIR/daemon.out" 2>"$STATE_DIR/daemon.err" &
   DAEMON_PID=$!
+  fm_test_track_fixture_bg_pid "$DAEMON_PID" "FM_STATE_OVERRIDE=$STATE_DIR"
   # Wait for the daemon to start and acquire the lock.
   local i=0
   while [ "$i" -lt 30 ]; do

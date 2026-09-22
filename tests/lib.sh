@@ -137,24 +137,6 @@ FM_TEST_PID_IDENTITY_SUPPORTED=0
 # except the genuinely wedged one - and the suite is exiting anyway.
 FM_TEST_BG_TERM_GRACE_SECS=${FM_TEST_BG_TERM_GRACE_SECS:-5}
 
-# fm_test_pid_identity <pid>: the fact that tells a live process apart from a
-# later, unrelated process that merely reused its pid - when it started. Start
-# time is fixed at fork; the command line is not, because it only becomes the
-# tracked program's once the child execs. A pid captured from "$!" is tracked
-# before that exec lands, so folding the command line in here would make every
-# freshly forked process fail its own identity check a moment later and go
-# unreaped. bin/fm-wake-lib.sh's fm_pid_identity answers the same question for
-# the production watcher, which records itself after exec and can therefore
-# combine both; that library cannot be sourced here anyway, since it resolves
-# FM_HOME/STATE and creates a state directory as a side effect that every test
-# file would inherit.
-#
-# Exit status distinguishes the two ways this can come back empty, because they
-# mean opposite things to a caller:
-#   0  identified; the identity is on stdout
-#   1  the pid is gone or already a zombie - there is nothing left to leak
-#   2  the pid names a LIVE process this mechanism could not identify, i.e. the
-#      mechanism itself is broken and must never be treated as "nothing to do"
 # fm_test_pid_stat_fields <pid>: everything after the final comm delimiter in
 # proc stat, i.e. field 3 onward. Index 0 is field 3 (process state), index 19
 # is field 22 (starttime, ticks since boot). Single owner of this parse.
@@ -203,6 +185,24 @@ fm_test_pid_ignores_term() {
   [ $(( (0x$low >> 14) & 1 )) -eq 1 ]
 }
 
+# fm_test_pid_identity <pid>: the fact that tells a live process apart from a
+# later, unrelated process that merely reused its pid - when it started. Start
+# time is fixed at fork; the command line is not, because it only becomes the
+# tracked program's once the child execs. A pid captured from "$!" is tracked
+# before that exec lands, so folding the command line in here would make every
+# freshly forked process fail its own identity check a moment later and go
+# unreaped. bin/fm-wake-lib.sh's fm_pid_identity answers the same question for
+# the production watcher, which records itself after exec and can therefore
+# combine both; that library cannot be sourced here anyway, since it resolves
+# FM_HOME/STATE and creates a state directory as a side effect that every test
+# file would inherit.
+#
+# Exit status distinguishes the two ways this can come back empty, because they
+# mean opposite things to a caller:
+#   0  identified; the identity is on stdout
+#   1  the pid is gone or already a zombie - there is nothing left to leak
+#   2  the pid names a LIVE process this mechanism could not identify, i.e. the
+#      mechanism itself is broken and must never be treated as "nothing to do"
 fm_test_pid_identity() {
   local pid=$1 fields out
   local -a stat_fields

@@ -20,8 +20,10 @@
 # response missing any question that was asked.
 #
 # Secrets and payloads never reach a command argument: the key is written to a
-# mode-0600 header file that curl reads with -H @file, and the request body is
-# posted from a private temp file with --data-binary @file.
+# mode-0600 header file that curl reads with -H @file, the state and the
+# questions are staged as mode-0600 files that jq reads with --slurpfile, and the
+# request body is posted from a private temp file with --data-binary @file. Each
+# achieved mode is read back from disk rather than assumed.
 #
 # The credential file is $HOME/.config/firstmate/openrouter.env (mode 0600),
 # alongside the same directory's bkt.env. It is parsed, never sourced, so a
@@ -55,7 +57,11 @@ question, or credential ever appears in a command argument.
                         Question ids are for the caller's code and are never sent
                         to the model, so put the full meaning in the question.
   --model <id>          default jev-1.13. Pin a version when thresholds have been
-                        calibrated against it; an alias can move under you.
+                        calibrated against it; an alias can move under you. An id
+                        is at most 200 characters of A-Za-z0-9 and . _ - ~ / :
+                        with no leading, trailing, or doubled colon, so an
+                        OpenRouter variant id such as vendor/model:beta is
+                        accepted and nothing else is.
   --timeout <seconds>   per-attempt timeout, 1-300, default 20.
 
 Output, on success only, one compact JSON line:
@@ -77,7 +83,8 @@ Contract:
     changed, and tested without re-running inference.
   - One bounded attempt plus one retry on 429 or 5xx, honoring Retry-After.
   - The key is read only from $HOME/.config/firstmate/openrouter.env, which must
-    be mode 0600. It is never accepted as an argument and never printed.
+    be a regular file, not a symlink, and mode 0600. It is never accepted as an
+    argument and never printed.
 
 The request and answer shapes, the question types, and the Score-criteria-is-an-
 array trap are owned by the typesafe-jev skill. When a decision belongs to Jev at
@@ -114,9 +121,14 @@ done
 [ -n "$QUESTIONS_PATH" ] || die 2 "--questions is required (see --help)"
 [ "$STATE_PATH" != - ] || [ "$QUESTIONS_PATH" != - ] \
   || die 2 "only one of --state and --questions may read stdin"
+# An anchored allowlist, widened only far enough to admit the colon in an
+# OpenRouter variant id (vendor/model:beta). A case pattern matches the whole
+# word, so this is anchored start to end by construction.
 case "$MODEL" in
-  ''|*[!A-Za-z0-9._/~-]*) die 2 "--model must be a plain model id" ;;
+  ''|*[!A-Za-z0-9._/~:-]*|:*|*:|*::*)
+    die 2 "--model must be A-Za-z0-9 . _ - ~ / : with no leading, trailing, or doubled colon" ;;
 esac
+[ "${#MODEL}" -le 200 ] || die 2 "--model must be at most 200 characters"
 case "$TIMEOUT" in
   ''|*[!0-9]*) die 2 "--timeout must be a whole number of seconds" ;;
 esac
@@ -125,22 +137,50 @@ esac
 command -v curl >/dev/null 2>&1 || die 1 "curl is not installed"
 command -v jq >/dev/null 2>&1 || die 1 "jq is not installed"
 
+# --- private working files --------------------------------------------------
+#
+# Every input, the key header, the request body, and the response live in one
+# 0700 directory as 0600 files, and each achieved mode is read back from disk
+# rather than assumed: the umask that would otherwise decide them belongs to the
+# caller. Staging the inputs here is also what keeps the state and the questions
+# out of every later command argument, and off the argv size ceiling with them.
+umask 077
+
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/fm-jev.XXXXXX") || die 1 "cannot create a private temp directory"
+trap 'rm -rf -- "$TMPD"' EXIT HUP INT TERM
+
+STATE_FILE="$TMPD/state.json"
+QUESTIONS_FILE="$TMPD/questions.json"
+AUTH="$TMPD/auth"
+PAYLOAD="$TMPD/payload.json"
+BODY="$TMPD/body.json"
+HEADERS="$TMPD/headers"
+
+for f in "$STATE_FILE" "$QUESTIONS_FILE" "$AUTH" "$PAYLOAD" "$BODY" "$HEADERS"; do
+  : > "$f" || die 1 "cannot create a private request file under $TMPD"
+  chmod 600 "$f" || die 1 "cannot make a private request file mode 0600 under $TMPD"
+  [ "$(fm_pr_file_mode "$f")" = 600 ] \
+    || die 1 "a request file did not reach mode 0600: $f"
+done
+
 read_input() {
-  local path=$1
+  local path=$1 dest=$2
   if [ "$path" = - ]; then
-    cat
-    return 0
+    cat > "$dest"
+    return $?
   fi
   [ -f "$path" ] && [ -r "$path" ] || return 1
-  cat -- "$path"
+  cat -- "$path" > "$dest"
 }
 
-STATE=$(read_input "$STATE_PATH") || die 1 "state file is unreadable: $STATE_PATH"
-QUESTIONS=$(read_input "$QUESTIONS_PATH") || die 1 "questions file is unreadable: $QUESTIONS_PATH"
+read_input "$STATE_PATH" "$STATE_FILE" || die 1 "state file is unreadable: $STATE_PATH"
+read_input "$QUESTIONS_PATH" "$QUESTIONS_FILE" || die 1 "questions file is unreadable: $QUESTIONS_PATH"
 
-printf '%s' "$STATE" | jq empty >/dev/null 2>&1 \
-  || die 1 "state is not valid JSON (a plain-text state is a JSON string: jq -Rs .)"
-printf '%s' "$QUESTIONS" | jq -e 'type == "object" and length > 0' >/dev/null 2>&1 \
+# Exactly one JSON value, because the payload takes the first one and a second
+# value would be silently dropped rather than sent.
+jq -e -s 'length == 1' "$STATE_FILE" >/dev/null 2>&1 \
+  || die 1 "state is not one valid JSON value (a plain-text state is a JSON string: jq -Rs .)"
+jq -e -s 'length == 1 and (.[0] | type == "object" and length > 0)' "$QUESTIONS_FILE" >/dev/null 2>&1 \
   || die 1 "questions must be a non-empty JSON object of question id -> question"
 
 # --- credentials ------------------------------------------------------------
@@ -165,7 +205,9 @@ env_value() {
 
 [ -n "${HOME:-}" ] || die 1 "HOME is not set, so the credential file cannot be located"
 ENV_FILE=${FM_JEV_ENV_FILE:-$HOME/.config/firstmate/openrouter.env}
-[ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] \
+[ ! -L "$ENV_FILE" ] \
+  || die 1 "credential file must be a regular file, not a symlink: $ENV_FILE"
+[ -f "$ENV_FILE" ] \
   || die 1 "credential file is absent: $ENV_FILE"
 [ "$(fm_pr_file_mode "$ENV_FILE")" = 600 ] \
   || die 1 "credential file must be mode 0600: $ENV_FILE"
@@ -185,21 +227,15 @@ ENDPOINT="$BASE_URL/v1/systemone"
 
 # --- request ----------------------------------------------------------------
 
-TMPD=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-jev.XXXXXX") || die 1 "cannot create a private temp directory"
-trap 'rm -rf -- "$TMPD"' EXIT HUP INT TERM
-
-AUTH="$TMPD/auth"
-PAYLOAD="$TMPD/payload.json"
-BODY="$TMPD/body.json"
-HEADERS="$TMPD/headers"
-
 printf 'Authorization: Bearer %s\n' "$API_KEY" > "$AUTH" || die 1 "cannot stage the request credentials"
 API_KEY=
+[ "$(fm_pr_file_mode "$AUTH")" = 600 ] \
+  || die 1 "the staged request credentials did not reach mode 0600: $AUTH"
 
 jq -cn --arg model "$MODEL" \
-  --argjson state "$STATE" \
-  --argjson questions "$QUESTIONS" \
-  '{model: $model, state: $state, questions: $questions}' > "$PAYLOAD" \
+  --slurpfile state "$STATE_FILE" \
+  --slurpfile questions "$QUESTIONS_FILE" \
+  '{model: $model, state: $state[0], questions: $questions[0]}' > "$PAYLOAD" \
   || die 1 "cannot build the request payload"
 
 # Retry-After may be seconds or an HTTP date; only the seconds form is honored,
@@ -252,9 +288,13 @@ jq -e '(.model | type) == "string" and ((.model | length) > 0)' "$BODY" >/dev/nu
 jq -e '.answers | type == "object"' "$BODY" >/dev/null 2>&1 \
   || die 1 "Jev response carries no answers object"
 
-MISSING=$(printf '%s' "$QUESTIONS" | jq -r --slurpfile response "$BODY" \
+# A null answer and a missing key are the same thing: no answer. The value is
+# tested rather than key presence, because has() is true for an explicit null
+# and absence must never arrive as a judgment.
+MISSING=$(jq -r --slurpfile response "$BODY" \
   '($response[0].answers // {}) as $answers
-   | [keys_unsorted[] as $id | select($answers | has($id) | not) | $id] | join(", ")') \
+   | [keys_unsorted[] as $id | select($answers[$id] == null) | $id] | join(", ")' \
+  "$QUESTIONS_FILE") \
   || die 1 "cannot check the Jev response against the questions asked"
 [ -z "$MISSING" ] \
   || die 1 "Jev response is missing an answer for: $MISSING"

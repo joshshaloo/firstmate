@@ -15,17 +15,28 @@ JEV="$ROOT/bin/fm-jev.sh"
 
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 CURL_LOG="$TMP_ROOT/curl.log"
+MODE_LOG="$TMP_ROOT/curl.modes"
 
 cat > "$FAKEBIN/curl" <<'SH'
 #!/usr/bin/env bash
-# Stand-in for curl's -o/-D/-w contract: record the invocation, write the
-# configured body and headers, then print the configured status code.
+# Stand-in for curl's -o/-D/-w contract: record the invocation and the on-disk
+# mode of every @file it was handed, write the configured body and headers, then
+# print the configured status code.
 [ -z "${FM_FAKE_CURL_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_CURL_LOG"
 out=; hdr=; prev=
 for a in "$@"; do
   case "$prev" in
     -o) out=$a ;;
     -D) hdr=$a ;;
+  esac
+  case "$a" in
+    @*)
+      f=${a#@}
+      if [ -n "${FM_FAKE_CURL_MODE_LOG:-}" ] && [ -e "$f" ]; then
+        mode=$(stat -c %a "$f" 2>/dev/null) || mode=$(stat -f %Lp "$f" 2>/dev/null)
+        printf '%s %s\n' "$mode" "$f" >> "$FM_FAKE_CURL_MODE_LOG"
+      fi
+      ;;
   esac
   prev=$a
 done
@@ -62,6 +73,7 @@ run_jev() {
   HOME="$TMP_ROOT/home" \
   FM_JEV_ENV_FILE="${FM_JEV_ENV_FILE_OVERRIDE-$ENV_FILE}" \
   FM_FAKE_CURL_LOG="$CURL_LOG" \
+  FM_FAKE_CURL_MODE_LOG="$MODE_LOG" \
   FM_FAKE_CURL_CODE="${CODE-200}" \
   FM_FAKE_CURL_BODY="${BODY-$ANSWERED}" \
   FM_FAKE_CURL_HEADER="${HEADER-}" \
@@ -89,6 +101,7 @@ assert_refused() {
 # --- the answered path ------------------------------------------------------
 
 : > "$CURL_LOG"
+: > "$MODE_LOG"
 run_jev 0 'a well-formed request is answered'
 assert_contains "$OUT" '"model":"typesafe/jev-1.13-20260917"' 'answered output records the responding model version'
 assert_contains "$OUT" '"upstream"' 'answered output carries the first answer'
@@ -104,6 +117,29 @@ assert_not_contains "$CURL_ARGS" 'sk-or-test-secret' 'the API key appeared in a 
 assert_contains "$CURL_ARGS" '--data-binary @' 'the payload was not posted from a file'
 assert_contains "$CURL_ARGS" 'https://openrouter.example.invalid/api/v1/systemone' 'the base URL from the credential file was not used'
 pass 'the key and the payload never appear in a command argument'
+
+# The mode the key header actually reached on disk, not the mode intended for
+# it: the caller's umask decides that unless the script takes it back.
+[ -s "$MODE_LOG" ] || fail 'the curl stub recorded no @file modes'
+SAW_AUTH=0
+while read -r MODE MODE_PATH; do
+  [ "$MODE" = 600 ] || fail "a file handed to curl is not mode 0600: $MODE $MODE_PATH"
+  case "$MODE_PATH" in */auth) SAW_AUTH=1 ;; esac
+done < "$MODE_LOG"
+[ "$SAW_AUTH" = 1 ] || fail 'the Authorization header file was never handed to curl'
+pass 'the key header and the payload reach mode 0600 on disk'
+
+# A state larger than the argv ceiling proves the state is staged as a file
+# rather than passed to jq as an argument, where it would fail with E2BIG.
+BIGSTATE="$TMP_ROOT/big-state.json"
+{ printf '{"blob":"'; head -c 300000 /dev/zero | tr '\0' 'x'; printf '"}\n'; } > "$BIGSTATE"
+RC=0
+PATH="$FAKEBIN:$BASE_PATH" FM_JEV_ENV_FILE="$ENV_FILE" \
+  FM_FAKE_CURL_CODE=200 FM_FAKE_CURL_BODY="$ANSWERED" \
+  "$JEV" --state "$BIGSTATE" --questions "$QUESTIONS" \
+  > "$TMP_ROOT/stdout" 2> "$TMP_ROOT/stderr" || RC=$?
+expect_code 0 "$RC" 'a state larger than the argv ceiling is answered'
+pass 'a state too large for a command argument is still sent'
 
 # --- fail closed: credentials ----------------------------------------------
 
@@ -125,6 +161,16 @@ FM_JEV_ENV_FILE_OVERRIDE="$LOOSE" run_jev 1 'a world-readable credential file re
 assert_refused 'world-readable credential file'
 assert_contains "$ERR" 'mode 0600' 'the private-file requirement is not named'
 pass 'a credential file that is not private refuses and prints no answer'
+
+# A symlinked credential file exists, so "absent" would name the wrong
+# requirement to a user who keeps this file in a dotfiles repo.
+LINKED="$TMP_ROOT/linked.env"
+ln -sf "$ENV_FILE" "$LINKED"
+FM_JEV_ENV_FILE_OVERRIDE="$LINKED" run_jev 1 'a symlinked credential file refuses'
+assert_refused 'symlinked credential file'
+assert_contains "$ERR" 'symlink' 'the regular-file requirement is not named'
+assert_not_contains "$ERR" 'absent' 'a symlinked credential file was reported as absent'
+pass 'a symlinked credential file refuses by naming the regular-file requirement'
 
 KEYLESS="$TMP_ROOT/keyless.env"
 printf 'TYPESAFE_BASE_URL=https://openrouter.example.invalid/api\n' > "$KEYLESS"
@@ -182,6 +228,14 @@ BODY='{"model":"typesafe/jev-1.13-20260917"}' run_jev 1 'a response with no answ
 assert_refused 'response with no answers object'
 pass 'a response carrying no answers object refuses and prints no answer'
 
+# An explicitly null answer is an absent answer, not a judgment: key presence
+# alone would let it through and a caller would read the null as a verdict.
+BODY='{"model":"typesafe/jev-1.13-20260917","answers":{"upstream":{"type":"noul","noul":0.91},"urgency":null}}' \
+  run_jev 1 'a null answer refuses'
+assert_refused 'null answer'
+assert_contains "$ERR" 'urgency' 'the null-valued question is not named'
+pass 'an explicitly null answer refuses and prints no answer'
+
 # --- usage refusals ---------------------------------------------------------
 
 RC=0
@@ -202,6 +256,29 @@ expect_code 0 "$RC" '--help exits zero'
 assert_grep 'Fail closed' "$TMP_ROOT/stdout" 'help does not state the fail-closed contract'
 assert_grep 'jev-routing' "$TMP_ROOT/stdout" 'help does not point at the routing owner'
 pass 'help states the contract and points at the routing owner'
+
+# --- the accepted model id shape --------------------------------------------
+#
+# An anchored allowlist: an OpenRouter variant id carries a colon, and nothing
+# outside the allowed set gets through on the strength of that widening.
+for GOOD in 'vendor/model:beta' 'openrouter/jev-1.13:free' 'typesafe/jev-1.13-20260917' 'jev_1.13~a'; do
+  run_jev 0 "--model accepts '$GOOD'" --model "$GOOD"
+  assert_contains "$OUT" '"model":' "--model '$GOOD' was accepted but produced no answer"
+done
+run_jev 0 '--model accepts an id of exactly 200 characters' \
+  --model "$(printf 'a%.0s' $(seq 1 200))"
+pass '--model accepts a variant id carrying a colon'
+
+DOLLAR='$'
+for BAD in ':beta' 'vendor/model:' 'vendor/model::beta' 'vendor/model beta' "vendor/model${DOLLAR}(id)" 'vendor/model;id' ''; do
+  run_jev 2 "--model rejects '$BAD'" --model "$BAD"
+  assert_refused "--model '$BAD'"
+  assert_contains "$ERR" '--model must be' "--model '$BAD' was refused without naming the requirement"
+done
+run_jev 2 '--model rejects an id of 201 characters' \
+  --model "$(printf 'a%.0s' $(seq 1 201))"
+assert_contains "$ERR" '200 characters' 'the model id length limit is not named'
+pass '--model rejects an id outside the allowlist, a stray colon, or an overlong id'
 
 # --- malformed inputs -------------------------------------------------------
 

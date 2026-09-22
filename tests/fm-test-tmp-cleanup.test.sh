@@ -111,6 +111,7 @@ fm_test_track_bg_pid "\$gone"
 FM_TEST_LEAK_HOME="\$leak" \
   bash -c 'printf ready > "\$1"; while :; do sleep 1; done' fm-leak-fixture.sh "\$3" &
 leak_pid=\$!
+printf '%s\\n%s\\n' "\$leak_pid" "\$leak" > "\$2"
 $mode
 i=0
 while [ ! -e "\$3" ] && [ "\$i" -lt 200 ]; do
@@ -118,7 +119,6 @@ while [ ! -e "\$3" ] && [ "\$i" -lt 200 ]; do
   i=\$((i + 1))
 done
 [ -e "\$3" ] || { printf 'fixture never became ready\\n' >&2; exit 9; }
-printf '%s\\n%s\\n' "\$leak_pid" "\$leak" > "\$2"
 fail "synthetic mid-test failure before any cleanup line"
 SH
   chmod +x "$file"
@@ -135,6 +135,10 @@ run_bg_fixture_suite() {  # <path> <meta> -> BG_SUITE_RC / BG_SUITE_PID / BG_SUI
     || BG_SUITE_RC=$?
   BG_SUITE_PID=$(sed -n '1p' "$meta")
   BG_SUITE_HOME=$(sed -n '2p' "$meta")
+  # The negative-control fixture is untracked inside its own suite by design, so
+  # this is its only safety net - it has to be armed before the first assertion
+  # that can exit, exactly like every other spawn site in this change.
+  fm_test_track_bg_pid "$BG_SUITE_PID"
   [ "$BG_SUITE_RC" -eq 1 ] \
     || fail "synthetic bg suite $(basename "$file") exited $BG_SUITE_RC instead of 1"
   [ -n "$BG_SUITE_PID" ] && [ -n "$BG_SUITE_HOME" ] \
@@ -147,7 +151,6 @@ run_bg_fixture_suite() {  # <path> <meta> -> BG_SUITE_RC / BG_SUITE_PID / BG_SUI
 untracked_suite="$PARENT_TMP/synthetic-bg-untracked-suite.sh"
 bg_fixture_suite "$untracked_suite" ':'
 run_bg_fixture_suite "$untracked_suite" "$PARENT_TMP/bg-untracked.meta"
-fm_test_track_bg_pid "$BG_SUITE_PID"
 untracked_survivors=$(fm_test_pids_with_env "FM_TEST_LEAK_HOME=$BG_SUITE_HOME")
 [ -n "$untracked_survivors" ] \
   || fail "negative control did not leak: an untracked fixture process was already gone"

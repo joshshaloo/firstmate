@@ -155,17 +155,62 @@ FM_TEST_BG_TERM_GRACE_SECS=${FM_TEST_BG_TERM_GRACE_SECS:-5}
 #   1  the pid is gone or already a zombie - there is nothing left to leak
 #   2  the pid names a LIVE process this mechanism could not identify, i.e. the
 #      mechanism itself is broken and must never be treated as "nothing to do"
-fm_test_pid_identity() {
-  local pid=$1 stat_line out
+# fm_test_pid_stat_fields <pid>: everything after the final comm delimiter in
+# proc stat, i.e. field 3 onward. Index 0 is field 3 (process state), index 19
+# is field 22 (starttime, ticks since boot). Single owner of this parse.
+fm_test_pid_stat_fields() {
+  local pid=$1 stat_line
+  [ -r "/proc/$pid/stat" ] || return 1
+  stat_line=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+  printf '%s\n' "${stat_line##*)}"
+}
+
+# fm_test_pid_state <pid>: the process state the OS reports - S/R/D/Z, or T for
+# a SIGSTOPped process. Empty and non-zero when the pid cannot be read at all.
+fm_test_pid_state() {
+  local pid=$1 fields out
   local -a stat_fields
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  if [ -r "/proc/$pid/stat" ]; then
-    stat_line=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
-    # Everything after the final comm delimiter: index 0 is proc stat field 3
-    # (process state), index 19 is field 22 (starttime, ticks since boot).
-    read -r -a stat_fields <<< "${stat_line##*)}"
+  if fields=$(fm_test_pid_stat_fields "$pid"); then
+    read -r -a stat_fields <<< "$fields"
+    [ "${#stat_fields[@]}" -ge 1 ] || return 1
+    printf '%s\n' "${stat_fields[0]}"
+    return 0
+  fi
+  out=$(LC_ALL=C ps -p "$pid" -o stat= 2>/dev/null | sed 's/^[[:space:]]*//')
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# fm_test_pid_ignores_term <pid>: true only when the kernel states outright that
+# SIGTERM is in this process's ignored-signal mask (what bash's `trap "" TERM`
+# installs - tests/fm-pr-check-security.test.sh's custom-check child does exactly
+# that). Such a process cannot exit on TERM no matter how long the grace is, so
+# waiting one out is pure dead time at teardown. Where the mask cannot be read
+# this answers false, which keeps the full grace - the safe default.
+fm_test_pid_ignores_term() {
+  local pid=$1 sigign low
+  [ -r "/proc/$pid/status" ] || return 1
+  sigign=$(awk '$1 == "SigIgn:" { print $2; exit }' "/proc/$pid/status" 2>/dev/null)
+  [ "${#sigign}" -ge 4 ] || return 1
+  low=${sigign: -4}
+  case "$low" in
+    *[!0-9a-fA-F]*) return 1 ;;
+  esac
+  # SIGTERM is signal 15, i.e. bit 14 of the mask.
+  [ $(( (0x$low >> 14) & 1 )) -eq 1 ]
+}
+
+fm_test_pid_identity() {
+  local pid=$1 fields out
+  local -a stat_fields
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if fields=$(fm_test_pid_stat_fields "$pid"); then
+    read -r -a stat_fields <<< "$fields"
     [ "${#stat_fields[@]}" -ge 20 ] || return 2
     [ "${stat_fields[0]}" != Z ] || return 1
     case "${stat_fields[19]}" in
@@ -254,7 +299,7 @@ fm_test_signal_bg_group() {
 }
 
 fm_test_reap_bg_pid() {
-  local slot=$1 pid identity i=0 grace
+  local slot=$1 pid identity i=0 grace state
   pid=${FM_TEST_BG_PIDS[slot]:-}
   identity=${FM_TEST_BG_IDENTITIES[slot]:-}
   # Consume the registration: a tracked process is signalled at most once.
@@ -265,6 +310,19 @@ fm_test_reap_bg_pid() {
   grace=$((FM_TEST_BG_TERM_GRACE_SECS * 50))
   kill -TERM "$pid" 2>/dev/null || true
   fm_test_signal_bg_group "$pid" TERM
+  # The grace exists so a process can run its OWN TERM cleanup - which is what
+  # keeps the children it forked from being orphaned. Two tracked shapes can
+  # never use it: a SIGSTOPped process cannot run a handler until something
+  # continues it, and a process that ignores TERM never runs one at all. Continue
+  # the first so it can honour the signal; for the second the grace is dead time,
+  # so go straight to the KILL escalation.
+  state=$(fm_test_pid_state "$pid" 2>/dev/null) || state=
+  case "$state" in
+    T*|t*) kill -CONT "$pid" 2>/dev/null || true ;;
+  esac
+  if fm_test_pid_ignores_term "$pid"; then
+    grace=0
+  fi
   while [ "$i" -lt "$grace" ] && fm_test_bg_pid_is_tracked "$pid" "$identity"; do
     sleep 0.02
     i=$((i + 1))

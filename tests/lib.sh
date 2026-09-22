@@ -101,35 +101,218 @@ fm_test_at_exit() {
   FM_TEST_EXIT_HOOK_COUNT=$((FM_TEST_EXIT_HOOK_COUNT + 1))
 }
 
-# fm_test_track_bg_pid <pid>: guarantee a backgrounded real process (a watcher,
-# a daemon, any long-running fixture) cannot outlive the suite, on ANY exit
-# path - normal completion, fail()'s exit 1, or a signal - not just the
-# happy path where the test's own cleanup line is reached. A test that starts
-# a real background process and only kills it at the bottom of the test
-# function leaks that process (with its FM_HOME fixture directory removed out
-# from under it) whenever an assertion between spawn and cleanup calls fail()
-# or the suite is interrupted. Call this immediately after capturing the pid
-# (right after "... &"; pid=$!), before any assertion that could fail.
-# Scoped to exactly this one pid - never a broad process sweep - so it can
-# never reach a sibling fixture's watcher, let alone a live firstmate home's.
-# Idempotent by construction: if the test's own cleanup already reaped the
-# pid, the registered hook's kill/wait are silent no-ops.
+# --- backgrounded real processes --------------------------------------------
+#
+# A test that starts a real background process (a watcher, an arm, a daemon,
+# any long-running fixture) and only kills it at the bottom of the test
+# function leaks that process - with its fixture directory removed out from
+# under it - whenever an assertion between spawn and cleanup calls fail(), or
+# the suite is interrupted. Two independent mechanisms close that:
+#
+#   fm_test_track_bg_pid / fm_test_track_fixture_bg_pid
+#       guaranteed TERM-then-KILL of exactly that one process on ANY exit path
+#       (normal completion, fail()'s exit 1, or a signal), via fm_test_at_exit.
+#   fm_test_assert_no_process_for_env / fm_test_prove_env_clear_at_exit
+#       an independent, read-only process-table proof that nothing is still
+#       running against a fixture, rather than trusting a test's own pid
+#       bookkeeping to say so.
+#
+# Everything here is scoped to one pid or to one exact fixture environment
+# assignment - never a pattern or a process sweep - so it can never reach a
+# sibling fixture's process, let alone a live firstmate home's watcher.
+
+FM_TEST_BG_PIDS=()
+FM_TEST_BG_IDENTITIES=()
+FM_TEST_BG_COUNT=0
+FM_TEST_ENV_PROOFS=()
+FM_TEST_ENV_PROOF_COUNT=0
+FM_TEST_ENV_PROOF_HOOKED=0
+
+# fm_test_pid_identity <pid>: the fact that tells a live process apart from a
+# later, unrelated process that merely reused its pid - when it started. Start
+# time is fixed at fork; the command line is not, because it only becomes the
+# tracked program's once the child execs. A pid captured from "$!" is tracked
+# before that exec lands, so folding the command line in here would make every
+# freshly forked process fail its own identity check a moment later and go
+# unreaped. bin/fm-wake-lib.sh's fm_pid_identity answers the same question for
+# the production watcher, which records itself after exec and can therefore
+# combine both; that library cannot be sourced here anyway, since it resolves
+# FM_HOME/STATE and creates a state directory as a side effect that every test
+# file would inherit. Fails for a pid that is gone or already a zombie, so
+# "already reaped" and "pid recycled" both read as "not the tracked process".
+fm_test_pid_identity() {
+  local pid=$1 stat_line out
+  local -a stat_fields
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if [ -r "/proc/$pid/stat" ]; then
+    stat_line=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+    # Everything after the final comm delimiter: index 0 is proc stat field 3
+    # (process state), index 19 is field 22 (starttime, ticks since boot).
+    read -r -a stat_fields <<< "${stat_line##*)}"
+    [ "${#stat_fields[@]}" -ge 20 ] || return 1
+    [ "${stat_fields[0]}" != Z ] || return 1
+    case "${stat_fields[19]}" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    printf 'starttime=%s\n' "${stat_fields[19]}"
+    return 0
+  fi
+  # Pin LC_ALL=C so lstart's rendering cannot vary with the ambient locale
+  # between the capture and the re-check.
+  out=$(LC_ALL=C ps -p "$pid" -o stat= -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')
+  [ -n "$out" ] || return 1
+  case "$out" in
+    Z*) return 1 ;;
+  esac
+  printf 'lstart=%s\n' "$out"
+}
+
+fm_test_bg_pid_is_tracked() {
+  local pid=$1 identity=$2 now
+  now=$(fm_test_pid_identity "$pid") || return 1
+  [ "$now" = "$identity" ]
+}
+
+# fm_test_track_bg_pid <pid>: register <pid> for guaranteed TERM-then-KILL
+# cleanup on ANY exit path. Call it immediately after capturing the pid (right
+# after "... &"; pid=$!), before any assertion that could fail. The process's
+# identity is captured now and re-verified before every signal, and the
+# registration is consumed the first time it fires, so a pid the kernel later
+# hands to an unrelated process can never be signalled by a stale hook.
 fm_test_track_bg_pid() {
-  local pid=$1
-  [ -n "$pid" ] || return 0
-  fm_test_at_exit "fm_test_reap_bg_pid $pid"
+  local pid=$1 slot identity
+  case "$pid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  # Never the suite's own shell or its parent: a fixture pid read back from a
+  # lock file can legitimately be the test runner (tests seed $$ into a lock to
+  # stand in for a rival holder), and reaping that would kill the suite mid-run.
+  [ "$pid" != "$$" ] && [ "$pid" != "${BASHPID:-$$}" ] && [ "$pid" != "${PPID:-0}" ] \
+    || return 0
+  identity=$(fm_test_pid_identity "$pid") || return 0
+  slot=$FM_TEST_BG_COUNT
+  FM_TEST_BG_COUNT=$((FM_TEST_BG_COUNT + 1))
+  FM_TEST_BG_PIDS[slot]=$pid
+  FM_TEST_BG_IDENTITIES[slot]=$identity
+  fm_test_at_exit "fm_test_reap_bg_pid $slot"
 }
 
 fm_test_reap_bg_pid() {
-  local pid=$1 i=0
-  kill -0 "$pid" 2>/dev/null || return 0
+  local slot=$1 pid identity i=0
+  pid=${FM_TEST_BG_PIDS[slot]:-}
+  identity=${FM_TEST_BG_IDENTITIES[slot]:-}
+  # Consume the registration: a tracked process is signalled at most once.
+  FM_TEST_BG_PIDS[slot]=
+  FM_TEST_BG_IDENTITIES[slot]=
+  [ -n "$pid" ] || return 0
+  fm_test_bg_pid_is_tracked "$pid" "$identity" || return 0
   kill -TERM "$pid" 2>/dev/null || true
-  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do
+  while [ "$i" -lt 50 ] && fm_test_bg_pid_is_tracked "$pid" "$identity"; do
     sleep 0.02
     i=$((i + 1))
   done
-  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  if fm_test_bg_pid_is_tracked "$pid" "$identity"; then
+    kill -KILL "$pid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 25 ] && fm_test_bg_pid_is_tracked "$pid" "$identity"; do
+      sleep 0.02
+      i=$((i + 1))
+    done
+  fi
   wait "$pid" 2>/dev/null || true
+}
+
+# fm_test_pids_with_env <NAME=value>: pids of live processes whose OWN
+# environment carries exactly this assignment. Read-only - it never signals
+# anything - and matched on the process's real environment, so it can only name
+# a process belonging to this exact fixture. Candidates are narrowed first by
+# the cheap process-table fields (a firstmate program, or a command line naming
+# the fixture path) so a suite-wide sweep stays a handful of reads.
+fm_test_pids_with_env() {
+  local assignment=$1 value=${1#*=} pid args env_text hits=''
+  while read -r pid args; do
+    case "$pid" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    [ "$pid" != "$$" ] && [ "$pid" != "${BASHPID:-$$}" ] && [ "$pid" != "${PPID:-0}" ] \
+      || continue
+    case "$args" in
+      *fm-*|*"$value"*) ;;
+      *) continue ;;
+    esac
+    if [ -r "/proc/$pid/environ" ]; then
+      env_text=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null || true)
+    else
+      env_text=$(ps -E -p "$pid" -o command= 2>/dev/null | tr ' ' '\n' || true)
+    fi
+    case "
+$env_text
+" in
+      *"
+$assignment
+"*) hits="$hits $pid" ;;
+    esac
+  done <<EOF
+$(ps -A -o pid=,args= 2>/dev/null)
+EOF
+  printf '%s' "$hits"
+}
+
+# fm_test_assert_no_process_for_env <NAME=value> <label>: prove, right now and
+# independently of the test's own bookkeeping, that no live process still runs
+# against this fixture.
+fm_test_assert_no_process_for_env() {
+  local hits
+  hits=$(fm_test_pids_with_env "$1")
+  [ -z "$hits" ] || fail "$2: live process(es)$hits still running with $1"
+}
+
+# fm_test_prove_env_clear_at_exit <NAME=value> [label]: the same proof, run once
+# per registered fixture when the suite exits. The runner is registered on the
+# first call, which makes it the OLDEST exit hook and therefore the LAST to run
+# (handlers run newest-first) - so it grades every fm_test_track_bg_pid reap
+# instead of racing it. A leak fails the suite by assigning FM_TEST_EXIT_STATUS
+# rather than calling exit, which would skip the teardown queued behind it.
+fm_test_prove_env_clear_at_exit() {
+  local assignment=$1 label=${2:-$1} entry
+  for entry in "${FM_TEST_ENV_PROOFS[@]:-}"; do
+    [ -n "$entry" ] || continue
+    [ "${entry%%	*}" != "$assignment" ] || return 0
+  done
+  if [ "$FM_TEST_ENV_PROOF_HOOKED" -eq 0 ]; then
+    FM_TEST_ENV_PROOF_HOOKED=1
+    fm_test_at_exit fm_test_run_env_proofs
+  fi
+  FM_TEST_ENV_PROOFS[FM_TEST_ENV_PROOF_COUNT]="$assignment	$label"
+  FM_TEST_ENV_PROOF_COUNT=$((FM_TEST_ENV_PROOF_COUNT + 1))
+}
+
+fm_test_run_env_proofs() {
+  local entry assignment label hits
+  for entry in "${FM_TEST_ENV_PROOFS[@]:-}"; do
+    [ -n "$entry" ] || continue
+    assignment=${entry%%	*}
+    label=${entry#*	}
+    hits=$(fm_test_pids_with_env "$assignment")
+    if [ -n "$hits" ]; then
+      printf 'not ok - %s: leaked process(es)%s still running with %s\n' \
+        "$label" "$hits" "$assignment" >&2
+      FM_TEST_EXIT_STATUS=1
+    fi
+  done
+  FM_TEST_ENV_PROOFS=()
+}
+
+# fm_test_track_fixture_bg_pid <pid> <NAME=value> [label]: both mechanisms for a
+# process started against a test fixture - guaranteed reaping of that exact
+# process, plus the independent end-of-suite proof that nothing is left running
+# against that fixture. Registers the proof first so the reap always runs before
+# the proof that grades it.
+fm_test_track_fixture_bg_pid() {
+  fm_test_prove_env_clear_at_exit "$2" "${3:-$2}"
+  fm_test_track_bg_pid "$1"
 }
 
 fm_test_run_exit_hooks() {

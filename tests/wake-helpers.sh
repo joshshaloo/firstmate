@@ -309,6 +309,7 @@ start_settled_peer() {
   local program=$1 i=0 seen=
   "$@" &
   PEER_PID=$!
+  fm_test_track_bg_pid "$PEER_PID"
   while [ "$i" -lt 200 ]; do
     seen=$(peer_program_name "$PEER_PID" || true)
     [ "$seen" = "${program##*/}" ] && return 0

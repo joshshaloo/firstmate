@@ -35,32 +35,33 @@ file_mode() {
   fi
 }
 
-# Independent proof that a watcher this test spawned is really gone, rather
-# than trusting the test's own pid-tracking variables: scan the live process
-# table for any fm-watch.sh process whose actual environment still names this
-# fixture's FM_HOME. This is exactly the 2026-09-21 leak's own signature - a
-# watcher still running against a deleted fixture home days after its test
-# finished - so it is the fact worth proving, independent of how the test
-# thinks cleanup went. Read-only: it never signals or kills anything, so it
-# cannot reach a sibling fixture's watcher or a live firstmate home.
+# Independent proof that every real process this test started against its
+# fixture is really gone, rather than trusting the test's own pid-tracking
+# variables: scan the live process table for any process whose actual
+# environment still names this fixture's FM_HOME - the watcher itself, the arm,
+# and the custom-check children the watcher forks, all of which inherit it.
+# This is exactly the 2026-09-21 leak's own signature - a watcher still running
+# against a deleted fixture home days after its test finished - so it is the
+# fact worth proving, independent of how the test thinks cleanup went.
+# Read-only: it never signals or kills anything, and it is matched on the exact
+# fixture path, so it can never reach a sibling fixture's process or a live
+# firstmate home's watcher.
 assert_no_watcher_for_home() {
-  local home=$1 label=$2 pid comm hit=
-  while read -r pid comm; do
-    [ -n "$pid" ] || continue
-    case "$comm" in
-      *fm-watch.sh*) : ;;
-      *) continue ;;
-    esac
-    if [ -r "/proc/$pid/environ" ]; then
-      tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "FM_HOME=$home" \
-        && hit="$hit $pid"
-    elif ps -E -p "$pid" -o command= 2>/dev/null | grep -qF "FM_HOME=$home"; then
-      hit="$hit $pid"
-    fi
-  done <<EOF
-$(ps -A -o pid=,args= 2>/dev/null)
-EOF
-  [ -z "$hit" ] || fail "$label: a real fm-watch.sh process (pid$hit) is still running against $home"
+  fm_test_assert_no_process_for_env "FM_HOME=$1" "$2"
+}
+
+# Reap a backgrounded fixture the migration is expected to have killed, within
+# a bound. A bare `wait` here blocks forever exactly when the migration failed
+# to kill it, hanging the suite instead of letting the caller report that
+# regression.
+wait_for_dead_pid() {
+  local pid=$1 limit=${2:-200} i=0
+  while [ "$i" -lt "$limit" ]; do
+    kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null || true; return 0; }
+    sleep 0.05
+    i=$((i + 1))
+  done
+  return 1
 }
 
 state_snapshot() {
@@ -979,6 +980,7 @@ SH
     FM_TEST_GH_HEAD=0123456789abcdef0123456789abcdef01234567 \
       run_check_entry "$dir" task-a https://github.com/o/r/pull/1 > "$dir/direct.out" 2> "$dir/direct.err" &
     direct_pid=$!
+    fm_test_track_bg_pid "$direct_pid"
     i=0
     while [ "$i" -lt 100 ] && ! find "$dir/home/state" -name '.fm-pr-poll-check.*' -print | grep . >/dev/null; do
       sleep 0.01
@@ -1029,6 +1031,7 @@ SH
     while :; do sleep 1; done
   ) &
   older_pid=$!
+  fm_test_track_bg_pid "$older_pid"
   write_watcher_lock "$state" "$dir/home" "$older_pid"
   cat > "$dir/fakebin/basename" <<SH
 #!/usr/bin/env bash
@@ -1042,7 +1045,8 @@ SH
   FM_HOME="$dir/home" PATH="$dir/fakebin:$BASE_PATH" "$MIGRATE" > "$dir/migrate.out" 2> "$dir/migrate.err"
   rc=$?
   set -e
-  wait "$older_pid" 2>/dev/null || true
+  wait_for_dead_pid "$older_pid" \
+    || fail "pause-before-scan migration left the older watcher running"
   [ "$rc" -eq 0 ] || fail "pause-before-scan migration failed"
   [ ! -e "$sentinel" ] || fail "older watcher ran a legacy check during migration startup"
   [ -e "$gate" ] || fail "migration never reached its under-lock check scan"
@@ -1053,14 +1057,15 @@ SH
   state="$dir/home/state"
   ( while :; do sleep 1; done ) &
   older_pid=$!
+  fm_test_track_bg_pid "$older_pid"
   write_watcher_lock "$state" "$dir/home" "$older_pid"
   set +e
   FM_HOME="$dir/home" PATH="$dir/fakebin:$BASE_PATH" "$MIGRATE" > "$dir/migrate.out" 2> "$dir/migrate.err"
   rc=$?
   set -e
-  wait "$older_pid" 2>/dev/null || true
+  wait_for_dead_pid "$older_pid" \
+    || fail "no-check migration left the older watcher running"
   [ "$rc" -eq 0 ] || fail "no-check older-watcher migration failed"
-  ! kill -0 "$older_pid" 2>/dev/null || fail "no-check migration left the older watcher running"
   assert_valid_migration_marker "$state/.pr-check-migration-v1"
   pass "migration pauses older watchers and acquires exclusion before its first scan or marker"
 }
@@ -2657,7 +2662,7 @@ SH
     PATH="$dir/fakebin:$BASE_PATH" "$WATCH" \
     > "$dir/watch.out" 2> "$dir/watch.err" &
   pid=$!
-  fm_test_track_bg_pid "$pid"
+  fm_test_track_fixture_bg_pid "$pid" "FM_HOME=$dir/home"
   i=0
   while [ "$i" -lt 100 ]; do
     [ -s "$child_pid_file" ] && break
@@ -2736,7 +2741,7 @@ SH
       FM_TEST_DIRECT_DONE="$direct_done" PATH="$fakebin:$BASE_PATH" "$WATCH" \
       > "$dir/watch.out" 2> "$dir/watch.err" &
     watcher_pid=$!
-    fm_test_track_bg_pid "$watcher_pid"
+    fm_test_track_fixture_bg_pid "$watcher_pid" "FM_HOME=$dir/home"
     i=0
     while [ "$i" -lt 200 ]; do
       [ -s "$ready" ] && [ -s "$child_pid_file" ] && [ -e "$direct_done" ] \

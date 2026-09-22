@@ -271,3 +271,83 @@ offenders=$(
   "suites must register teardown with fm_test_at_exit, not install an EXIT trap after fm_test_tmproot:"$'\n'"$offenders"
 
 pass "no suite installs its own EXIT trap after fm_test_tmproot"
+
+# A process that leaks past its test is only dangerous if it never exits on its
+# own - that is the whole shape of the 2026-09-21 incident, a watcher still
+# burning CPU 13 days later against a deleted fixture. Everything else a suite
+# backgrounds (a drain, a spawn, a bounded `sleep 30`) self-terminates long
+# before it could matter. So the two rules below are deliberately narrow, and
+# together they cover every instance the review of this change turned up:
+#
+#   A. Any suite containing an UNBOUNDED loop - `while :`, `while true`,
+#      `while [ ! -e ... ]`, `until [ -e ... ]` - must register at least one
+#      tracker/reaper. Heredoc bodies count here on purpose: a fake tool a suite
+#      writes for the program under test to spawn is the one class that
+#      track-at-spawn cannot reach, because this shell never holds its pid.
+#   B. Any background spawn of a real long-running firstmate program must be
+#      tracked within four lines, or funnel through wake-helpers' wait_for_exit.
+#
+# Exemptions are per file and must state why the loop cannot outlive the suite.
+bg_tracking_exempt() {  # <file> -> 0 when exempt
+  case "${1##*/}" in
+    # The unbounded loops here are string literals in policy test data - the
+    # argument checker under test must DENY them; nothing ever executes them.
+    fm-arm-pretool-check.test.sh) return 0 ;;
+    # The heartbeat loop runs inside a Herdr pane, and cleanup_all - registered
+    # with fm_test_at_exit before the pane starts - destroys that session on
+    # every exit path, taking its panes with it.
+    fm-backend-herdr-prune-safety-e2e.test.sh) return 0 ;;
+  esac
+  return 1
+}
+
+LONG_RUNNING_PROGRAMS='fm-watch[.]sh|fm-watch-arm[.]sh|fm-supervise-daemon[.]sh'
+unbounded_offenders=
+untracked_spawns=
+for suite in "$ROOT"/tests/*.sh; do
+  bg_tracking_exempt "$suite" && continue
+  if grep -qE 'while[[:space:]]*:|while[[:space:]]+true|while[[:space:]]*\[[^]]*![[:space:]]*-e|until[[:space:]]*\[[^]]*-e' "$suite" \
+    && ! grep -qE 'fm_test_track_bg_pid|fm_test_track_fixture_bg_pid|fm_test_reap_env_at_exit' "$suite"; then
+    unbounded_offenders="$unbounded_offenders"$'\n'"  ${suite#"$ROOT"/}"
+  fi
+  hits=$(awk -v progs="$LONG_RUNNING_PROGRAMS" '
+    { line[NR] = $0 }
+    # A suite names these programs through a variable far more often than
+    # inline, so resolve the assignments first - otherwise `nohup "$DAEMON" &`
+    # reads as an ordinary spawn and the rule silently covers nothing.
+    $0 ~ "^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*=.*(" progs ")" {
+      name = $0
+      sub(/^[[:space:]]*/, "", name)
+      sub(/=.*$/, "", name)
+      alias[name] = 1
+    }
+    END {
+      for (n = 1; n <= NR; n++) {
+        if (line[n] !~ /&[[:space:]]*$/) continue
+        spawn = line[n]
+        for (b = n - 1; b >= 1 && line[b] ~ /\\$/; b--) spawn = line[b] " " spawn
+        named = (spawn ~ progs)
+        for (name in alias)
+          if (spawn ~ ("[$]\\{?" name "\\}?")) named = 1
+        if (!named) continue
+        # Count only lines that could actually run: a comment cannot leak a
+        # process, and spawn sites are routinely annotated.
+        ok = 0
+        seen = 0
+        for (k = n + 1; k <= NR && seen < 4; k++) {
+          if (line[k] ~ /^[[:space:]]*(#|$)/) continue
+          seen++
+          if (line[k] ~ /fm_test_track_bg_pid|fm_test_track_fixture_bg_pid|wait_for_exit/) ok = 1
+        }
+        if (!ok) printf "  %s:%d\n", FILENAME, n
+      }
+    }
+  ' "$suite")
+  [ -z "$hits" ] || untracked_spawns="$untracked_spawns"$'\n'"$hits"
+done
+[ -z "$unbounded_offenders" ] || fail \
+  "suites with an unbounded background fixture must register cleanup (fm_test_track_bg_pid / fm_test_reap_env_at_exit) or be exempted in bg_tracking_exempt:$unbounded_offenders"
+[ -z "$untracked_spawns" ] || fail \
+  "background spawns of a long-running firstmate program must be tracked within four lines or funnel through wait_for_exit:$untracked_spawns"
+
+pass "every unbounded background fixture and long-running spawn registers cleanup"

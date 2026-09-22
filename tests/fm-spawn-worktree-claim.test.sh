@@ -836,7 +836,7 @@ test_same_id_herdr_reconcile_refuses_while_presentation_lock_is_held() {
     fm_lock_release "$LOCK"
   ' &
   owner_pid=$!
-  fm_test_track_bg_pid "$owner_pid"
+  fm_test_track_fixture_bg_pid "$owner_pid" "READY=$ready"
   while [ ! -e "$ready" ] && kill -0 "$owner_pid" 2>/dev/null; do sleep 0.01; done
   [ -e "$ready" ] || fail "could not hold the session presentation lock"
 

@@ -126,6 +126,8 @@ FM_TEST_BG_IDENTITIES=()
 FM_TEST_BG_COUNT=0
 FM_TEST_ENV_PROOFS=()
 FM_TEST_ENV_PROOF_COUNT=0
+FM_TEST_ENV_REAPS=()
+FM_TEST_ENV_REAP_COUNT=0
 FM_TEST_PID_IDENTITY_SUPPORTED=0
 # TERM budget before escalating to KILL. It has to exceed the reaped tree's OWN
 # cleanup budget, or the escalation orphans exactly the child this mechanism
@@ -299,13 +301,23 @@ fm_test_signal_bg_group() {
 }
 
 fm_test_reap_bg_pid() {
-  local slot=$1 pid identity i=0 grace state
+  local slot=$1 pid identity
   pid=${FM_TEST_BG_PIDS[slot]:-}
   identity=${FM_TEST_BG_IDENTITIES[slot]:-}
   # Consume the registration: a tracked process is signalled at most once.
   FM_TEST_BG_PIDS[slot]=
   FM_TEST_BG_IDENTITIES[slot]=
   [ -n "$pid" ] || return 0
+  fm_test_reap_identified_pid "$pid" "$identity"
+}
+
+# fm_test_reap_identified_pid <pid> [identity]: TERM-then-KILL exactly the
+# process that <identity> names, re-verifying before every signal so a pid the
+# kernel has since handed to something else can never be reached. An empty
+# identity means "capture it now" - the caller resolved this pid moments ago.
+fm_test_reap_identified_pid() {
+  local pid=$1 identity=${2:-} i=0 grace state
+  [ -n "$identity" ] || identity=$(fm_test_pid_identity "$pid") || return 0
   fm_test_bg_pid_is_tracked "$pid" "$identity" || return 0
   grace=$((FM_TEST_BG_TERM_GRACE_SECS * 50))
   kill -TERM "$pid" 2>/dev/null || true
@@ -470,6 +482,43 @@ fm_test_track_fixture_bg_pid() {
   fm_test_track_bg_pid "$1"
 }
 
+# fm_test_reap_env_at_exit <NAME=value> [label]: guaranteed cleanup for every
+# process carrying this fixture's environment assignment, whoever forked it.
+# fm_test_track_bg_pid needs a pid, so it structurally cannot cover a process a
+# DESCENDANT spawns - a node plugin's child, a production script's fork, a fake
+# binary a tool under test invokes. Those are reachable only by the fixture
+# marker they inherit. Resolution and reaping stay bound to that exact
+# assignment, so this can only ever reach a process belonging to this fixture,
+# never a sibling's or a live firstmate home's. Registering also registers the
+# independent proof, so the cleanup is always graded rather than assumed.
+fm_test_reap_env_at_exit() {
+  local assignment=$1 label=${2:-$1} entry
+  fm_test_prove_env_clear_at_exit "$assignment" "$label"
+  for entry in "${FM_TEST_ENV_REAPS[@]:-}"; do
+    [ "$entry" != "$assignment" ] || return 0
+  done
+  FM_TEST_ENV_REAPS[FM_TEST_ENV_REAP_COUNT]=$assignment
+  FM_TEST_ENV_REAP_COUNT=$((FM_TEST_ENV_REAP_COUNT + 1))
+}
+
+fm_test_run_env_reaps() {
+  local entry idx pid
+  local -a assignments=()
+  for entry in "${FM_TEST_ENV_REAPS[@]:-}"; do
+    [ -n "$entry" ] || continue
+    assignments+=("$entry")
+  done
+  FM_TEST_ENV_REAPS=()
+  FM_TEST_ENV_REAP_COUNT=0
+  [ "${#assignments[@]}" -gt 0 ] || return 0
+  while read -r idx pid; do
+    [ -n "$pid" ] || continue
+    fm_test_reap_identified_pid "$pid"
+  done <<EOF
+$(fm_test_scan_env_proofs "${assignments[@]}")
+EOF
+}
+
 fm_test_run_exit_hooks() {
   local i=$FM_TEST_EXIT_HOOK_COUNT
   FM_TEST_EXIT_HOOK_COUNT=0
@@ -483,6 +532,7 @@ fm_test_run_exit_hooks() {
 fm_test_exit_handler() {
   FM_TEST_EXIT_STATUS=$?
   fm_test_run_exit_hooks
+  fm_test_run_env_reaps
   fm_test_run_env_proofs
   fm_test_cleanup
   exit "$FM_TEST_EXIT_STATUS"

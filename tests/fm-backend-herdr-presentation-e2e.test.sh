@@ -626,7 +626,8 @@ ROOT="$ROOT" READY="$LOCK_CONTENTION_READY" RELEASE="$LOCK_CONTENTION_RELEASE" \
   fm_lock_release "$LOCK"
 ' &
 LOCK_CONTENTION_OWNER_PID=$!
-fm_test_track_bg_pid "$LOCK_CONTENTION_OWNER_PID"
+fm_test_track_fixture_bg_pid "$LOCK_CONTENTION_OWNER_PID" \
+  "READY=$LOCK_CONTENTION_READY"
 while [ ! -e "$LOCK_CONTENTION_READY" ] && kill -0 "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null; do sleep 0.01; done
 [ -e "$LOCK_CONTENTION_READY" ] || fail "could not hold the guarded lab presentation lock"
 LOCK_CONTENTION_START=$(log_line_count)
@@ -1043,7 +1044,7 @@ ROOT="$ROOT" READY="$CROSS_LOCK_READY" RELEASE="$CROSS_LOCK_RELEASE" LOCK="$CROS
   fm_lock_release "$LOCK"
 ' &
 CROSS_LOCK_PID=$!
-fm_test_track_bg_pid "$CROSS_LOCK_PID"
+fm_test_track_fixture_bg_pid "$CROSS_LOCK_PID" "READY=$CROSS_LOCK_READY"
 while [ ! -e "$CROSS_LOCK_READY" ] && kill -0 "$CROSS_LOCK_PID" 2>/dev/null; do sleep 0.01; done
 [ -e "$CROSS_LOCK_READY" ] || fail "could not hold the cross-home session presentation lock"
 mkdir -p "$SECOND_HOME_A/data/aflat"

@@ -14,12 +14,18 @@
 # configured approval authority and is deliberately not part of this blocker
 # gate; normal reporting routes it through the AGENTS.md section 7 contract.
 #
+# A task whose status stream fm-classify-lib.sh's keyed fold REFUSES is its own
+# firstmate-actionable row: no open blocker can be read there, so the gate stays
+# closed for that task while every other task is still scanned. That row points
+# at the classifier's stderr diagnostic, which owns the cause and the correction.
+#
 # The durable state/.afk-return-catchup file is written BEFORE daemon shutdown,
 # so a crash between stopping, draining, and blocker handling fails closed. It
 # retains the drained wake, buffered-escalation, and wedge-marker evidence until
-# every live open blocker is closed and `check` succeeds. Repeated begin/check
-# calls are idempotent. `guard` never mutates state and is suitable for ordinary
-# read entrypoints such as fm-bearings-snapshot.sh.
+# every live open blocker is closed, every refused stream reads cleanly, and
+# `check` succeeds. Repeated begin/check calls are idempotent. `guard` never
+# mutates state and is suitable for ordinary read entrypoints such as
+# fm-bearings-snapshot.sh.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

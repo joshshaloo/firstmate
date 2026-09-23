@@ -8,6 +8,10 @@
 # Its only write is a private temporary directory under TMPDIR that carries
 # intermediate JSON between jq stages and is removed on exit, so the command
 # needs a writable TMPDIR and exits 1 when it cannot create that directory.
+# When fm-classify-lib.sh's keyed status fold refuses a task's status stream the
+# snapshot fails closed too: it exits nonzero with NO JSON body rather than
+# report a confident reading, and the classifier's stderr diagnostic (source,
+# line number, verbatim line) is what an operator corrects.
 #
 # Top-level fields:
 #   schema: stable schema id.

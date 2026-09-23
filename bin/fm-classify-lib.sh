@@ -183,9 +183,9 @@ status_is_paused_or_captain_held() {  # <status-line>
 # and move the complete key before the colon. The source identity is the status
 # file for the file interfaces, the caller-supplied label (or "<stdin>") for the
 # stream interface, and "<status-line>" for the single-line parser.
-# A closed token whose slug is empty or carries
-# a character outside [A-Za-z0-9._-] is malformed, and its line is ignored entirely
-# rather than folded under any key.
+# A closed token whose slug is empty or carries a character outside
+# [A-Za-z0-9._-] is malformed, and its line is ignored entirely rather than
+# folded under any key.
 # The three parsers are pure reads of a single line; the verb parser strips any
 # key token before the colon so the leading word is recovered cleanly.
 status_line_verb() {  # <status-line> -> leading verb word

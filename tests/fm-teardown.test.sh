@@ -73,6 +73,8 @@
 # that empty diagnostic is retried.
 #   - signalled git step that stops recurring -> retry ALLOW
 #   - every attempt unexplained -> REFUSE loudly after the bounded retries
+#   - signalled git step, then the index.lock its killed git left behind -> the
+#     shared retry loop reclassifies and finishes through stale-lock cleanup, ALLOW
 #   - git error git DID explain -> REFUSE on the first attempt, no retries
 set -u
 
@@ -452,6 +454,57 @@ if [ "${1:-}" = return ]; then
     echo "🌳 Terminated lingering processes: bash (4242), sh (4243), sleep (4244)" >&2
     echo "failed to return worktree: git reset --hard master: " >&2
     exit 1
+  fi
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# The documented root-cause sequence: the sweep kills this return's own git, so
+# the first attempt reports a "git <args>:" line with no diagnostic AND leaves the
+# index.lock that killed git was holding. Every later attempt fails on that lock
+# until it is removed, so the return can only complete through the provably-stale
+# lock recovery.
+add_signalled_then_locked_treehouse() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  shift
+  wt=""
+  for a in "$@"; do
+    case "$a" in
+      --force) ;;
+      *) wt=$a ;;
+    esac
+  done
+  lock=$(git -C "$wt" rev-parse --git-path index.lock 2>/dev/null || true)
+  case "$lock" in
+    /*|'') ;;
+    *) lock="$wt/$lock" ;;
+  esac
+  count_file="${TREEHOUSE_ATTEMPT_FILE:?}"
+  count=0
+  if [ -f "$count_file" ]; then
+    count=$(cat "$count_file")
+  fi
+  count=$(( count + 1 ))
+  printf '%s\n' "$count" > "$count_file"
+  if [ "$count" -eq 1 ]; then
+    echo "🌳 Terminated lingering processes: bash (4242), sh (4243), sleep (4244)" >&2
+    echo "failed to return worktree: git reset --hard master: " >&2
+    if [ -n "$lock" ]; then
+      mkdir -p "$(dirname "$lock")"
+      : > "$lock"
+      touch -t 200001010000 "$lock"
+    fi
+    exit 1
+  fi
+  if [ -n "$lock" ] && [ -e "$lock" ]; then
+    echo "fatal: Unable to create '$lock': File exists." >&2
+    exit 128
   fi
   exit 0
 fi
@@ -1598,6 +1651,47 @@ test_persistent_signalled_git_return_exhausts_retries_and_refuses_loudly() {
   pass "a return that never explains itself exhausts its retries and refuses instead of reporting success"
 }
 
+test_signalled_git_then_index_lock_recovers_through_stale_lock_cleanup() {
+  local case_dir rc lock attempt_file
+  case_dir=$(make_case signalled-git-then-index-lock)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+
+  add_signalled_then_locked_treehouse "$case_dir"
+  add_lsof_no_holder "$case_dir"
+
+  lock=$(git_index_lock_path "$case_dir/wt")
+  attempt_file="$case_dir/treehouse-attempts"
+  : > "$attempt_file"
+
+  set +e
+  TREEHOUSE_ATTEMPT_FILE="$attempt_file" \
+  FM_TREEHOUSE_RETURN_LOCK_RETRIES=2 \
+  FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=0 \
+  FM_STALE_WORKTREE_LOCK_AGE_SECS=1 \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "signalled-then-locked: teardown should recover the lock the signalled git left behind"
+  assert_grep "reported no diagnostic" "$case_dir/stderr" \
+    "signalled-then-locked: teardown did not name the no-diagnostic first attempt"
+  assert_grep "transient git lock" "$case_dir/stderr" \
+    "signalled-then-locked: the index.lock attempt did not enter the lock retry path"
+  assert_grep "removed provably-stale git lock" "$case_dir/stderr" \
+    "signalled-then-locked: teardown never reached the provably-stale lock recovery"
+  assert_grep "succeeded after stale-lock cleanup" "$case_dir/stderr" \
+    "signalled-then-locked: teardown did not report success after the cleanup"
+  assert_absent "$lock" "signalled-then-locked: stale lock file should have been removed"
+  [ "$(cat "$attempt_file")" = 4 ] \
+    || fail "signalled-then-locked: expected exactly 4 treehouse return attempts, got $(cat "$attempt_file")"
+  [ ! -f "$case_dir/state/task-x1.meta" ] \
+    || fail "signalled-then-locked: teardown left the task record behind after a successful return"
+  pass "a signalled git step followed by the index.lock it left behind recovers through stale-lock cleanup"
+}
+
 test_reported_git_return_error_aborts_without_retrying() {
   local case_dir rc attempt_file
   case_dir=$(make_case reported-git-return-error)
@@ -1912,6 +2006,7 @@ test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds
 test_persistent_index_lock_exhausts_retries_and_refuses_loudly
 test_signalled_git_return_is_retried_until_it_succeeds
 test_persistent_signalled_git_return_exhausts_retries_and_refuses_loudly
+test_signalled_git_then_index_lock_recovers_through_stale_lock_cleanup
 test_reported_git_return_error_aborts_without_retrying
 test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error

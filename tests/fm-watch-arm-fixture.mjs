@@ -3,6 +3,12 @@
 // failure deadlines are held until the fixture has published its trap-ready
 // marker (and, for retirement failure, acknowledged TERM). A slow shell startup
 // must not decide which lifecycle branch this test exercises.
+//
+// Both deadlines are read from the environment with no fallback: the plugins
+// own their defaults, and a helper that re-stated one would keep intercepting a
+// value the plugin no longer uses, quietly handing the suite back to the wall
+// clock. A suite must set the readiness and retirement knobs it wants
+// intercepted, or this throws.
 import { setTimeout as sleep } from "node:timers/promises";
 
 export async function waitFor(predicate, label) {
@@ -16,9 +22,12 @@ export async function waitFor(predicate, label) {
 
 export function controlArmDeadlines() {
   const ready = Number(process.env.FM_PI_ARM_READY_TIMEOUT_MS ?? process.env.FM_OPENCODE_ARM_READY_TIMEOUT_MS);
-  const retire = Number(process.env.FM_WATCH_ARM_RETIRE_TIMEOUT_MS ?? 1000);
+  const retire = Number(process.env.FM_WATCH_ARM_RETIRE_TIMEOUT_MS);
   if (!(ready > 0) || !(retire > 0) || ready === retire) {
-    throw new Error("fixture needs distinct positive readiness and retirement deadlines");
+    throw new Error(
+      "fixture needs distinct positive readiness and retirement deadlines: set FM_PI_ARM_READY_TIMEOUT_MS"
+      + " (or FM_OPENCODE_ARM_READY_TIMEOUT_MS) and FM_WATCH_ARM_RETIRE_TIMEOUT_MS",
+    );
   }
   const set = globalThis.setTimeout;
   const clear = globalThis.clearTimeout;
@@ -32,6 +41,9 @@ export function controlArmDeadlines() {
   globalThis.clearTimeout = (handle) => {
     if (!pending.delete(handle)) clear(handle);
   };
+  const assertIdle = () => {
+    if (pending.size) throw new Error(`uncleared arm deadlines: ${[...pending.values()].map((timer) => timer.delay)}`);
+  };
   return {
     ready,
     retire,
@@ -43,8 +55,15 @@ export function controlArmDeadlines() {
       pending.delete(handle);
       timer.run();
     },
-    assertIdle() {
-      if (pending.size) throw new Error(`uncleared arm deadlines: ${[...pending.values()].map((timer) => timer.delay)}`);
+    assertIdle,
+    // Hand the real timers back, so any arm the fixture starts after this point
+    // runs on the plugin's own deadlines instead of ones nothing will ever
+    // expire. Refuses while a deadline is still held: restoring must never
+    // silently strand one.
+    restore() {
+      assertIdle();
+      globalThis.setTimeout = set;
+      globalThis.clearTimeout = clear;
     },
   };
 }

@@ -535,7 +535,8 @@ FM_LOG_KEEP_LINES=2000             # daemon log lines kept when trimming
 ```
 
 `fm-teardown.sh` retries only Git's `Unable to create '...index.lock': File exists` return failure, and a `treehouse return` whose git step reported no diagnostic at all (`git <args>:` with nothing after the colon, the shape of a git process signalled away mid-return rather than a refusal Git would have explained), up to `FM_TREEHOUSE_RETURN_LOCK_RETRIES` times.
-The no-diagnostic retry only repeats the return: it never inspects or removes a lock, and it stops immediately if a retry comes back with a Git diagnostic.
+Both failures share one retry budget and one loop: every attempt is re-classified, so a return that reports nothing and then reports the `index.lock` its killed Git left behind continues into the lock recovery instead of aborting.
+While the signature stays no-diagnostic the retry only repeats the return and never inspects or removes a lock, and any Git error Git did explain still aborts immediately at whatever attempt it arrives on.
 `FM_TREEHOUSE_RETURN_LOCK_RETRIES` accepts a nonnegative integer, and an unset, blank, or invalid value uses the default of 3.
 `FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS` accepts nonnegative whole or fractional seconds between attempts.
 When it is unset or blank, `FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS` remains a compatible fallback, and a blank fallback uses the 1-second default.

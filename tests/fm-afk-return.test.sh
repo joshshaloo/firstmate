@@ -216,7 +216,7 @@ test_check_retries_recorded_terminal_teardown() {
 # that no open blocker could be read, and the classifier's own stderr names the
 # file and line to correct.
 test_unreadable_status_stream_is_scoped_and_never_reads_as_clear() {
-  local dir out rc gate
+  local dir out rc gate row
   dir="$TMP_ROOT/unreadable-stream"
   install_runner "$dir"
   seed_live_blocker "$dir" herdr synthetic-dependency
@@ -246,6 +246,17 @@ EOF
     "one unreadable stream suppressed every other task's open blocker"
   grep -F $'unreadable\tprose-task' "$gate" >/dev/null \
     || fail "the unreadable stream was not persisted in the durable gate"
+
+  # The fold refuses for more than one reason and the gate cannot tell them
+  # apart, so the row must defer to fm-classify-lib.sh's own diagnostic instead
+  # of prescribing a key-placement fix that a missing awk would not have.
+  row=$(printf '%s\n' "$out" | grep -F 'firstmate-actionable unreadable status stream:')
+  assert_contains "$row" 'follow the fm-classify-lib diagnostic printed on stderr' \
+    "the unreadable row did not point at the diagnostic that owns the cause"
+  case "$row" in
+    *'before the colon'*|*'[key=<slug>] token'*)
+      fail "the unreadable row prescribed one cause's correction for every refusal: $row" ;;
+  esac
 
   # Correcting that one line in place is the whole recovery; the still-open
   # blocker on the other task keeps the gate closed on its own merits.

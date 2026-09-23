@@ -235,12 +235,10 @@ test_classifier_primitives() {
     && fail "FM_CAPTAIN_RE override bypassed paused: suppression"
   FM_CAPTAIN_RE='custom-verb:' status_is_captain_relevant "custom-verb: x" \
     || fail "nonterminal suppression weakened custom bare-line behavior"
-  printf 'needs-decision: should docs mention [key=prose]?\nneeds-decision [key=q1]: real choice\nresolved: docs still mention [key=q1]\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
+  printf 'needs-decision: legacy choice\nneeds-decision [key=q1]: real choice\nresolved: legacy answer\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
   open=$(status_open_decisions "$state/keys.status")
   printf '%s' "$open" | grep -F $'q1\t' >/dev/null \
-    || fail "a key token in resolved note prose closed the keyed decision"
-  printf '%s' "$open" | grep -F $'prose\t' >/dev/null \
-    && fail "a key token in note prose changed the decision key"
+    || fail "a legacy resolution closed the keyed decision"
   printf '%s' "$open" | grep -F $'bad key\t' >/dev/null \
     && fail "an invalid key slug entered the open-decision set"
   cat > "$state/activity.status" <<'EOF'
@@ -266,6 +264,38 @@ EOF
   [ -z "$(status_open_activities "$state/legacy-activity.status")" ] \
     || fail "a legacy terminal event did not supersede the default working phase"
   pass "classifier primitives: keyed decisions and activity phases, captain relevance, window-to-task, and overrides"
+}
+
+test_uncaptured_decision_keys() {
+  local dir line reader out
+  dir=$(make_case uncaptured-keys)
+  for line in \
+    'needs-decision: [key=my-key] choose a route' \
+    'resolved: [key=my-key] answered' \
+    'working: [key=my-key] implementing' \
+    'needs-decision [key=my-key: missing closing bracket' \
+    'blocked: mention [key= without closing it'; do
+    for reader in _fm_decision_key status_open_decisions status_open_activities; do
+      printf 'needs-decision [key=earlier]: earlier decision\nworking [key=phase]: earlier phase\n%s\n' "$line" > "$dir/input.status"
+      if [ "$reader" = _fm_decision_key ]; then
+        if out=$("$reader" "$line" 2> "$dir/error"); then
+          fail "$reader silently accepted uncaptured token: $line"
+        fi
+      else
+        if out=$("$reader" "$dir/input.status" 2> "$dir/error"); then
+          fail "$reader silently accepted uncaptured token: $line"
+        fi
+      fi
+      [ -z "$out" ] || fail "$reader emitted a default key or partial fold on error"
+      grep -F -- "$line" "$dir/error" >/dev/null || fail "$reader omitted verbatim offending line"
+      grep -F 'found uncaptured [key= token' "$dir/error" >/dev/null || fail "$reader omitted what was found"
+      grep -F 'move the complete key before the colon' "$dir/error" >/dev/null || fail "$reader omitted correction"
+      grep -F 'verb [key=my-key]: note' "$dir/error" >/dev/null || fail "$reader omitted expected shape"
+    done
+  done
+  [ "$(_fm_decision_key 'needs-decision: legacy choice')" = default ] || fail "absent key no longer defaults"
+  [ "$(_fm_decision_key 'needs-decision [key=my-key]: choice')" = my-key ] || fail "valid key changed"
+  pass "uncaptured decision keys fail with actionable verbatim diagnostics and no partial output"
 }
 
 test_open_decision_fold_matches_legacy_fixtures() {
@@ -301,13 +331,8 @@ needs-decision [key=custom]: blocker became a choice with latest note
 needs-decision [key=bad key]: malformed key is ignored
 EOF
   cat > "$state/malformed.status" <<'EOF'
-needs-decision [key=race: unterminated key token folds under default
-resolved: default was answered
 blocked [key=]: empty key is ignored
 blocked [key=bad key]: invalid characters are ignored
-needs-decision [key=route: second unterminated token reopens default
-captain-held [key=hold: unterminated token closes default
-needs-decision [key=stale: unterminated token opens default again
 EOF
   for f in "$state"/*.status; do
     old=$(legacy_status_open_decisions "$f"; printf 'X')
@@ -1978,6 +2003,7 @@ test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
+test_uncaptured_decision_keys
 test_open_decision_fold_matches_legacy_fixtures
 test_open_decision_fold_500_entry_timing_guard
 test_crew_is_provably_working_classifier

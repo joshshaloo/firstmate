@@ -173,9 +173,11 @@ status_is_paused_or_captain_held() {  # <status-line>
 # format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
 #   needs-decision [key=api-shape]: <summary>
 #   resolved       [key=api-shape]: <how it was decided>
-# A line with no token, or one whose "[key=" is never closed by a "]", uses the
-# key "default", preserving the historical one-open-decision-per-task behavior (a
-# bare "resolved:" closes "default"). A closed token whose slug is empty or carries
+# A line with no "[key=" token anywhere uses the key "default", preserving the
+# historical one-open-decision-per-task behavior (a bare "resolved:" closes
+# "default"). A token not captured before the colon (misplaced or unclosed)
+# fails with the verbatim line and the expected shape, never a default key.
+# A closed token whose slug is empty or carries
 # a character outside [A-Za-z0-9._-] is malformed, and its line is ignored entirely
 # rather than folded under any key.
 # The three parsers are pure reads of a single line; the verb parser strips any
@@ -204,7 +206,15 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
         *) printf '%s' "$k" ;;
       esac
       ;;
-    *) printf 'default' ;;
+    *)
+      case "$1" in
+        *\[key=*)
+          printf 'fm-classify-lib: found uncaptured [key= token; move the complete key before the colon, expected verb [key=my-key]: note; offending line: %s\n' "$1" >&2
+          return 1
+          ;;
+      esac
+      printf 'default'
+      ;;
   esac
 }
 # Single-pass keyed status fold shared by the decision and activity folds. POSIX awk
@@ -239,9 +249,15 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
       p = line
       sub(/:.*/, "", p)
       start = index(p, "[key=")
-      if (start == 0) return "default"
       k = substr(p, start + 5)
-      if (index(k, "]") == 0) return "default"
+      if (start == 0 || index(k, "]") == 0) {
+        if (index(line, "[key=") != 0) {
+          printf "fm-classify-lib: found uncaptured [key= token; move the complete key before the colon, expected verb [key=my-key]: note; offending line: %s\n", line > "/dev/stderr"
+          invalid = 1
+          exit 1
+        }
+        return "default"
+      }
       sub(/\].*$/, "", k)
       if (k == "" || k !~ /^[A-Za-z0-9._-]+$/) return ""
       return k
@@ -290,6 +306,7 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
       }
     }
     END {
+      if (invalid) exit 1
       for (key = head; key != ""; key = next_key[key]) {
         printf "%s\t%s\t%s\n", key, verbs[key], notes[key]
       }

@@ -173,11 +173,19 @@ status_is_paused_or_captain_held() {  # <status-line>
 # format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
 #   needs-decision [key=api-shape]: <summary>
 #   resolved       [key=api-shape]: <how it was decided>
-# A line with no token, or one whose "[key=" is never closed by a "]", uses the
-# key "default", preserving the historical one-open-decision-per-task behavior (a
-# bare "resolved:" closes "default"). A closed token whose slug is empty or carries
-# a character outside [A-Za-z0-9._-] is malformed, and its line is ignored entirely
-# rather than folded under any key.
+# A line with no "[key=" token anywhere uses the key "default", preserving the
+# historical one-open-decision-per-task behavior (a bare "resolved:" closes
+# "default"). A token not captured before the colon (misplaced or unclosed)
+# fails with the verbatim line and the expected shape, never a default key.
+# Because the status stream is append-only, such a line keeps failing until it is
+# corrected in place, so the refusal names WHERE it lives: every diagnostic is
+# prefixed "<source>:<line-number>: " so an operator can open exactly that line
+# and move the complete key before the colon. The source identity is the status
+# file for the file interfaces, the caller-supplied label (or "<stdin>") for the
+# stream interface, and "<status-line>" for the single-line parser.
+# A closed token whose slug is empty or carries a character outside
+# [A-Za-z0-9._-] is malformed, and its line is ignored entirely rather than
+# folded under any key.
 # The three parsers are pure reads of a single line; the verb parser strips any
 # key token before the colon so the leading word is recovered cleanly.
 status_line_verb() {  # <status-line> -> leading verb word
@@ -193,8 +201,8 @@ status_line_note() {  # <status-line> -> text after the first colon, trimmed
     *) printf '%s' "$1" ;;
   esac
 }
-_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local prefix=${1%%:*} k
+_fm_decision_key() {  # <status-line> [source] [line-number] -> key slug, or "default" when no token
+  local prefix=${1%%:*} k src=${2:-<status-line>} lineno=${3:-1}
   case "$prefix" in
     *\[key=*\]*)
       k=${prefix#*\[key=}
@@ -204,7 +212,15 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
         *) printf '%s' "$k" ;;
       esac
       ;;
-    *) printf 'default' ;;
+    *)
+      case "$1" in
+        *\[key=*)
+          printf 'fm-classify-lib: %s:%s: found uncaptured [key= token; move the complete key before the colon, expected verb [key=my-key]: note; offending line: %s\n' "$src" "$lineno" "$1" >&2
+          return 1
+          ;;
+      esac
+      printf 'default'
+      ;;
   esac
 }
 # Single-pass keyed status fold shared by the decision and activity folds. POSIX awk
@@ -216,8 +232,8 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
 # resolved, captain-held, multi-key, malformed, and legacy fixtures.
 # awk is required. Without it the fold fails closed - nonzero and no output - because
 # an empty open set would silently read as "no decision is open".
-_fm_status_fold_stream() {  # <mode: decisions|activities>
-  local mode=$1 resolve held pause
+_fm_status_fold_stream() {  # <mode: decisions|activities> [source]
+  local mode=$1 src=${2:-<stdin>} resolve held pause
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
@@ -226,7 +242,7 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
     return 1
   }
   # shellcheck disable=SC2016 # awk program; shell values enter through -v above.
-  awk -v mode="$mode" -v resolve="$resolve" -v held="$held" -v pause="$pause" '
+  awk -v mode="$mode" -v src="$src" -v resolve="$resolve" -v held="$held" -v pause="$pause" '
     function trim_leading(s) { sub(/^[[:space:]]+/, "", s); return s }
     function trim_both(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     function status_verb(line, p) {
@@ -239,9 +255,15 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
       p = line
       sub(/:.*/, "", p)
       start = index(p, "[key=")
-      if (start == 0) return "default"
       k = substr(p, start + 5)
-      if (index(k, "]") == 0) return "default"
+      if (start == 0 || index(k, "]") == 0) {
+        if (index(line, "[key=") != 0) {
+          printf "fm-classify-lib: %s:%d: found uncaptured [key= token; move the complete key before the colon, expected verb [key=my-key]: note; offending line: %s\n", src, NR, line > "/dev/stderr"
+          invalid = 1
+          exit 1
+        }
+        return "default"
+      }
       sub(/\].*$/, "", k)
       if (k == "" || k !~ /^[A-Za-z0-9._-]+$/) return ""
       return k
@@ -290,6 +312,7 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
       }
     }
     END {
+      if (invalid) exit 1
       for (key = head; key != ""; key = next_key[key]) {
         printf "%s\t%s\t%s\n", key, verbs[key], notes[key]
       }
@@ -306,9 +329,9 @@ _fm_status_fold_stream() {  # <mode: decisions|activities>
 # is the durable open-set the fleet snapshot and any point-in-time consumer must use
 # instead of trusting the last status line.
 status_open_decisions() {  # <status-file>
-  local f=$1
+  local f=$1 src=$1
   [ -f "$f" ] || return 0
-  _fm_status_fold_stream decisions < "$f"
+  _fm_status_fold_stream decisions "$src" < "$f"
 }
 
 # Fold material routed-work phases in the same keyed event stream.
@@ -322,18 +345,21 @@ status_open_decisions() {  # <status-file>
 # phase outrank a structured home snapshot or fm-crew-state result.
 # It shares the decision fold's fail-closed contract: status_open_activities returns
 # the fold's status for both the file and the "-" stream form.
-_fm_status_open_activities_stream() {
-  _fm_status_fold_stream activities
+# A caller reading the "-" stream form has already narrowed the stream (a bounded
+# tail window, say), so it passes the source identity it wants a refusal to name;
+# absent one the refusal says "<stdin>". The file form names the file itself.
+_fm_status_open_activities_stream() {  # [source]
+  _fm_status_fold_stream activities "${1:-<stdin>}"
 }
 
-status_open_activities() {  # <status-file-or-dash>
+status_open_activities() {  # <status-file-or-dash> [source]
   local f=$1
   if [ "$f" = - ]; then
-    _fm_status_open_activities_stream
+    _fm_status_open_activities_stream "${2:-<stdin>}"
     return
   fi
   [ -f "$f" ] || return 0
-  _fm_status_open_activities_stream < "$f"
+  _fm_status_open_activities_stream "${2:-$f}" < "$f"
 }
 
 # task id from a recorded window target, falling back to the tmux-shaped

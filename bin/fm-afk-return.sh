@@ -14,12 +14,18 @@
 # configured approval authority and is deliberately not part of this blocker
 # gate; normal reporting routes it through the AGENTS.md section 7 contract.
 #
+# A task whose status stream fm-classify-lib.sh's keyed fold REFUSES is its own
+# firstmate-actionable row: no open blocker can be read there, so the gate stays
+# closed for that task while every other task is still scanned. That row points
+# at the classifier's stderr diagnostic, which owns the cause and the correction.
+#
 # The durable state/.afk-return-catchup file is written BEFORE daemon shutdown,
 # so a crash between stopping, draining, and blocker handling fails closed. It
 # retains the drained wake, buffered-escalation, and wedge-marker evidence until
-# every live open blocker is closed and `check` succeeds. Repeated begin/check
-# calls are idempotent. `guard` never mutates state and is suitable for ordinary
-# read entrypoints such as fm-bearings-snapshot.sh.
+# every live open blocker is closed, every refused stream reads cleanly, and
+# `check` succeeds. Repeated begin/check calls are idempotent. `guard` never
+# mutates state and is suitable for ordinary read entrypoints such as
+# fm-bearings-snapshot.sh.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,7 +70,18 @@ scan_open_blockers() {  # -> tab-separated blocker rows
     id=${id%.meta}
     status="$STATE/$id.status"
     [ -f "$status" ] || continue
-    open=$(status_open_decisions "$status") || return 1
+    # One unreadable status stream is scoped to its own task instead of aborting
+    # the whole fleet scan: this row keeps the return gate CLOSED for that task,
+    # so the refusal stays explicit and every other task is still scanned. An
+    # append-only malformed line would otherwise wedge the captain's entire
+    # return until it was hand-found. The fold refuses for more than one reason
+    # (a malformed key token, a missing awk), and only fm-classify-lib.sh knows
+    # which, so it owns the cause and the correction on stderr and this row
+    # points at that diagnostic rather than restating one possible cause.
+    if ! open=$(status_open_decisions "$status"); then
+      printf 'unreadable\t%s\t%s\n' "$id" "$status"
+      continue
+    fi
     while IFS="$(printf '\t')" read -r key verb summary; do
       [ "$verb" = blocked ] || continue
       clean_summary=$(printf '%s' "$summary" | clean_field)
@@ -73,6 +90,7 @@ scan_open_blockers() {  # -> tab-separated blocker rows
 $open
 EOF
   done
+  return 0
 }
 
 write_pending_seed() {  # Fail-closed marker before any lifecycle mutation.
@@ -116,8 +134,14 @@ print_evidence() {  # <file>
 print_blockers() {  # <file>
   local file=$1 tag id key summary
   while IFS="$(printf '\t')" read -r tag id key summary; do
-    [ "$tag" = blocker ] || continue
-    printf 'firstmate-actionable blocker: %s [key=%s] %s\n' "$id" "$key" "$summary"
+    case "$tag" in
+      blocker)
+        printf 'firstmate-actionable blocker: %s [key=%s] %s\n' "$id" "$key" "$summary"
+        ;;
+      unreadable)
+        printf 'firstmate-actionable unreadable status stream: %s (%s); the keyed status fold refused it, so no open blocker can be read - follow the fm-classify-lib diagnostic printed on stderr, which names the cause and its correction, then re-run\n' "$id" "$key"
+        ;;
+    esac
   done < "$file"
 }
 

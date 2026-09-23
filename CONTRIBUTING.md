@@ -44,7 +44,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   It does not make `data/` tracked.
 - Helper scripts in `bin/` are plain bash.
   Each starts with a usage header comment; keep it accurate when you change behavior.
-  Test scripts and helpers in `tests/` are plain bash too.
+  Test scripts and helpers in `tests/` are plain bash too, except a helper that must run inside a fixture's own Node process.
   `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, and pinned shellcheck version), and both CI and the no-mistakes pre-push gate run it, so local and CI can never diverge.
   It pins one exact shellcheck version and refuses to run under any other; print it with `bin/fm-lint.sh --required-version` and install that build locally.
 - Changes to harness adapters (detection in `bin/fm-harness.sh`, launch and hook mechanics in `bin/fm-spawn.sh`, semantic busy sources and trust gates in `bin/fm-busy-lib.sh`, delivery-only rendered guards in `bin/fm-tmux-lib.sh`, cleanup in `bin/fm-teardown.sh`, and facts in `.agents/skills/harness-adapters/SKILL.md`) must be verified empirically against the real harness, never written from documentation alone.
@@ -102,6 +102,8 @@ A suite that backgrounds a real long-running process registers it with `fm_test_
 Those helpers' headers own the scoping and identity rules and the `FM_TEST_BG_TERM_GRACE_SECS` grace, and the same cleanup suite enforces tracking at every unbounded background spawn; spawns that funnel through `wait_for_exit` in `tests/wake-helpers.sh` are tracked there already.
 A suite that prepends a fakebin must take its base PATH from `fm_test_set_base_path` in the same library, never a hand-rolled `/usr/bin:/bin` string, so a host-installed tool cannot satisfy a case that deliberately omits it.
 That helper's header owns the allowlist of real core tools, the per-suite opt-in for extra tools, and the `FM_TEST_BASE_PATH` override, and `tests/fm-bootstrap.test.sh` proves a real-path `herdr` does not leak into a fake toolchain.
+A suite whose assertions depend on a Node-side arm lifecycle waits for fixture-published observables rather than wall-clock deadlines, importing `tests/fm-watch-arm-fixture.mjs` through `FM_ARM_DEADLINE_HELPER`.
+That module's header owns the test-only deadline-control contract, including that its bounded wait is a failure watchdog and never evidence that a fixture is ready.
 Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests, the live Pi regression) skip themselves and print the tool or environment gate needed to enable them, so the portable suite remains safe on machines without those tools.
 The [Herdr backend guide](docs/herdr-backend.md#destructive-lab-safety) owns the lane's isolation boundary, while [runtime backend verification](docs/verification/runtime-backends.md#herdr) owns active empirical evidence; live harness credential tests remain opt-in.
 

@@ -95,7 +95,9 @@
 #      attempts. Retries key off the error text, not whether the lock file still
 #      exists after the failed attempt - a lock that self-clears mid-check still
 #      deserves a retry of the return.
-#   2. Other treehouse return failures still abort immediately and loudly (no retry).
+#   2. Other treehouse return failures still abort immediately and loudly (no retry),
+#      with one exception that is the same kind of race - see the signalled-git step
+#      below.
 #   3. If every retry still hits the lock signature and the lock remains, it is removed
 #      and the return tried once more ONLY when the lock is provably stale per
 #      bin/fm-lock-lib.sh's fm_lock_is_provably_stale, passing the worktree dir as the
@@ -110,6 +112,23 @@
 # is present; teardown clears only a provably stale lock, then re-runs the safety
 # checks before any destructive return. Teardown output notes every wait, retry, and
 # removal so the operator can see what happened.
+#
+# Signalled-git return recovery (teardown-silent-git-race): `treehouse return --force`
+# runs its git steps with the worktree as their cwd, and a worktree path is exactly
+# what treehouse's own sweeps (every `return` and `get` kills every process whose cwd
+# is inside the worktree) target, so that git process can be signalled away mid-return.
+# Treehouse then reports its own `git <args>:` line with an EMPTY diagnostic, because
+# the killed process never wrote one. Git prints a "fatal:"/"error:" line for every
+# decision it makes itself, so an empty diagnostic is never a refusal about this
+# worktree - it is only the absence of an answer, and the lease is still held with the
+# worktree untouched. Which signal arrived is not recoverable from the report; that it
+# was not a git decision is.
+# On that failure signature only, teardown_treehouse_return_retry_silent_git repeats
+# the (idempotent) return up to FM_TREEHOUSE_RETURN_LOCK_RETRIES times with the same
+# FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS wait, and stops the moment a retry comes
+# back with a git diagnostic - that is a real refusal and aborts as loudly as before.
+# No lock is inspected or removed on this path. Exhausted retries fail loudly too: an
+# unexplained failure is never reported as a completed return.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -891,6 +910,17 @@ treehouse_return_is_index_lock_error() {
   printf '%s\n' "$text" | grep -Eq "Unable to create ['\"].*index\\.lock['\"]: File exists"
 }
 
+# True when treehouse reports a failed git step that said nothing at all -
+# "git <args>:" with an empty diagnostic after the colon. Git prints its own
+# "fatal:"/"error:" line for every decision it makes, so an empty diagnostic is
+# never a refusal about this worktree: it is a git process that died before it
+# could speak. Any failure git did explain keeps its own signature and must not
+# reach this path.
+treehouse_return_is_silent_git_error() {
+  local text=$1
+  printf '%s\n' "$text" | grep -Eq '(^|[[:space:]])git [^:]+:[[:space:]]*$'
+}
+
 # Absolute path to the git index lock for a worktree/repo dir, or empty when it
 # cannot be resolved (dir missing or not a git worktree at all).
 worktree_git_lock_path() {
@@ -943,8 +973,44 @@ cleanup_stale_lock_for_safety_check() {
   return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
 }
 
+# Bounded patience for a return whose git step died without saying anything. No
+# lock is involved, so there is nothing to inspect or remove between attempts:
+# the return is simply repeated, and it is idempotent because the failed step
+# left the lease held and the worktree untouched. Shares the lock path's retry
+# budget and wait knob. A retry that comes back with a git diagnostic stops the
+# patience immediately - that is a real refusal, not a signalled process.
+teardown_treehouse_return_retry_silent_git() {
+  local dir=$1 cd_dir=$2 label=$3
+  local out attempt=0 max_retries
+
+  max_retries=$TREEHOUSE_RETURN_LOCK_RETRIES
+  case "$max_retries" in ''|*[!0-9]*) max_retries=3 ;; esac
+
+  while [ "$attempt" -lt "$max_retries" ]; do
+    attempt=$(( attempt + 1 ))
+    echo "teardown: $label return failed with a git step that reported no diagnostic (a signalled git process, not a refusal); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
+    sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
+
+    if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+      [ -n "$out" ] && printf '%s\n' "$out"
+      echo "teardown: $label return succeeded on retry after a git step that reported no diagnostic" >&2
+      return 0
+    fi
+    [ -n "$out" ] && printf '%s\n' "$out" >&2
+
+    if ! treehouse_return_is_silent_git_error "$out"; then
+      echo "teardown: $label return failed with a reported git error after retry; aborting" >&2
+      return 1
+    fi
+  done
+
+  echo "teardown: $label return failed: its git step reported no diagnostic across ${max_retries} retries (waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s each); refusing to treat an unexplained failure as a completed return" >&2
+  return 1
+}
+
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
-# stale git index.lock left by a killed crew process. See the script header.
+# stale git index.lock left by a killed crew process, and a git step that was
+# signalled away without reporting anything. See the script header.
 teardown_treehouse_return() {
   local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
   local out lock attempt=0 max_retries lock_desc
@@ -958,6 +1024,10 @@ teardown_treehouse_return() {
   [ -n "$out" ] && printf '%s\n' "$out" >&2
 
   if ! treehouse_return_is_index_lock_error "$out"; then
+    if treehouse_return_is_silent_git_error "$out"; then
+      teardown_treehouse_return_retry_silent_git "$dir" "$cd_dir" "$label"
+      return $?
+    fi
     return 1
   fi
 

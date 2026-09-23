@@ -56,6 +56,10 @@ export function controlArmDeadlines() {
       timer.run();
     },
     assertIdle,
+    // Node-side acknowledgement that every intercepted deadline has been
+    // released. A fixture's own marker only proves the arm wrote something; it
+    // never proves this process read it and cleared the deadline it owns.
+    idle: () => pending.size === 0,
     // Hand the real timers back, so any arm the fixture starts after this point
     // runs on the plugin's own deadlines instead of ones nothing will ever
     // expire. Refuses while a deadline is still held: restoring must never

@@ -637,6 +637,7 @@ await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`), "restored suc
 if (process.env.FM_LATE_KIND === "actionable") {
   await waitFor(() => prompts.some((message) => message.includes("late wake")), "late actionable wake once the restored successor was ready");
 }
+await waitFor(() => deadlines.idle(), "the restored successor's readiness deadline to be released");
 deadlines.assertIdle();
 deadlines.restore();
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
@@ -1829,6 +1830,7 @@ await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`), "restored suc
 if (process.env.FM_LATE_KIND === "actionable") {
   await waitFor(() => prompts.some((message) => message.includes("late wake")), "late actionable wake once the restored successor was ready");
 }
+await waitFor(() => deadlines.idle(), "the restored successor's readiness deadline to be released");
 deadlines.assertIdle();
 deadlines.restore();
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);

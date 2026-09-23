@@ -64,7 +64,16 @@ scan_open_blockers() {  # -> tab-separated blocker rows
     id=${id%.meta}
     status="$STATE/$id.status"
     [ -f "$status" ] || continue
-    open=$(status_open_decisions "$status") || return 1
+    # One unreadable status stream is scoped to its own task instead of aborting
+    # the whole fleet scan: fm-classify-lib.sh has already named the file, line,
+    # and verbatim offending line on stderr, and this row keeps the return gate
+    # CLOSED for that task, so the refusal stays explicit and every other task is
+    # still scanned. An append-only malformed line would otherwise wedge the
+    # captain's entire return until it was hand-found.
+    if ! open=$(status_open_decisions "$status"); then
+      printf 'unreadable\t%s\t%s\n' "$id" "$status"
+      continue
+    fi
     while IFS="$(printf '\t')" read -r key verb summary; do
       [ "$verb" = blocked ] || continue
       clean_summary=$(printf '%s' "$summary" | clean_field)
@@ -73,6 +82,7 @@ scan_open_blockers() {  # -> tab-separated blocker rows
 $open
 EOF
   done
+  return 0
 }
 
 write_pending_seed() {  # Fail-closed marker before any lifecycle mutation.
@@ -116,8 +126,14 @@ print_evidence() {  # <file>
 print_blockers() {  # <file>
   local file=$1 tag id key summary
   while IFS="$(printf '\t')" read -r tag id key summary; do
-    [ "$tag" = blocker ] || continue
-    printf 'firstmate-actionable blocker: %s [key=%s] %s\n' "$id" "$key" "$summary"
+    case "$tag" in
+      blocker)
+        printf 'firstmate-actionable blocker: %s [key=%s] %s\n' "$id" "$key" "$summary"
+        ;;
+      unreadable)
+        printf 'firstmate-actionable unreadable status stream: %s (%s); the keyed status fold refused it, so no open blocker can be read - correct the offending line named on stderr by moving the complete [key=<slug>] token before the colon, then re-run\n' "$id" "$key"
+        ;;
+    esac
   done < "$file"
 }
 

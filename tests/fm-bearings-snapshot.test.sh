@@ -330,6 +330,52 @@ test_parent_activity_evidence_is_bounded_and_disclosed() {
   pass "parent activity evidence is bounded and disclosed"
 }
 
+# An uncaptured [key= token anywhere in a parent status stream must make the whole
+# snapshot REFUSE rather than emit a confident reading of it, and the refusal has
+# to name the file, the line number, and the verbatim line - the stream is
+# append-only, so that is the only way an operator can find and correct it.
+# fm-fleet-snapshot.sh must therefore neither swallow the classifier's stderr nor
+# let a bounded child's jq turn a refused fold into an empty record set (the
+# parent-activity fold captures the fold's own status before jq for that reason).
+test_malformed_decision_key_refuses_the_whole_snapshot() {
+  local home mate fakebin out err status
+  home=$(make_home refused-parent-activity)
+  mate="$TMP_ROOT/refused-parent-activity-home"
+  write_domain_alpha_fixture "$home" "$mate"
+  err="$home/snapshot.err"
+  printf 'working [key=phase7]: Phase 7 started\nresolved: Phase 7 wrapped [key=phase7]\n' \
+    > "$home/state/domain-alpha.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json 2>"$err"); status=$?
+  [ "$status" -ne 0 ] || fail "an uncaptured [key= token produced a confident snapshot: $out"
+  if printf '%s' "$out" | jq -e '.secondmate_current' >/dev/null 2>&1; then
+    fail "a refused status fold still emitted a snapshot body: $out"
+  fi
+  assert_contains "$(cat "$err")" 'found uncaptured [key= token' \
+    "the snapshot swallowed the classifier refusal"
+  assert_contains "$(cat "$err")" "$home/state/domain-alpha.status:2:" \
+    "the refusal did not name the status file and line an operator must correct"
+  assert_contains "$(cat "$err")" 'resolved: Phase 7 wrapped [key=phase7]' \
+    "the refusal did not carry the verbatim offending line"
+  assert_contains "$(cat "$err")" 'move the complete key before the colon' \
+    "the refusal did not say how to correct the line"
+
+  # Correcting that one line in place is the whole recovery: the same home reads
+  # cleanly again with no other change.
+  printf 'working [key=phase7]: Phase 7 started\nresolved [key=phase7]: Phase 7 wrapped\n' \
+    > "$home/state/domain-alpha.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json 2>/dev/null); status=$?
+  expect_code 0 "$status" "correcting the offending line did not restore the snapshot"
+  printf '%s' "$out" | jq -e '
+    .secondmate_current.records[] | select(.id == "domain-alpha")
+    | .parent_event.activity_scan.available == true
+      and (.parent_event.open_activities | length) == 0
+  ' >/dev/null || fail "the corrected stream did not fold cleanly: $out"
+  pass "a malformed decision key refuses the whole snapshot with a recoverable diagnostic"
+}
+
 test_active_child_overrides_old_parent_event() {
   local home mate fakebin json canonical
   home=$(make_home active-child-parent)
@@ -1998,6 +2044,7 @@ EOF
 test_domain_alpha_stale_parent_event_does_not_become_current_work
 test_gnu_stat_uses_file_formats_without_bsd_fallback_pollution
 test_parent_activity_evidence_is_bounded_and_disclosed
+test_malformed_decision_key_refuses_the_whole_snapshot
 test_active_child_overrides_old_parent_event
 test_structured_child_decision_reaches_captains_call
 test_bad_secondmate_homes_never_revive_parent_work

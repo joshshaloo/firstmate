@@ -608,6 +608,39 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
   pass "fm-brief.sh: custom pause verb renders in every scaffold"
 }
 
+# fm-classify-lib.sh REFUSES a `[key=` token written after the colon, so a
+# scaffold that teaches `resolved: {note} [key=<slug>]` would generate exactly the
+# lines the status fold cannot read. Every scaffold that mentions closing a keyed
+# decision must show the token before the colon.
+test_every_scaffold_teaches_the_key_before_the_colon() {
+  local home kind id brief
+  home="$TMP_ROOT/key-placement-home"
+  mkdir -p "$home/data"
+
+  for kind in ship scout secondmate; do
+    id="brief-key-placement-$kind"
+    case "$kind" in
+      ship)    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate >/dev/null 2>&1 ;;
+      scout)   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1 ;;
+      secondmate)
+        FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind brief was not scaffolded"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'resolved [key=<slug>]: {how it was decided or unblocked}' "$brief" \
+      "$kind brief did not show the decision-closing key before the colon"
+    assert_grep 'must sit BEFORE the colon' "$brief" \
+      "$kind brief did not state where the key token has to sit"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_no_grep 'resolved: {how it was decided or unblocked}` (' "$brief" \
+      "$kind brief still teaches the trailing key placement the fold rejects"
+  done
+  pass "fm-brief.sh: every scaffold teaches the decision key before the colon"
+}
+
 test_scout_and_secondmate_load_decision_hold_policy() {
   local home scout charter
   home="$TMP_ROOT/decision-policy-home"
@@ -663,5 +696,6 @@ test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
+test_every_scaffold_teaches_the_key_before_the_colon
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold

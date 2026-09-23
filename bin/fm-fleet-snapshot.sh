@@ -817,7 +817,8 @@ bounded_parent_activities_json() {  # <status-file>
     else
       lines_in_window=0
     fi
-    records=$(printf "%s\n" "$window" | status_open_activities - \
+    folded=$(printf "%s\n" "$window" | status_open_activities - "$f (tail window)") || exit 3
+    records=$(printf "%s" "$folded" \
       | jq -R -s '[splits("\n") | select(length > 0)
           | (capture("^(?<key>[^\t]*)\t(?<verb>[^\t]*)\t(?<summary>.*)$")?)
           | select(. != null)]') || exit 3
@@ -844,10 +845,14 @@ bounded_parent_activities_json() {  # <status-file>
          records_in_window:$records_in_window}'
 BASH
   )
+  # The child's stderr is deliberately NOT suppressed: fm-classify-lib.sh refuses a
+  # malformed decision key with the source, line number, and verbatim line an
+  # operator needs to correct it, and that refusal is exactly what turns this
+  # record's available:false into something actionable rather than mute.
   out=$(fm_run_timed "$FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT" bash -c "$script" \
     fm-parent-activities "$SCRIPT_DIR/fm-classify-lib.sh" "$f" \
     "$FM_SNAPSHOT_PARENT_ACTIVITY_LINES" "$FM_SNAPSHOT_PARENT_ACTIVITY_BYTES" \
-    "$FM_SNAPSHOT_PARENT_ACTIVITIES" "$SNAPSHOT_STAT_STYLE" 2>/dev/null)
+    "$FM_SNAPSHOT_PARENT_ACTIVITIES" "$SNAPSHOT_STAT_STYLE")
   rc=$?
   if [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e '
     (.records | type) == "array" and (.available | type) == "boolean"

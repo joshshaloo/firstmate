@@ -209,8 +209,67 @@ test_check_retries_recorded_terminal_teardown() {
   pass "check retries recorded terminal teardown and keeps catch-up gated until success"
 }
 
+# An append-only status stream keeps refusing until its malformed line is
+# corrected, so one crewmate's misplaced [key= token must not wedge the captain's
+# whole return. The refusal is SCOPED to the task that owns the unreadable stream:
+# every other task is still scanned, the gate still closes, the row says plainly
+# that no open blocker could be read, and the classifier's own stderr names the
+# file and line to correct.
+test_unreadable_status_stream_is_scoped_and_never_reads_as_clear() {
+  local dir out rc gate
+  dir="$TMP_ROOT/unreadable-stream"
+  install_runner "$dir"
+  seed_live_blocker "$dir" herdr synthetic-dependency
+  cat > "$dir/home/state/prose-task.meta" <<'EOF'
+window=synthetic:fm-prose-task
+backend=tmux
+kind=ship
+EOF
+  printf 'working: starting\nresolved: answered the route question [key=my-key]\n' \
+    > "$dir/home/state/prose-task.status"
+  date +%s > "$dir/home/state/.afk"
+  : > "$dir/home/state/.fake-drain"
+  gate="$dir/home/state/.afk-return-catchup"
+
+  set +e
+  out=$(run_return "$dir" begin)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "an unreadable status stream must keep the return gated (rc=$rc): $out"
+  assert_contains "$out" 'firstmate-actionable unreadable status stream: prose-task' \
+    "the unreadable stream was not surfaced as its own firstmate-actionable row"
+  assert_contains "$out" "$dir/home/state/prose-task.status:2:" \
+    "the refusal did not name the file and line an operator must correct"
+  assert_contains "$out" 'resolved: answered the route question [key=my-key]' \
+    "the refusal did not carry the verbatim offending line"
+  assert_contains "$out" 'firstmate-actionable blocker: repair-task [key=synthetic-dependency]' \
+    "one unreadable stream suppressed every other task's open blocker"
+  grep -F $'unreadable\tprose-task' "$gate" >/dev/null \
+    || fail "the unreadable stream was not persisted in the durable gate"
+
+  # Correcting that one line in place is the whole recovery; the still-open
+  # blocker on the other task keeps the gate closed on its own merits.
+  printf 'working: starting\nresolved [key=my-key]: answered the route question\n' \
+    > "$dir/home/state/prose-task.status"
+  set +e
+  out=$(run_return "$dir" check)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "the still-open blocker should keep the gate closed (rc=$rc): $out"
+  case "$out" in
+    *'unreadable status stream'*) fail "the corrected stream still read as unreadable: $out" ;;
+  esac
+
+  printf 'resolved [key=synthetic-dependency]: refreshed the synthetic token\n' \
+    >> "$dir/home/state/repair-task.status"
+  out=$(run_return "$dir" check) || fail "a corrected stream did not clear return catch-up: $out"
+  assert_contains "$out" 'catch-up clear' "the corrected fleet did not clear the return gate"
+  pass "an unreadable status stream is scoped to its own task and never reads as clear"
+}
+
 test_return_gate_orders_catchup_before_bearings
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown
+test_unreadable_status_stream_is_scoped_and_never_reads_as_clear

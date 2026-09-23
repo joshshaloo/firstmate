@@ -267,7 +267,7 @@ EOF
 }
 
 test_uncaptured_decision_keys() {
-  local dir line reader out
+  local dir line reader out where
   dir=$(make_case uncaptured-keys)
   for line in \
     'needs-decision: [key=my-key] choose a route' \
@@ -281,18 +281,44 @@ test_uncaptured_decision_keys() {
         if out=$("$reader" "$line" 2> "$dir/error"); then
           fail "$reader silently accepted uncaptured token: $line"
         fi
+        # The single-line parser has no file to name, so it names the interface it
+        # was handed and the only line there is.
+        where='<status-line>:1:'
       else
         if out=$("$reader" "$dir/input.status" 2> "$dir/error"); then
           fail "$reader silently accepted uncaptured token: $line"
         fi
+        # The offending line is the third in the fixture; an append-only stream is
+        # only correctable if the refusal says which file and which line to open.
+        where="$dir/input.status:3:"
       fi
       [ -z "$out" ] || fail "$reader emitted a default key or partial fold on error"
       grep -F -- "$line" "$dir/error" >/dev/null || fail "$reader omitted verbatim offending line"
+      grep -F -- "$where" "$dir/error" >/dev/null \
+        || fail "$reader omitted the source and line number ($where): $(cat "$dir/error")"
       grep -F 'found uncaptured [key= token' "$dir/error" >/dev/null || fail "$reader omitted what was found"
       grep -F 'move the complete key before the colon' "$dir/error" >/dev/null || fail "$reader omitted correction"
       grep -F 'verb [key=my-key]: note' "$dir/error" >/dev/null || fail "$reader omitted expected shape"
     done
   done
+
+  # The "-" stream form has no file of its own, so it names the source its caller
+  # supplied (bin/fm-fleet-snapshot.sh passes the status file plus its window
+  # qualifier) and falls back to <stdin> when the caller supplies none.
+  printf 'working [key=phase]: earlier phase\nworking: [key=my-key] implementing\n' > "$dir/input.status"
+  if out=$(status_open_activities - 'bounded.status (tail window)' \
+      < "$dir/input.status" 2> "$dir/error"); then
+    fail "the stream form silently accepted an uncaptured token"
+  fi
+  [ -z "$out" ] || fail "the stream form emitted a partial fold on error"
+  grep -F 'bounded.status (tail window):2:' "$dir/error" >/dev/null \
+    || fail "the stream form dropped the caller-supplied source identity: $(cat "$dir/error")"
+  if out=$(status_open_activities - < "$dir/input.status" 2> "$dir/error"); then
+    fail "the unlabeled stream form silently accepted an uncaptured token"
+  fi
+  grep -F '<stdin>:2:' "$dir/error" >/dev/null \
+    || fail "the unlabeled stream form lost its source identity: $(cat "$dir/error")"
+
   [ "$(_fm_decision_key 'needs-decision: legacy choice')" = default ] || fail "absent key no longer defaults"
   [ "$(_fm_decision_key 'needs-decision [key=my-key]: choice')" = my-key ] || fail "valid key changed"
   pass "uncaptured decision keys fail with actionable verbatim diagnostics and no partial output"

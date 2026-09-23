@@ -587,8 +587,9 @@ if [ "$count" -eq 2 ]; then
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
 fi
-printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 trap 'exit 0' TERM INT
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_ARM_LOG}.ready"
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -629,14 +630,15 @@ await waitFor(
 await deadlines.expire(deadlines.retire);
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
 deadlines.assertIdle();
-deadlines.restore();
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
+await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`), "restored successor installed its TERM trap");
+if (process.env.FM_LATE_KIND === "actionable") {
+  await waitFor(() => prompts.some((message) => message.includes("late wake")), "late actionable wake once the restored successor was ready");
 }
+deadlines.assertIdle();
+deadlines.restore();
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
   if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);
@@ -1776,8 +1778,9 @@ if [ "$count" -eq 2 ]; then
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
 fi
-printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 trap 'exit 0' TERM INT
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_ARM_LOG}.ready"
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -1819,14 +1822,15 @@ await deadlines.expire(deadlines.retire);
 await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
 await event;
 deadlines.assertIdle();
-deadlines.restore();
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
+await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`), "restored successor installed its TERM trap");
+if (process.env.FM_LATE_KIND === "actionable") {
+  await waitFor(() => prompts.some((message) => message.includes("late wake")), "late actionable wake once the restored successor was ready");
 }
+deadlines.assertIdle();
+deadlines.restore();
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
   if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);

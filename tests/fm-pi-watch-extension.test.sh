@@ -21,6 +21,7 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # from a clean checkout with no tracked .opencode/package.json. The warning is
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
+export FM_ARM_DEADLINE_HELPER="$ROOT/tests/fm-watch-arm-fixture.mjs"
 
 install_pi_watch_extension_fixture() {
   local repo=$1
@@ -424,10 +425,11 @@ if [ "$count" -eq 1 ]; then
   exit 0
 fi
 trap 'exit 0' TERM INT
+printf '%s\n' "$$" >> "${FM_ARM_LOG}.ready"
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -450,10 +452,17 @@ const pi = {
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
+const { controlArmDeadlines, waitFor } = await import(pathToFileURL(process.env.FM_ARM_DEADLINE_HELPER).href);
+const deadlines = controlArmDeadlines();
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
+for (let attempt = 1; attempt <= 3; attempt += 1) {
+  await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`)
+    && readFileSync(`${process.env.FM_ARM_LOG}.ready`, "utf8").trim().split("\n").length === attempt,
+  `successor ${attempt} installed its TERM trap`);
+  await deadlines.expire(deadlines.ready);
 }
+await waitFor(() => Boolean(prompt), "retry-exhausted wake");
+deadlines.assertIdle();
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -494,8 +503,9 @@ if [ "$count" -eq 0 ]; then
   printf 'signal: synthetic wake\n'
   exit 0
 fi
-trap '' TERM INT
+trap 'printf "retired\n" > "${FM_ARM_LOG}.retired"' TERM INT
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf 'ready\n' > "${FM_ARM_LOG}.ready"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -522,10 +532,15 @@ const pi = {
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
+const { controlArmDeadlines, waitFor } = await import(pathToFileURL(process.env.FM_ARM_DEADLINE_HELPER).href);
+const deadlines = controlArmDeadlines();
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`), "successor TERM trap");
+await deadlines.expire(deadlines.ready);
+await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.retired`), "successor received TERM");
+await deadlines.expire(deadlines.retire);
+await waitFor(() => Boolean(prompt), "unretired-successor wake");
+deadlines.assertIdle();
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -572,8 +587,9 @@ if [ "$count" -eq 2 ]; then
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
 fi
-printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 trap 'exit 0' TERM INT
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_ARM_LOG}.ready"
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -596,13 +612,8 @@ const pi = {
 const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(message);
-}
+const { controlArmDeadlines, waitFor } = await import(pathToFileURL(process.env.FM_ARM_DEADLINE_HELPER).href);
+const deadlines = controlArmDeadlines();
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
@@ -611,18 +622,24 @@ await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not enter its retirement wait",
 );
-await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
+await deadlines.expire(deadlines.ready);
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
   "unretired successor was not asked to retire before fallback",
 );
+await deadlines.expire(deadlines.retire);
+await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
+deadlines.assertIdle();
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
+await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`), "restored successor installed its TERM trap");
+if (process.env.FM_LATE_KIND === "actionable") {
+  await waitFor(() => prompts.some((message) => message.includes("late wake")), "late actionable wake once the restored successor was ready");
 }
+await waitFor(() => deadlines.idle(), "the restored successor's readiness deadline to be released");
+deadlines.assertIdle();
+deadlines.restore();
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
   if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);
@@ -901,10 +918,13 @@ test_pi_session_transition_generation_owner() {
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'watcher: started pid=%s\n' "$$"
-printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
-printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 trap 'exit 0' TERM INT
+printf 'watcher: started pid=%s\n' "$$"
+printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+# Publish atomically after the trap and arm log; existence alone must not expose
+# an empty PID or a live child whose log row has not been written yet.
+printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}.next"
+mv "$FM_CHILD_PID_FILE.next" "$FM_CHILD_PID_FILE"
 while :; do sleep 0.2; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -1126,7 +1146,8 @@ test_pi_process_exit_cleanup_stops_arm_child() {
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 trap 'printf "%s\n" "$$" >> "$FM_CLEANUP_LOG"; exit 0' TERM
-printf '%s\n' "$$" > "$FM_CHILD_PID_FILE"
+printf '%s\n' "$$" > "$FM_CHILD_PID_FILE.next"
+mv "$FM_CHILD_PID_FILE.next" "$FM_CHILD_PID_FILE"
 while :; do sleep 1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -1335,7 +1356,10 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+// The idle hook launches asynchronously. Await its public coordinator result
+// before changing the lock, rather than giving the ownership check 120ms.
+const denied = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (denied !== "read-only") throw new Error(`missing-lock attempt returned ${denied}`);
 if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
@@ -1352,7 +1376,7 @@ if (!existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
+  [ "$status" -eq 0 ] || fail "OpenCode watch plugin must arm only when this session owns the fleet lock: $out"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
   pass "OpenCode watcher plugin requires session lock ownership"
 }
@@ -1586,10 +1610,11 @@ if [ "$count" -eq 1 ]; then
   exit 0
 fi
 trap 'exit 0' TERM INT
+printf '%s\n' "$$" >> "${FM_ARM_LOG}.ready"
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1612,10 +1637,19 @@ const hooks = await mod.FmPrimaryWatchArm({
   worktree: process.env.WORKTREE,
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
+const { controlArmDeadlines, waitFor } = await import(pathToFileURL(process.env.FM_ARM_DEADLINE_HELPER).href);
+const deadlines = controlArmDeadlines();
+// The idle hook returns before readiness; fixture markers drive the test below.
+const event = hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+for (let attempt = 1; attempt <= 3; attempt += 1) {
+  await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`)
+    && readFileSync(`${process.env.FM_ARM_LOG}.ready`, "utf8").trim().split("\n").length === attempt,
+  `successor ${attempt} installed its TERM trap`);
+  await deadlines.expire(deadlines.ready);
 }
+await waitFor(() => Boolean(prompt), "retry-exhausted wake");
+await event;
+deadlines.assertIdle();
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -1658,8 +1692,9 @@ if [ "$count" -eq 0 ]; then
   printf 'signal: synthetic wake\n'
   exit 0
 fi
-trap '' TERM INT
+trap 'printf "retired\n" > "${FM_ARM_LOG}.retired"' TERM INT
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf 'ready\n' > "${FM_ARM_LOG}.ready"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -1686,10 +1721,16 @@ const hooks = await mod.FmPrimaryWatchArm({
   worktree: process.env.WORKTREE,
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-}
+const { controlArmDeadlines, waitFor } = await import(pathToFileURL(process.env.FM_ARM_DEADLINE_HELPER).href);
+const deadlines = controlArmDeadlines();
+const event = hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`), "successor TERM trap");
+await deadlines.expire(deadlines.ready);
+await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.retired`), "successor received TERM");
+await deadlines.expire(deadlines.retire);
+await waitFor(() => Boolean(prompt), "unretired-successor wake");
+await event;
+deadlines.assertIdle();
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -1738,8 +1779,9 @@ if [ "$count" -eq 2 ]; then
   [ "$FM_LATE_KIND" = actionable ] && printf 'signal: late wake\n'
   exit 0
 fi
-printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 trap 'exit 0' TERM INT
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'ready\n' > "${FM_ARM_LOG}.ready"
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -1759,36 +1801,38 @@ const client = {
 const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
-async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(message);
-}
+const { controlArmDeadlines, waitFor } = await import(pathToFileURL(process.env.FM_ARM_DEADLINE_HELPER).href);
+const deadlines = controlArmDeadlines();
 const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+const event = hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_READY_FILE),
   "unretired successor did not enter its retirement wait",
 );
-await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
+await deadlines.expire(deadlines.ready);
 await waitFor(
   () => existsSync(process.env.FM_UNRETIRED_RETIRE_FILE),
   "unretired successor was not asked to retire before fallback",
 );
+await deadlines.expire(deadlines.retire);
+await waitFor(() => prompts.length >= 1, "original fallback was not delivered");
+await event;
+deadlines.assertIdle();
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
-  if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
-  await new Promise((resolve) => setTimeout(resolve, 10));
+await waitFor(() => existsSync(`${process.env.FM_ARM_LOG}.ready`), "restored successor installed its TERM trap");
+if (process.env.FM_LATE_KIND === "actionable") {
+  await waitFor(() => prompts.some((message) => message.includes("late wake")), "late actionable wake once the restored successor was ready");
 }
+await waitFor(() => deadlines.idle(), "the restored successor's readiness deadline to be released");
+deadlines.assertIdle();
+deadlines.restore();
 if (rows().length !== 3) throw new Error(`late close did not restore one successor: ${rows().join(" | ")}`);
 if (process.env.FM_LATE_KIND === "actionable") {
   if (prompts.length !== 2 || !prompts[1].includes("late wake")) throw new Error(`late actionable close was not delivered: ${prompts.join(" | ")}`);
@@ -1914,7 +1958,7 @@ if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was n
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode established clean closes must honor the continuity retry limit"
+  [ "$status" -eq 0 ] || fail "OpenCode established clean closes must honor the continuity retry limit: $out"
   [ -z "$out" ] || fail "OpenCode established-empty-close retry test printed output: $out"
   pass "OpenCode established clean closes stop at the configured retry limit"
 }
@@ -2107,7 +2151,8 @@ const guardHooks = await guardMod.FmPrimaryTurnendGuard({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_GUARD_LOG); i += 1) {
+// The guard writes its log before Node receives and forwards its output.
+for (let i = 0; i < 250 && !promptBody; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {

@@ -498,8 +498,8 @@ FM_TASKS_AXI_VERSION_TIMEOUT=5        # same bound for the tasks-axi --version p
 FM_QUOTA_AXI_VERSION_TIMEOUT=10       # same bound for the quota-axi --version probe owned by bin/fm-quota-axi-lib.sh; blank, non-numeric, or 0 falls back to 10
 FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone
 FM_STALE_WORKTREE_LOCK_AGE_SECS=30       # min mtime age before fm-teardown.sh treats a leftover worktree git index.lock as provably stale
-FM_TREEHOUSE_RETURN_LOCK_RETRIES=3        # retries after a treehouse return fails on the transient git index.lock signature
-FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=1 # seconds fm-teardown.sh waits before each retry after that signature
+FM_TREEHOUSE_RETURN_LOCK_RETRIES=3        # shared retry budget after a treehouse return fails on either transient signature (git index.lock, or a git step that reported no diagnostic)
+FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=1 # seconds fm-teardown.sh waits before each retry after either signature
 FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=   # legacy alias for FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS when the new variable is unset
 FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=3        # fetch retries after fm-fleet-sync.sh hits the orphaned .git/packed-refs.lock signature
 FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=1 # seconds fm-fleet-sync.sh waits before each of those retries
@@ -534,7 +534,9 @@ FM_LOG_MAX_BYTES=1048576           # daemon log size that triggers trimming
 FM_LOG_KEEP_LINES=2000             # daemon log lines kept when trimming
 ```
 
-`fm-teardown.sh` retries only Git's `Unable to create '...index.lock': File exists` return failure up to `FM_TREEHOUSE_RETURN_LOCK_RETRIES` times.
+`fm-teardown.sh` retries only Git's `Unable to create '...index.lock': File exists` return failure, and a `treehouse return` whose git step reported no diagnostic at all (`git <args>:` with nothing after the colon, the shape of a git process signalled away mid-return rather than a refusal Git would have explained), up to `FM_TREEHOUSE_RETURN_LOCK_RETRIES` times.
+Both failures share one retry budget and one loop: every attempt is re-classified, so a return that reports nothing and then reports the `index.lock` its killed Git left behind continues into the lock recovery instead of aborting.
+While the signature stays no-diagnostic the retry only repeats the return and never inspects or removes a lock, and any Git error Git did explain still aborts immediately at whatever attempt it arrives on.
 `FM_TREEHOUSE_RETURN_LOCK_RETRIES` accepts a nonnegative integer, and an unset, blank, or invalid value uses the default of 3.
 `FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS` accepts nonnegative whole or fractional seconds between attempts.
 When it is unset or blank, `FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS` remains a compatible fallback, and a blank fallback uses the 1-second default.

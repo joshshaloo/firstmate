@@ -232,7 +232,7 @@ The helper requires a full canonical PR URL and derives the repository identity 
 Both preserve an explicit caller-supplied merge method, and both reject malformed URLs or repository override flags before recording merge state; a well-formed GitLab merge request URL is refused, explicitly, rather than sent to the wrong forge.
 [docs/verification/forge-merge-watch.md](verification/forge-merge-watch.md) owns the per-forge CLI, authentication, and refusal detail for both the merge path and the watcher's poll.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
-[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
+[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and the transient return-failure recovery procedures (stale git `index.lock`, and a git step signalled away without reporting a diagnostic).
 
 ## Optional X mode
 

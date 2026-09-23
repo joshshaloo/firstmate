@@ -95,7 +95,11 @@
 #      attempts. Retries key off the error text, not whether the lock file still
 #      exists after the failed attempt - a lock that self-clears mid-check still
 #      deserves a retry of the return.
-#   2. Other treehouse return failures still abort immediately and loudly (no retry).
+#   2. Other treehouse return failures still abort immediately and loudly (no retry),
+#      with one exception that is the same kind of race - see the signalled-git step
+#      below. The two races share one retry loop, so an attempt that comes back with
+#      a different transient signature than the previous one is recovered by the
+#      matching step rather than aborting.
 #   3. If every retry still hits the lock signature and the lock remains, it is removed
 #      and the return tried once more ONLY when the lock is provably stale per
 #      bin/fm-lock-lib.sh's fm_lock_is_provably_stale, passing the worktree dir as the
@@ -110,6 +114,34 @@
 # is present; teardown clears only a provably stale lock, then re-runs the safety
 # checks before any destructive return. Teardown output notes every wait, retry, and
 # removal so the operator can see what happened.
+#
+# Signalled-git return recovery (teardown-silent-git-race): `treehouse return --force`
+# runs its git steps with the worktree as their cwd, and a worktree path is exactly
+# what treehouse's own sweeps (every `return` and `get` kills every process whose cwd
+# is inside the worktree) target, so that git process can be signalled away mid-return.
+# Treehouse then reports its own `git <args>:` line with an EMPTY diagnostic, because
+# the killed process never wrote one. Git prints a "fatal:"/"error:" line for every
+# decision it makes itself, so an empty diagnostic is never a refusal about this
+# worktree - it is only the absence of an answer, and the lease is still held with the
+# worktree untouched. Which signal arrived is not recoverable from the report; that it
+# was not a git decision is.
+# On that failure signature, teardown_treehouse_return repeats the (idempotent) return
+# within the same FM_TREEHOUSE_RETURN_LOCK_RETRIES budget and the same
+# FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS wait as the lock race. No lock is inspected
+# or removed while the signature stays unexplained. Exhausted retries fail loudly: an
+# unexplained failure is never reported as a completed return.
+#
+# The two races compose because the loop re-classifies EVERY attempt through
+# treehouse_return_failure_signature, the one owner of the signature set, instead of
+# committing to the first attempt's recovery:
+#   - The git the sweep killed is exactly what leaves an index.lock behind, so a
+#     silent attempt followed by an index.lock attempt continues into the lock-race
+#     steps above, including the provably-stale removal.
+#   - The reverse order composes the same way, and the budget is shared, not doubled.
+#   - A signature git DID explain still aborts immediately at whatever attempt it
+#     arrives, and unrecognized output is classified as explained so it refuses too.
+#   - The last attempt's signature decides what happens when the budget runs out: an
+#     unexplained failure has no lock to reason about and can only refuse.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -884,11 +916,31 @@ TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED=3
 # discard path reads identically no matter which check refused.
 TEARDOWN_DISCARD_FOOTER="Only with the captain's explicit OK to discard the work, --force."
 
-# True when treehouse/git stderr shows the transient index.lock "File exists" race.
-# Other return failures must not enter the retry path.
-treehouse_return_is_index_lock_error() {
+# Single owner of the `treehouse return` failure signatures teardown knows how to
+# recover from. Classifies one attempt's combined output into exactly one of:
+#
+#   index-lock  the transient index.lock "File exists" race - patience, then a
+#               removal only when the lock is provably stale.
+#   silent-git  a failed git step that said nothing at all ("git <args>:" with an
+#               empty diagnostic after the colon). Git prints its own
+#               "fatal:"/"error:" line for every decision it makes itself, so an
+#               empty diagnostic is never a refusal about this worktree: it is a
+#               git process that died before it could speak. Patience only; no
+#               lock is inspected or removed for this signature.
+#   explained   a failure git did explain, and anything else. Unrecognized output
+#               lands here so an unclassified failure refuses instead of being
+#               retried blindly.
+#
+# Every recovery decision dispatches on this value; no caller re-reads the text.
+treehouse_return_failure_signature() {
   local text=$1
-  printf '%s\n' "$text" | grep -Eq "Unable to create ['\"].*index\\.lock['\"]: File exists"
+  if printf '%s\n' "$text" | grep -Eq "Unable to create ['\"].*index\\.lock['\"]: File exists"; then
+    printf 'index-lock\n'
+  elif printf '%s\n' "$text" | grep -Eq '(^|[[:space:]])git [^:]+:[[:space:]]*$'; then
+    printf 'silent-git\n'
+  else
+    printf 'explained\n'
+  fi
 }
 
 # Absolute path to the git index lock for a worktree/repo dir, or empty when it
@@ -943,11 +995,18 @@ cleanup_stale_lock_for_safety_check() {
   return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
 }
 
-# Return a worktree/home via `treehouse return --force`, tolerating a transient or
-# stale git index.lock left by a killed crew process. See the script header.
+# Return a worktree/home via `treehouse return --force`, tolerating the two
+# transient failures that are races rather than refusals: a git index.lock left
+# by a killed crew process, and a git step that was signalled away without
+# reporting anything. One retry loop covers both. Every attempt is re-classified
+# by treehouse_return_failure_signature and the recovery for THAT attempt's
+# signature is applied, so the documented sequence - a sweep kills this return's
+# own git, which reports nothing, and the next attempt finds the index.lock that
+# killed git left behind - still reaches the provably-stale lock recovery.
+# See the script header.
 teardown_treehouse_return() {
   local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
-  local out lock attempt=0 max_retries lock_desc
+  local out signature attempt=0 max_retries lock lock_desc
 
   # Capture stdout+stderr so non-lock failures stay visible and lock failures can
   # be matched by signature even when the lock file is already gone mid-check.
@@ -957,15 +1016,9 @@ teardown_treehouse_return() {
   fi
   [ -n "$out" ] && printf '%s\n' "$out" >&2
 
-  if ! treehouse_return_is_index_lock_error "$out"; then
+  signature=$(treehouse_return_failure_signature "$out")
+  if [ "$signature" = explained ]; then
     return 1
-  fi
-
-  lock=$(worktree_git_lock_path "$dir") || lock=""
-  if [ -n "$lock" ]; then
-    lock_desc=$lock
-  else
-    lock_desc="index.lock"
   fi
 
   max_retries=$TREEHOUSE_RETURN_LOCK_RETRIES
@@ -973,21 +1026,45 @@ teardown_treehouse_return() {
 
   while [ "$attempt" -lt "$max_retries" ]; do
     attempt=$(( attempt + 1 ))
-    echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
+    case "$signature" in
+      index-lock)
+        lock=$(worktree_git_lock_path "$dir") || lock=""
+        if [ -n "$lock" ]; then
+          lock_desc=$lock
+        else
+          lock_desc="index.lock"
+        fi
+        echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
+        ;;
+      *)
+        echo "teardown: $label return failed with a git step that reported no diagnostic (a signalled git process, not a refusal); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
+        ;;
+    esac
     sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
 
     if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
       [ -n "$out" ] && printf '%s\n' "$out"
-      echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
+      case "$signature" in
+        index-lock) echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2 ;;
+        *) echo "teardown: $label return succeeded on retry after a git step that reported no diagnostic" >&2 ;;
+      esac
       return 0
     fi
     [ -n "$out" ] && printf '%s\n' "$out" >&2
 
-    if ! treehouse_return_is_index_lock_error "$out"; then
-      echo "teardown: $label return failed with a non-lock error after retry; aborting" >&2
+    signature=$(treehouse_return_failure_signature "$out")
+    if [ "$signature" = explained ]; then
+      echo "teardown: $label return failed with a reported git error after retry; aborting" >&2
       return 1
     fi
   done
+
+  # Retries exhausted. The last attempt's signature decides the final recovery:
+  # an unexplained failure has no lock to reason about, so it can only refuse.
+  if [ "$signature" = silent-git ]; then
+    echo "teardown: $label return failed: its git step reported no diagnostic across ${max_retries} retries (waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s each); refusing to treat an unexplained failure as a completed return" >&2
+    return 1
+  fi
 
   # Refresh lock path after the patience window; it may have appeared, moved, or
   # cleared while we waited.

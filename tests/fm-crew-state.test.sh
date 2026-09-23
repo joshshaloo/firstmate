@@ -34,6 +34,15 @@ set -u
 
 CREW_STATE="$ROOT/bin/fm-crew-state.sh"
 fm_test_tmproot TMP_ROOT fm-crew-state
+
+# The fake tools below are spawned by the scripts under test, not by this shell.
+# One of them busy-spins (`while :; do :; done`) so that the no-mistakes timeout
+# can be exercised; if that bound ever regresses it is orphaned at 100% CPU with
+# no pid this shell ever saw. Marking the fixture root makes every descendant
+# reapable and provable by its own environment.
+FM_CREW_STATE_FIXTURE_ROOT="$TMP_ROOT"
+export FM_CREW_STATE_FIXTURE_ROOT
+fm_test_reap_env_at_exit "FM_CREW_STATE_FIXTURE_ROOT=$TMP_ROOT" "crew-state fake tool fixtures"
 fm_git_identity fmtest fmtest@example.invalid
 
 # A real git repo checked out on <branch>, so the helper's branch attribution

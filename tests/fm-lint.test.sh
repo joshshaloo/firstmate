@@ -318,6 +318,7 @@ SH
         FM_LINT_TELEMETRY="$telemetry_file" FM_TEST_SHELLCHECK_PID="$pid_file" \
         "$LINT" "$fixture" > "$out_file" 2>&1 &
       parent_pid=$!
+      fm_test_track_fixture_bg_pid "$parent_pid" "FM_TEST_SHELLCHECK_PID=$pid_file"
       i=0
       while [ "$i" -lt 500 ] && [ ! -s "$pid_file" ]; do
         kill -0 "$parent_pid" 2>/dev/null || break
@@ -330,6 +331,7 @@ SH
         fail "jobs=$jobs telemetry=$telemetry did not start ShellCheck"
       }
       shellcheck_pid=$(cat "$pid_file")
+      fm_test_track_bg_pid "$shellcheck_pid"
       kill -TERM "$parent_pid" 2>/dev/null \
         || fail "jobs=$jobs telemetry=$telemetry parent could not be interrupted"
       parent_rc=0

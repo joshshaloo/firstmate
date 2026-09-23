@@ -254,6 +254,11 @@ SH
 
 wait_for_exit() {
   local pid=$1 limit=${2:-50} i=0
+  # Guarantee this backgrounded watcher cannot outlive the suite even if the
+  # calling test's own assertions fail(), or the suite is interrupted, while
+  # this function is still polling - not just when the poll loop below
+  # reaches its own timeout kill.
+  fm_test_track_bg_pid "$pid"
   while [ "$i" -lt "$limit" ]; do
     if ! is_live_non_zombie "$pid"; then
       wait "$pid"
@@ -304,6 +309,7 @@ start_settled_peer() {
   local program=$1 i=0 seen=
   "$@" &
   PEER_PID=$!
+  fm_test_track_bg_pid "$PEER_PID"
   while [ "$i" -lt 200 ]; do
     seen=$(peer_program_name "$PEER_PID" || true)
     [ "$seen" = "${program##*/}" ] && return 0

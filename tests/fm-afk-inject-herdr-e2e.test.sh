@@ -290,6 +290,7 @@ start_daemon() {
   FM_STALE_ESCALATE_SECS=999999 \
   nohup "$DAEMON" >"$STATE_DIR/daemon.out" 2>"$STATE_DIR/daemon.err" &
   DAEMON_PID=$!
+  fm_test_track_fixture_bg_pid "$DAEMON_PID" "FM_STATE_OVERRIDE=$STATE_DIR"
   wait_daemon_started daemon "$log_start"
 }
 
@@ -501,6 +502,7 @@ test_scenario_d_max_defer() {
   FM_STALE_ESCALATE_SECS=999999 \
   nohup "$DAEMON" >"$STATE_DIR/daemon.out" 2>"$STATE_DIR/daemon.err" &
   DAEMON_PID=$!
+  fm_test_track_fixture_bg_pid "$DAEMON_PID" "FM_STATE_OVERRIDE=$STATE_DIR"
   wait_daemon_started "Scenario D daemon" "$log_start"
 
   echo "needs-decision: pick A or B" > "$STATE_DIR/fake-c1.status"

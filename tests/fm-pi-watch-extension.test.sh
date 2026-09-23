@@ -6,6 +6,16 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_test_tmproot TMP_ROOT fm-pi-watch-extension
+
+# The fake fm-watch-arm.sh fixtures below are spawned by the node plugin under
+# test, not by this shell, so no pid is ever available to track at spawn. Two of
+# them trap both TERM and INT and spin until a release file that a node
+# assertion writes only after four throw sites - so a regression in the very
+# behavior under test orphans them. Marking the fixture root makes every
+# descendant reapable and provable by its own environment instead.
+FM_PI_FIXTURE_ROOT="$TMP_ROOT"
+export FM_PI_FIXTURE_ROOT
+fm_test_reap_env_at_exit "FM_PI_FIXTURE_ROOT=$TMP_ROOT" "pi watch extension arm fixtures"
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # Node 24 warns when these test-only dynamic imports load tracked ESM plugins
 # from a clean checkout with no tracked .opencode/package.json. The warning is

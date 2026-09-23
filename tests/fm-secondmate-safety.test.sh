@@ -2293,6 +2293,7 @@ EOF
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_LOG="$TMP_ROOT/watch-fake/tmux.log" FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/watch-fake/pane.txt" \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$ROOT/bin/fm-watch.sh" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_HOME=$home"
   if ! wait_live "$pid" 25; then
     wait "$pid" || true
     grep -F "stale: $window" "$out" >/dev/null && fail "idle secondmate pane triggered stale wake"

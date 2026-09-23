@@ -37,6 +37,11 @@ watch_bg() {  # <state> <fakebin> <out> [extra env assignments...]
   shift 3
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$out" &
+  # Track at the spawn, not at the caller's reap: registration must survive a
+  # fail() between here and whatever cleanup line the caller was going to reach.
+  # Calling a function does not disturb $!, so the caller's own "pid=$!" still
+  # names this watcher.
+  fm_test_track_fixture_bg_pid "$!" "FM_STATE_OVERRIDE=$state"
 }
 
 # Wait up to <limit> 0.1s ticks while <pid> stays alive; 0 if still alive, 1 if it died.
@@ -619,6 +624,7 @@ test_terminal_stale_surfaced() {
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "watcher did not exit for a stale pane on a terminal status"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print the terminal stale wake"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the terminal stale failed"
@@ -660,6 +666,7 @@ test_stale_terminal_status_overridden_by_active_run() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "watcher exited for a stale terminal-looking status the run-step overrides (should absorb): $(cat "$out")"
   fi
@@ -678,6 +685,7 @@ test_stale_terminal_status_overridden_by_active_run() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "watcher did not escalate an overridden stale terminal status past the threshold"
   grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "escalation did not flag a possible wedge"
@@ -713,6 +721,7 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "watcher exited for a fresh provably-working non-terminal stale (should absorb): $(cat "$out")"
   fi
@@ -730,6 +739,7 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "watcher did not escalate a provably-working non-terminal stale past the threshold"
   grep -F "stale: $window" "$out" >/dev/null || fail "escalation did not print a stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "escalation did not flag a possible wedge"
@@ -768,6 +778,7 @@ test_nonterminal_stale_not_working_surfaced() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "watcher did not surface a not-provably-working non-terminal stale at once"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print the immediate stale wake"
   grep -F "possible wedge" "$out" >/dev/null && fail "an immediate stopped-crew stale was mislabeled a wedge"
@@ -812,6 +823,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "watcher exited for a fresh declared pause (should absorb): $(cat "$out")"
   fi
@@ -836,6 +848,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "watcher did not re-surface a declared pause past the threshold"
   grep -F "stale: $window" "$out" >/dev/null || fail "re-surface did not print a stale wake"
   grep -F "awaiting external" "$out" >/dev/null || fail "re-surface was not labeled a paused/awaiting-external recheck"
@@ -862,6 +875,7 @@ test_declared_pause_changed_hash_not_rewoken_inside_cadence() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 20; then
     reap "$pid"; fail "fresh declared pause surfaced before its cadence: $(cat "$out")"
   fi
@@ -923,6 +937,7 @@ test_recent_run_step_activity_resets_wedge_timer() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "recent run-step activity wedge-escalated on pane idleness: $(cat "$out")"
   fi
@@ -955,6 +970,7 @@ test_declared_pause_run_step_change_wakes_immediately() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "declared pause did not wake when the run-step parked behind it"
   grep -F "stale: $window" "$out" >/dev/null || fail "run-step change did not print a stale wake"
   grep -F "possible wedge" "$out" >/dev/null && fail "run-step change behind a pause was mislabeled as a wedge"
@@ -975,6 +991,7 @@ test_declared_pause_run_step_change_wakes_immediately() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 \
     FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 20; then
     reap "$pid"; fail "an already-surfaced run-step state behind a pause re-woke every poll: $(cat "$out")"
   fi
@@ -999,6 +1016,7 @@ test_declared_pause_run_step_change_wakes_immediately() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 \
     FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "a re-park at a different gate behind a declared pause did not wake"
   grep -F "stale: $window" "$out" >/dev/null || fail "the second gate did not print a stale wake"
   reap "$pid"
@@ -1011,6 +1029,7 @@ test_declared_pause_run_step_change_wakes_immediately() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 \
     FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 20; then
     reap "$pid"; fail "an unchanged second gate behind a pause re-woke every poll: $(cat "$out")"
   fi
@@ -1028,6 +1047,7 @@ test_declared_pause_run_step_change_wakes_immediately() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 \
     FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "a new run-step state behind a declared pause did not re-arm the surface"
   grep -F "stale: $window" "$out" >/dev/null || fail "the new run-step state did not print a stale wake"
   reap "$pid"
@@ -1059,6 +1079,7 @@ test_quiet_run_step_activity_still_wedge_escalates() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "a quiet active run step did not wedge-escalate past the threshold"
   grep -F "possible wedge" "$out" >/dev/null || fail "quiet run-step escalation omitted its wedge reason"
   reap "$pid"
@@ -1097,6 +1118,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
     pid=$!
+    fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
     if wait_live "$pid" 15; then reap "$pid"; else wait "$pid" || fail "dead-agent watcher round $round failed"; fi
     round=$((round + 1))
   done
@@ -1126,6 +1148,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "captain-held dead-agent pane did not re-surface on the bounded cadence"
   grep -F "awaiting external" "$state/.wake-queue" >/dev/null \
     || fail "captain-held dead-agent pane surfaced as a stopped crew"
@@ -1149,6 +1172,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"
     fail "live declared pause surfaced before its pause cadence: $(cat "$out")"
@@ -1190,6 +1214,7 @@ test_secondmate_paused_resurfaces_in_normal_mode() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "watcher did not re-surface a paused secondmate"
   grep -F "stale: $window" "$out" >/dev/null || fail "paused secondmate did not emit a stale recheck"
   grep -F "awaiting external" "$out" >/dev/null || fail "paused secondmate recheck omitted its external-wait reason"
@@ -1214,6 +1239,7 @@ test_secondmate_nonpaused_stale_remains_suppressed() {
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "watcher surfaced an ordinary secondmate stale pane: $(cat "$out")"
   fi
@@ -1269,6 +1295,7 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   i=0
   while [ "$i" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
     [ -e "$state/.paused-$key" ] && [ ! -e "$state/.stale-since-$key" ] && break
@@ -1289,6 +1316,7 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   i=0
   while [ "$i" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
     [ ! -e "$state/.paused-$key" ] && [ -s "$state/.stale-since-$key" ] && break
@@ -1324,6 +1352,7 @@ test_nonterminal_paused_rechecks_authoritative_state() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_PAUSE_RESURFACE_SECS=999 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "an active run behind a declared pause surfaced before the pause cadence: $(cat "$out")"
   fi
@@ -1354,6 +1383,7 @@ test_paused_authoritative_working_uses_pause_cadence() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_PAUSE_RESURFACE_SECS=999 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "paused authoritative working state surfaced on the wedge threshold: $(cat "$out")"
   fi
@@ -1398,6 +1428,7 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "watcher exited on the priming round (should absorb): $(cat "$out")"
   fi
@@ -1414,6 +1445,7 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
     pid=$!
+    fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
     wait_for_exit "$pid" 40 || fail "watcher did not escalate on consecutive wedge round $n: $(cat "$out")"
     grep -F "escalation $n" "$out" >/dev/null || fail "round $n did not report escalation count $n: $(cat "$out")"
     if [ "$n" -lt 3 ]; then
@@ -1452,6 +1484,7 @@ test_wedge_escalation_resets_when_pane_becomes_active() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "watcher exited on a fresh (changed) pane hash: $(cat "$out")"
   fi
@@ -1489,6 +1522,7 @@ test_busy_pane_below_turn_age_bound_is_absorbed() {
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=999 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "a busy pane below the turn-age bound was escalated: $(cat "$out")"
   fi
@@ -1520,6 +1554,7 @@ test_busy_pane_stable_hash_escalates_past_turn_age_bound() {
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "a stable-hash busy pane past the turn-age bound escalated before the wedge threshold: $(cat "$out")"
   fi
@@ -1533,6 +1568,7 @@ test_busy_pane_stable_hash_escalates_past_turn_age_bound() {
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "a stable-hash busy pane did not wedge-escalate past the turn-age bound"
   grep -F "stale: $window" "$out" >/dev/null || fail "busy turn-age escalation did not print the stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "busy turn-age escalation did not flag a possible wedge"
@@ -1562,6 +1598,7 @@ test_busy_pane_changing_hash_escalates_past_turn_age_bound() {
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "a changing-hash busy pane past the turn-age bound escalated before the wedge threshold: $(cat "$out")"
   fi
@@ -1577,6 +1614,7 @@ test_busy_pane_changing_hash_escalates_past_turn_age_bound() {
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "a changing-hash busy pane did not wedge-escalate past the turn-age bound"
   grep -F "stale: $window" "$out" >/dev/null || fail "busy turn-age escalation (changing hash) did not print the stale wake"
   grep -F "possible wedge" "$out" >/dev/null || fail "busy turn-age escalation (changing hash) did not flag a possible wedge"
@@ -1607,6 +1645,7 @@ test_busy_pane_turn_end_touch_resets_age() {
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=3600 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "a freshly completed turn on a busy pane was still escalated: $(cat "$out")"
   fi
@@ -1639,6 +1678,7 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "priming round for busy turn-age escalation was not absorbed: $(cat "$out")"
   fi
@@ -1652,6 +1692,7 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
       FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
     pid=$!
+    fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
     wait_for_exit "$pid" 40 || fail "busy turn-age escalation round $n did not escalate: $(cat "$out")"
     grep -F "escalation $n" "$out" >/dev/null || fail "busy turn-age round $n did not report escalation count $n: $(cat "$out")"
     if [ "$n" -lt 3 ]; then
@@ -1689,6 +1730,7 @@ test_busy_pane_default_turn_age_bound_is_3600s() {
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "a 5-minute-old completed turn tripped the default busy-turn-age bound: $(cat "$out")"
   fi
@@ -1702,6 +1744,7 @@ test_busy_pane_default_turn_age_bound_is_3600s() {
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "a 66-minute-old completed turn escalated before the wedge threshold under the default bound: $(cat "$out")"
   fi
@@ -1729,6 +1772,7 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_numeric_file "$state/.stale-since-$key" 30 || { reap "$pid"; fail "matching stale suppressor with missing timer did not initialize stale-since"; }
   if ! kill -0 "$pid" 2>/dev/null; then
     wait "$pid" 2>/dev/null || true
@@ -1743,6 +1787,7 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_numeric_file "$state/.stale-since-$key" 30 || { reap "$pid"; fail "matching stale suppressor with corrupt timer did not repair stale-since"; }
   since=$(cat "$state/.stale-since-$key" 2>/dev/null || true)
   [ "$since" != "corrupt" ] || { reap "$pid"; fail "corrupt stale-since value was left in place"; }
@@ -1779,6 +1824,7 @@ SH
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_WATCH_TRIAGE_LOG_MAX_BYTES=1 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "watcher exited for a benign signal while testing log capping: $(cat "$out")"
   fi
@@ -1804,6 +1850,7 @@ test_heartbeat_no_change_absorbed() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=1 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   if ! wait_live "$pid" 30; then
     reap "$pid"; fail "watcher exited for a no-change heartbeat (should absorb): $(cat "$out")"
   fi
@@ -1827,6 +1874,7 @@ test_heartbeat_backstop_surfaces_unsurfaced_status() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=1 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "heartbeat backstop did not surface an unsurfaced captain-relevant status"
   grep -Fx "heartbeat" "$out" >/dev/null || fail "backstop did not exit with a heartbeat wake"
   [ "$(cat "$state/.hb-surfaced-miss" 2>/dev/null || true)" = "done: PR https://example.test/pr/5" ] \
@@ -1915,6 +1963,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
+  fm_test_track_fixture_bg_pid "$pid" "FM_STATE_OVERRIDE=$state"
   wait_for_exit "$pid" 40 || fail "AFK paused changed pane did not hand off a stale wake"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "AFK paused stale did not preserve its plain window identity: $(cat "$out")"
   grep -F "awaiting external" "$out" >/dev/null && fail "AFK watcher decorated a stale identity instead of handing it to the daemon"

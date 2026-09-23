@@ -160,11 +160,12 @@ unit_stop_ordering() {
   date '+%s' > "$st/state/.afk"
   marker="$st/afk-at-term"
   # A fake daemon: on SIGTERM, record whether .afk was still present, then exit.
-  bash -c '
+  FM_HOME="$st" bash -c '
     trap "if [ -f \"$1/state/.afk\" ]; then echo present > \"$2\"; else echo absent > \"$2\"; fi; exit 0" TERM
     while :; do sleep 0.2; done
-  ' _ "$st" "$marker" &
+  ' fm-afk-daemon-fixture.sh "$st" "$marker" &
   daemon_pid=$!
+  fm_test_track_fixture_bg_pid "$daemon_pid" "FM_HOME=$st"
   lock="$st/state/.supervise-daemon.lock"
   mkdir -p "$lock"
   printf '%s' "$daemon_pid" > "$lock/pid"
@@ -704,8 +705,10 @@ unit_stop_confirms_daemon_exit() {
   mkdir -p "$st/state/.supervise-daemon.lock"
   : > "$st/state/.afk"
   printf 'none\t-\tnative\n' > "$st/state/.afk-daemon-terminal"
-  bash -c 'trap "" TERM; while :; do sleep 1; done' &
+  FM_HOME="$st" bash -c 'trap "" TERM; while :; do sleep 1; done' \
+    fm-afk-daemon-fixture.sh &
   daemon_pid=$!
+  fm_test_track_fixture_bg_pid "$daemon_pid" "FM_HOME=$st"
   printf '%s' "$daemon_pid" > "$st/state/.supervise-daemon.lock/pid"
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$daemon_pid" > "$st/state/.supervise-daemon.lock/pid-identity" )
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '

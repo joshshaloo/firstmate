@@ -1059,6 +1059,23 @@ test_hook_claude_mode_wedged_owner_does_not_allow() {
   pass "fm-turnend-guard --claude: a wedged auto-arm owner does not allow a blind stop"
 }
 
+# An owner delivering a just-fired wake has no live watcher for up to one poll,
+# but a fresh beacon; the guard must agree with the auto-arm that it is live.
+test_hook_claude_mode_old_owner_with_fresh_beacon_allows() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-fresh-beacon-owner")
+  : > "$dir/state/task1.meta"
+  pid=$(start_fake_autoarm "$dir" false 'while :; do sleep 0.1; done')
+  hold_owner_lock "$dir" "$pid"
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" false); status=$?
+  stop_fake_autoarm "$pid"
+  expect_code 0 "$status" "--claude mode must accept an old owner whose watcher beacon is fresh"
+  [ -z "$out" ] || fail "--claude fresh-beacon owner allow produced output: $out"
+  pass "fm-turnend-guard --claude: an old owner with a fresh beacon still owns recovery"
+}
+
 test_hook_claude_mode_allows_on_fresh_rewake_epoch() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-epoch")
@@ -1299,6 +1316,7 @@ test_hook_claude_mode_reblocks_x_mode_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
 test_hook_claude_mode_recycled_owner_pid_does_not_allow
 test_hook_claude_mode_wedged_owner_does_not_allow
+test_hook_claude_mode_old_owner_with_fresh_beacon_allows
 test_hook_claude_mode_allows_on_fresh_rewake_epoch
 test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_block_budget_then_degraded_allow

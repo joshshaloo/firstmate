@@ -24,8 +24,9 @@
 #     lock (state/.claude-autoarm.lock) admits exactly one owner; every other
 #     concurrent firing exits 0 without translating, which keeps one event
 #     epoch on exactly one recovery turn.
-#   - Foreground arm: the owner runs bin/fm-watch-arm.sh in the FOREGROUND of
-#     this hook-owned process tree (never shell &); Claude owns the process
+#   - Tracked arm: the owner runs bin/fm-watch-arm.sh as a tracked background
+#     child of this hook-owned process tree, never detached; it polls and waits
+#     on that child and retires it at the lifetime bound. Claude owns the process
 #     group, so its timeout/session teardown kills arm and watcher together.
 #   - Translation: while supervision is still needed and AFK remains inactive,
 #     an actionable arm close (signal:/stale:/check:/heartbeat) prints one
@@ -59,7 +60,8 @@
 #   - Self-healing owner lock: a recorded owner counts only while it is a live
 #     process running this home's auto-arm script, so a recycled pid never
 #     wedges the single-flight lock; a verified owner that has held its claim
-#     past the grace window with no healthy watcher is retired and replaced.
+#     for the grace window while the watcher beacon has also been missing or
+#     stale that long is retired (signalled once) and replaced.
 #
 # The epoch ledger state/.claude-autoarm-epoch records the latest claim and
 # outcome so the synchronous Stop guard (bin/fm-turnend-guard.sh --claude) can
@@ -97,7 +99,6 @@ REARM_MAX=3
 
 OWNER_LOCK=$(fm_claude_autoarm_owner_lock "$STATE")
 EPOCH=$(fm_claude_autoarm_epoch_file "$STATE")
-WATCH="$SCRIPT_DIR/fm-watch.sh"
 
 # Consume the Stop payload once; its bytes key this event's claim record.
 PAYLOAD=$(cat 2>/dev/null || true)
@@ -179,15 +180,18 @@ cleanup() {
 
 UNAVAILABLE="owner-lock-unavailable"
 acquire_owner_lock() {
-  local i=0
+  local i=0 retired=
   while [ "$i" -lt 20 ]; do
     fm_lock_try_acquire "$OWNER_LOCK" fm_claude_autoarm_pid_is_owner && return 0
-    fm_claude_autoarm_owner_status "$STATE" "$WATCH" "$GRACE" "$FM_HOME"
+    fm_claude_autoarm_owner_status "$STATE" "$GRACE"
     case "$FM_AUTOARM_OWNER_STATE" in
       live) claim deferred; exit 0 ;;
       wedged)
         UNAVAILABLE="owner-wedged-and-unretirable"
-        kill -TERM "$FM_AUTOARM_OWNER_PID" 2>/dev/null || true
+        if [ "$FM_AUTOARM_OWNER_PID" != "$retired" ]; then
+          retired=$FM_AUTOARM_OWNER_PID
+          kill -TERM "$retired" 2>/dev/null || true
+        fi
         ;;
     esac
     # No verified holder: a concurrent acquisition or a retiring owner. Retry

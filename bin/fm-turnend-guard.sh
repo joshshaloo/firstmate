@@ -245,7 +245,7 @@ now_ms() {
 autoarm_owns_recovery() {
   local outcome age
   fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && return 0
-  fm_claude_autoarm_owner_status "$STATE" "$WATCH" "$GRACE" "$FM_HOME"
+  fm_claude_autoarm_owner_status "$STATE" "$GRACE"
   [ "$FM_AUTOARM_OWNER_STATE" = live ] && return 0
   outcome=$(sed -n 's/^.*outcome=\([a-z][a-z]*\) .*$/\1/p' "$(fm_claude_autoarm_epoch_file "$STATE")" 2>/dev/null || true)
   case "$outcome" in

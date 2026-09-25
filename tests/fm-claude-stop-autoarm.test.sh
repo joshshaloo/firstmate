@@ -482,6 +482,7 @@ test_wedged_owner_is_retired_and_replaced() {
   owner=$(start_fake_owner "$dir")
   hold_owner_lock "$dir" "$owner"
   touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   if kill -0 "$owner" 2>/dev/null; then
     kill -KILL "$owner" 2>/dev/null || true
@@ -491,7 +492,64 @@ test_wedged_owner_is_retired_and_replaced() {
   wait "$owner" 2>/dev/null || true
   expect_code 2 "$status" "a wedged owner must be replaced by a firing that arms"
   [ -e "$dir/state/arm-ran" ] || fail "the replacement firing did not arm"
-  pass "auto-arm: an owner holding its claim past grace with no healthy watcher is retired and replaced"
+  pass "auto-arm: an owner holding its claim past grace with a stale watcher beacon is retired and replaced"
+}
+
+# An owner delivering a just-fired wake has no live watcher for up to one poll,
+# but its watcher beat moments ago. Retiring it then lost the wake: the owner
+# died on TERM before its exit-2 rewake and the queued wake went unannounced.
+test_owner_with_fresh_beacon_is_deferred_to() {
+  local dir owner out status
+  dir=$(make_primary_dir "$TMP_ROOT/fresh-beacon-owner")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  owner=$(start_fake_owner "$dir")
+  hold_owner_lock "$dir" "$owner"
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  if ! kill -0 "$owner" 2>/dev/null; then
+    wait "$owner" 2>/dev/null || true
+    fail "an owner whose watcher beat within grace was retired"
+  fi
+  kill "$owner" 2>/dev/null || true
+  wait "$owner" 2>/dev/null || true
+  expect_code 0 "$status" "a firing must defer to an old owner whose watcher beacon is fresh"
+  [ ! -e "$dir/state/arm-ran" ] || fail "a deferring firing must not arm a second cycle"
+  assert_contains "$(claim_record "$dir")" "phase=deferred" "the deferring firing must tell the guard recovery is owned"
+  pass "auto-arm: an old owner with no live watcher but a fresh beacon is deferred to, not retired"
+}
+
+# A retiring owner's TERM handler runs cleanup that waits on its arm; a second
+# TERM interrupted that wait and cut the cleanup short.
+test_wedged_owner_is_signalled_once() {
+  local dir owner out status terms
+  dir=$(make_primary_dir "$TMP_ROOT/wedged-owner-once")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  terms="$dir/state/owner-terms"
+  TERMS_FILE="$terms" bash -c '
+    trap "echo term >> \"\$TERMS_FILE\"; retiring=1" TERM
+    retiring=0 left=10
+    while [ "$left" -gt 0 ]; do
+      sleep 0.1
+      [ "$retiring" -eq 0 ] || left=$((left - 1))
+    done
+  ' "$dir/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>&1 &
+  owner=$!
+  hold_owner_lock "$dir" "$owner"
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  if kill -0 "$owner" 2>/dev/null; then
+    kill -KILL "$owner" 2>/dev/null || true
+    wait "$owner" 2>/dev/null || true
+    fail "the wedged owner was not retired"
+  fi
+  wait "$owner" 2>/dev/null || true
+  expect_code 2 "$status" "a retiring owner must be replaced by a firing that arms"
+  [ "$(grep -c '^term$' "$terms" 2>/dev/null)" = 1 ] \
+    || fail "a wedged owner must be signalled exactly once, got $(grep -c '^term$' "$terms" 2>/dev/null || echo 0) TERMs"
+  pass "auto-arm: a wedged owner is signalled once and given time to retire"
 }
 
 # --- lifetime -----------------------------------------------------------------
@@ -775,6 +833,8 @@ test_inert_when_fleet_idle
 test_defers_to_verified_live_owner
 test_recycled_owner_pid_is_stolen
 test_wedged_owner_is_retired_and_replaced
+test_owner_with_fresh_beacon_is_deferred_to
+test_wedged_owner_is_signalled_once
 test_lifetime_bound_renews_before_harness_kill
 test_lifetime_bound_derives_from_tracked_hook_timeout
 test_harness_kill_releases_claim_and_arm

@@ -30,9 +30,12 @@
 #
 # Owner liveness is verified, never inferred from a bare pid: the pid must be
 # alive AND running this home's auto-arm script, so a recycled pid can never
-# impersonate an owner and wedge the single-flight lock. A verified owner that
-# has held its claim past the grace window while no healthy watcher exists is
-# wedged: it is not proof of recovery, and the next firing retires it.
+# impersonate an owner and wedge the single-flight lock. A verified owner is
+# wedged only on durable evidence: it has held its claim for the grace window
+# AND the watcher beacon (state/.last-watcher-beat) is missing or stale for the
+# grace window too. A momentarily absent watcher is never that evidence, since an
+# owner delivering a just-fired wake has no watcher but a fresh beacon. A wedged
+# owner is not proof of recovery, and the next firing retires it.
 # Sourced by scripts; no side effects on source beyond resolving paths.
 
 FM_CLAUDE_AUTOARM_SCRIPT=${FM_CLAUDE_AUTOARM_SCRIPT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-claude-stop-autoarm.sh"}
@@ -83,9 +86,10 @@ fm_claude_autoarm_pid_is_owner() {  # <pid>
 # Classify the current single-flight owner. Sets FM_AUTOARM_OWNER_STATE to
 # none (no verified live owner), live, or wedged, and FM_AUTOARM_OWNER_PID to
 # the verified owner pid. Call it directly, never in a command substitution.
-# Requires bin/fm-wake-lib.sh (fm_path_age, fm_watcher_healthy).
-fm_claude_autoarm_owner_status() {  # <state-dir> <watch-path> <grace> <home>
-  local state=$1 watch=$2 grace=$3 home=$4 lock pid age
+# Ambiguous evidence (an unreadable claim or beacon time) reads as live.
+# Requires bin/fm-wake-lib.sh (fm_path_mtime).
+fm_claude_autoarm_owner_status() {  # <state-dir> <grace>
+  local state=$1 grace=$2 lock pid now claimed_at beat beat_at
   FM_AUTOARM_OWNER_STATE=none
   FM_AUTOARM_OWNER_PID=
   lock=$(fm_claude_autoarm_owner_lock "$state")
@@ -94,11 +98,18 @@ fm_claude_autoarm_owner_status() {  # <state-dir> <watch-path> <grace> <home>
   # shellcheck disable=SC2034 # Read by callers after this returns.
   FM_AUTOARM_OWNER_PID=$pid
   FM_AUTOARM_OWNER_STATE=live
-  age=$(fm_path_age "$lock/pid")
-  if [ "$age" -ge "$grace" ] && ! fm_watcher_healthy "$state" "$watch" "$grace" "$home"; then
-    # shellcheck disable=SC2034 # Read by callers after this returns.
-    FM_AUTOARM_OWNER_STATE=wedged
+  now=$(date +%s)
+  claimed_at=$(fm_path_mtime "$lock/pid") || return 0
+  case "$now$grace$claimed_at" in ''|*[!0-9]*) return 0 ;; esac
+  [ $((now - claimed_at)) -ge "$grace" ] || return 0
+  beat="$state/.last-watcher-beat"
+  if [ -e "$beat" ] || [ -L "$beat" ]; then
+    beat_at=$(fm_path_mtime "$beat") || return 0
+    case "$beat_at" in ''|*[!0-9]*) return 0 ;; esac
+    [ $((now - beat_at)) -ge "$grace" ] || return 0
   fi
+  # shellcheck disable=SC2034 # Read by callers after this returns.
+  FM_AUTOARM_OWNER_STATE=wedged
   return 0
 }
 

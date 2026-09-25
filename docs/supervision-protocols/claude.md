@@ -25,6 +25,6 @@ When this session owns supervision and away mode is not active:
    A `PERSISTENT FAILURE` line in its banner means the auto-arm has repeatedly failed to own recovery: repair supervision, then report it to the captain as a blocker.
 9. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
 
-The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook foregrounds.
+The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook runs as a tracked background child, waits on, and retires at its lifetime bound.
 Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
 See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close failure contract and the Claude ownership model.

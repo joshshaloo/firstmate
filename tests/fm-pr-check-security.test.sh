@@ -2492,6 +2492,11 @@ test_bootstrap_migrates_before_other_mutations() {
 test_bootstrap_isolates_incomplete_poll_migration() {
   local dir state fakebin fleet_marker x_poll_marker rc
   dir=$(make_case bootstrap-migration-isolation)
+  # Give sync its own resolvable primary instead of letting Git discover a
+  # repository above TMPDIR. An absent secondmate home then proves the sweep
+  # ran, rather than relying on failure to resolve the primary branch.
+  fm_git_init_commit "$dir/root"
+  git -C "$dir/root" branch -M main
   state="$dir/home/state"
   fakebin="$dir/fakebin"
   fleet_marker="$dir/fleet-ran"
@@ -2508,6 +2513,7 @@ test_bootstrap_isolates_incomplete_poll_migration() {
   fm_write_meta "$state/secondmate-a.meta" \
     'window=firstmate:fm-secondmate-a' \
     'kind=secondmate' \
+    "home=$dir/missing-secondmate-home" \
     'harness=codex' \
     'backend=tmux'
   printf 'FMX_PAIRING_TOKEN=test-token\n' > "$dir/home/.env"
@@ -2547,7 +2553,7 @@ SH
     "$state/.pr-check-migration.log" "isolated bootstrap migration did not publish a durable repair diagnostic"
   assert_grep 'migration did not complete safely' "$dir/bootstrap.err" \
     "isolated bootstrap migration did not surface its incomplete status"
-  assert_grep 'SECONDMATE_SYNC: secondmate secondmate-a: skipped:' "$dir/bootstrap.out" \
+  assert_grep 'SECONDMATE_SYNC: secondmate secondmate-a: skipped: unsafe home: not a directory' "$dir/bootstrap.out" \
     "incomplete poll migration suppressed secondmate sync"
   assert_grep 'SECONDMATE_LIVENESS: secondmate secondmate-a: skipped: existing endpoint has ambiguous agent process' "$dir/bootstrap.out" \
     "incomplete poll migration suppressed persistent supervisor recovery"

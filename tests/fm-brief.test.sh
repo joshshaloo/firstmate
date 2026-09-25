@@ -239,6 +239,80 @@ test_worker_decision_attribution() {
   pass "fm-brief.sh: all worker variants preserve decision attribution"
 }
 
+# The public behavior here is the generated worker contract, not an IPC client.
+# Cover both sides of the recovery decision and compare every emitted variant;
+# do not pretend these assertions reproduce daemon scheduling or model behavior.
+# shellcheck disable=SC2016 # Backticks in expected instructions are literal.
+test_worker_same_run_timeout_recovery() {
+  local home variant brief rule baseline
+  home="$TMP_ROOT/timeout-recovery-home"
+  write_registry "$home"
+  baseline=''
+  for variant in no-mistakes direct-PR local-only scout; do
+    case "$variant" in
+      no-mistakes) set -- unknown-proj ;;
+      direct-PR) set -- direct-proj ;;
+      local-only) set -- local-proj ;;
+      scout) set -- unknown-proj --scout ;;
+    esac
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "timeout-$variant" "$@" >/dev/null 2>&1 \
+      || fail "$variant: scaffold failed"
+    brief="$home/data/timeout-$variant/brief.md"
+    rule=$(awk '/^7\./ { emit=1 } emit && /^#/ { exit } emit && NF { print }' "$brief")
+    [ -n "$rule" ] || fail "$variant: missing daemon recovery rule"
+    if [ -z "$baseline" ]; then
+      baseline=$rule
+    else
+      [ "$rule" = "$baseline" ] || fail "$variant: recovery contract differs from other worker briefs"
+    fi
+    [ "$(grep -c '^7\.' "$brief")" -eq 1 ] || fail "$variant: multiple recovery rules"
+
+    assert_grep 'reconnect and continue it without supervisor involvement' "$brief" \
+      "$variant: live recovery still requires a supervisor"
+    assert_grep 'Never stop, restart, abort, update, or replace the shared `no-mistakes` daemon' "$brief" \
+      "$variant: shared-daemon lifecycle boundary missing"
+    assert_grep 'only firstmate manages it' "$brief" "$variant: daemon ownership missing"
+    assert_grep 'Never abort or replace your run, or start a second run for the same work' "$brief" \
+      "$variant: recovery could discard work or create a duplicate run"
+    assert_grep 'query `no-mistakes axi status --run <id>`' "$brief" "$variant: must inspect the same run"
+    assert_grep 'verify the branch and submitted/current pipeline head match your work' "$brief" \
+      "$variant: discovery could adopt an unrelated run"
+    assert_grep 'Before any reattachment or gate response, check the read-only `no-mistakes axi` home view' "$brief" \
+      "$variant: stale active steps could authorize driving a stopped daemon"
+    assert_grep 'report `blocked: {daemon state and run ID}` and stop, even if stored steps still say running' "$brief" \
+      "$variant: a dead daemon must stop recovery despite stored active steps"
+    assert_grep 'never use a drive command to bring the daemon back' "$brief" \
+      "$variant: drive command could be used as implicit daemon recovery"
+    assert_grep 'still active (`running` or `fixing`), or has advanced to another unfinished step' "$brief" \
+      "$variant: live or advancing run must reconnect rather than block"
+    assert_grep 'use `no-mistakes axi run` with NO `--intent` and NO `--yes`' "$brief" \
+      "$variant: reattachment could create a fresh run or bypass decisions"
+    assert_grep 'if the command asks for intent, re-read the original run' "$brief" \
+      "$variant: completion race could start a second run"
+    assert_grep 'read the CURRENT gate' "$brief" "$variant: parked run is not handled"
+    assert_grep 'never blindly replay a timed-out `axi respond`' "$brief" \
+      "$variant: lost response could cause a duplicate or wrong-gate decision"
+    assert_grep 'An ask-user finding still goes to firstmate under rule 6' "$brief" \
+      "$variant: timeout recovery expanded decision authority"
+    assert_grep 'If it reports `checks-passed` or `passed`, follow the normal successful definition of done' "$brief" \
+      "$variant: successful run misclassified as daemon failure"
+    assert_grep 'if genuinely failed or cancelled, report `failed: {run ID and outcome}` and stop' "$brief" \
+      "$variant: terminal failure must stop and report"
+    assert_grep 'if confirmed absent, report `blocked: {run ID or branch and evidence of absence}` and stop' "$brief" \
+      "$variant: absent run must stop and report"
+    assert_grep 'Advancement does not override a terminal outcome' "$brief" \
+      "$variant: historical progress could hide terminal failure"
+    assert_grep "instead of rule 5's repeated-obstacle stop" "$brief" "$variant: old retry limit still wins"
+    assert_grep 'If the status read itself times out, check the same read-only home view: if it reports the daemon stopped or cannot establish its liveness, report `blocked: {daemon state and run ID}` and stop' "$brief" \
+      "$variant: a hung daemon could leave status-read recovery looping without a liveness verdict"
+    assert_grep 'otherwise wait briefly and re-read that same run rather than declaring it dead' "$brief" \
+      "$variant: a second read timeout is still treated as fatal"
+    assert_grep 'current state unknown' "$brief" "$variant: unreadable state could be mistaken for dead"
+    assert_no_grep 'On ANY no-mistakes' "$brief" "$variant: blanket daemon-error stop survived"
+  done
+  pass 'fm-brief.sh: all worker variants share state-driven timeout recovery and explicit daemon safety'
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -709,6 +783,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_worker_decision_attribution
+test_worker_same_run_timeout_recovery
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording

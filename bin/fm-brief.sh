@@ -268,6 +268,27 @@ Apply this rule everywhere, including status lines, reports, commit messages, va
 EOF
 DECISION_ATTRIBUTION=${DECISION_ATTRIBUTION%$'\n'}
 
+# Single owner of worker daemon safety and same-run timeout recovery, emitted
+# unchanged for ship (every delivery mode) and scout briefs.
+IFS= read -r -d '' NO_MISTAKES_RULE <<'EOF' || true
+7. Never stop, restart, abort, update, or replace the shared `no-mistakes` daemon: it serves every lane/home, and disrupting it kills other lanes' in-flight runs; only firstmate manages it.
+   Never abort or replace your run, or start a second run for the same work, to recover a connection.
+   A socket read `i/o timeout` loses the connection, not necessarily the work: the run can advance while disconnected.
+   Use the run-state recovery below instead of rule 5's repeated-obstacle stop; a live run has no blanket retry-count cutoff.
+   - Keep the run ID when first observed; after a read timeout, query `no-mistakes axi status --run <id>` from the original task worktree and inspect that run's steps.
+     If the ID was not returned before the timeout, use `no-mistakes axi status` to discover it, but verify the branch and submitted/current pipeline head match your work before adopting it; a different branch's most recent run is not yours.
+   - Before any reattachment or gate response, check the read-only `no-mistakes axi` home view: if it reports the daemon stopped or cannot establish its liveness, report `blocked: {daemon state and run ID}` and stop, even if stored steps still say running; never use a drive command to bring the daemon back.
+   - If that same run is still active (`running` or `fixing`), or has advanced to another unfinished step, reconnect and continue it without supervisor involvement: use `no-mistakes axi run` with NO `--intent` and NO `--yes` from that same worktree with its matching HEAD.
+     Omitting `--intent` prevents a fresh run if the original finishes between status and reattachment; if the command asks for intent, re-read the original run's status, never supply intent to recover.
+   - If the run is parked at approval or fix-review, read the CURRENT gate and follow its returned help and the existing decision authority; never blindly replay a timed-out `axi respond`, since its decision may already have taken effect.
+     An ask-user finding still goes to firstmate under rule 6.
+   - If it reports `checks-passed` or `passed`, follow the normal successful definition of done; if genuinely failed or cancelled, report `failed: {run ID and outcome}` and stop; if confirmed absent, report `blocked: {run ID or branch and evidence of absence}` and stop.
+     Advancement does not override a terminal outcome, and a timeout alone never proves absence or failure.
+   - If the status read itself times out, wait briefly and re-read that same run rather than declaring it dead.
+     For a different daemon/query error or an identity mismatch that prevents safe reattachment, report `blocked: {exact error and last known run ID/step; current state unknown}` and stop without touching the daemon or starting another run.
+EOF
+NO_MISTAKES_RULE=${NO_MISTAKES_RULE%$'\n'}
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -304,9 +325,7 @@ $DECISION_ATTRIBUTION
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
    When firstmate replies or a blocker clears and you resume, append \`resolved [key=<slug>]: {how it was decided or unblocked}\` reusing the key you opened it with - or a bare \`resolved: {how it was decided or unblocked}\` when you opened it without one - so the decision or blocker is durably closed and does not keep resurfacing.
    The \`[key=<slug>]\` token must sit BEFORE the colon; written anywhere after it the line is rejected outright, not folded under any key.
-7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
-   every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$NO_MISTAKES_RULE
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -425,9 +444,7 @@ $RULE1
    append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
    When firstmate replies or a blocker clears and you resume, append \`resolved [key=<slug>]: {how it was decided or unblocked}\` reusing the key you opened it with - or a bare \`resolved: {how it was decided or unblocked}\` when you opened it without one - so the decision or blocker is durably closed and does not keep resurfacing.
    The \`[key=<slug>]\` token must sit BEFORE the colon; written anywhere after it the line is rejected outright, not folded under any key.
-7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
-   every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
-   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$NO_MISTAKES_RULE
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

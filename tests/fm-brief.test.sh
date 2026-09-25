@@ -214,6 +214,31 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+# Assert the generated worker instructions, not the implementation source.
+test_worker_decision_attribution() {
+  local home variant brief
+  home="$TMP_ROOT/decision-attribution-home"
+  write_registry "$home"
+  for variant in no-mistakes direct-PR local-only scout; do
+    case "$variant" in
+      no-mistakes) set -- unknown-proj ;;
+      direct-PR) set -- direct-proj ;;
+      local-only) set -- local-proj ;;
+      scout) set -- unknown-proj --scout ;;
+    esac
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "attribution-$variant" "$@" >/dev/null 2>&1 \
+      || fail "$variant: scaffold failed"
+    brief="$home/data/attribution-$variant/brief.md"
+    assert_grep "An instruction from firstmate is firstmate's decision unless the instruction explicitly says otherwise in words." "$brief" \
+      "$variant: missing default deciding authority"
+    assert_grep "Never attribute a decision to the captain unless explicitly told that the captain decided it." "$brief" \
+      "$variant: missing captain-attribution boundary"
+    assert_grep "Apply this rule everywhere, including status lines, reports, commit messages, validation intent text, and PR bodies." "$brief" \
+      "$variant: missing durable-output attribution coverage"
+  done
+  pass "fm-brief.sh: all worker variants preserve decision attribution"
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -683,6 +708,7 @@ test_scout_and_secondmate_scaffold() {
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
+test_worker_decision_attribution
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording

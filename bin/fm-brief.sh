@@ -47,6 +47,10 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Ship and scout scaffolds carry one shared decision-attribution section: an
+# instruction from firstmate is firstmate's decision unless it says otherwise,
+# and no worker output credits the captain without explicit word that the
+# captain decided.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -256,6 +260,14 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+IFS= read -r -d '' DECISION_ATTRIBUTION <<'EOF' || true
+# Decision attribution
+An instruction from firstmate is firstmate's decision unless the instruction explicitly says otherwise in words.
+Never attribute a decision to the captain unless explicitly told that the captain decided it.
+Apply this rule everywhere, including status lines, reports, commit messages, validation intent text, and PR bodies.
+EOF
+DECISION_ATTRIBUTION=${DECISION_ATTRIBUTION%$'\n'}
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -270,6 +282,8 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
+
+$DECISION_ATTRIBUTION
 
 # Rules
 1. Never push to any remote and never open a PR.
@@ -386,6 +400,8 @@ If \`pwd -P\` equals anything else, STOP - do not branch or commit here - append
 Note after deciding: \`git rev-parse --show-toplevel\` should match \`pwd -P\`, while \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect linked-worktree internals but do not decide isolation.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+
+$DECISION_ATTRIBUTION
 
 # Rules
 $RULE1

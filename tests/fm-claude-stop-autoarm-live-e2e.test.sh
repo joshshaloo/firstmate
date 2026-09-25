@@ -18,12 +18,8 @@ if [ "${FM_CLAUDE_LIVE_E2E:-0}" != 1 ]; then
   exit 0
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-fail() {
-  printf 'not ok - %s\n' "$1" >&2
-  exit 1
-}
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 command -v claude >/dev/null 2>&1 || fail "claude not found"
 
@@ -165,6 +161,7 @@ printf 'project=fixture\n' > "$LIVE_OWNER_HOME/state/task.meta"
 # The owner lives until this control ends it, outlasting the slow-host stall.
 "$FAKE_CLAUDE" -c 'while :; do sleep 0.2; done' >/dev/null 2>&1 &
 LIVE_OWNER_PID=$!
+fm_test_track_bg_pid "$LIVE_OWNER_PID"
 printf '%s\n' "$LIVE_OWNER_PID" > "$LIVE_OWNER_HOME/state/.lock"
 LIVE_OWNER_RC=0
 printf '%s\n' '{"session_id":"live-owner-control"}' \

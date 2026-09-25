@@ -15,6 +15,13 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_test_tmproot TMP_ROOT fm-claude-stop-autoarm
+# The quiet arm fixture and the stand-in owners loop forever, and most of them
+# are forked by the hook under test or returned through a command substitution,
+# so no pid this shell holds can reach them. Marking the fixture root makes
+# every descendant reapable and provable by its own environment.
+FM_CLAUDE_AUTOARM_FIXTURE_ROOT="$TMP_ROOT"
+export FM_CLAUDE_AUTOARM_FIXTURE_ROOT
+fm_test_reap_env_at_exit "FM_CLAUDE_AUTOARM_FIXTURE_ROOT=$TMP_ROOT" "claude stop auto-arm fixtures"
 fm_git_identity fmtest fmtest@example.invalid
 
 FAKEBIN=$(fm_fakebin "$TMP_ROOT/fakebin")
@@ -274,10 +281,12 @@ claim_record() {
 }
 
 # A stand-in auto-arm process: argv names this home's hook script, so owner
-# verification accepts it. Prints its pid.
+# verification accepts it. Sets FAKE_OWNER_PID in the calling shell, so the
+# owner is tracked there rather than in a command substitution's subshell.
 start_fake_owner() {
   bash -c 'while :; do sleep 0.1; done' "$1/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>&1 &
-  printf '%s\n' "$!"
+  FAKE_OWNER_PID=$!
+  fm_test_track_bg_pid "$FAKE_OWNER_PID"
 }
 
 hold_owner_lock() {  # <dir> <pid>
@@ -349,6 +358,7 @@ test_inert_when_lock_held_by_other_harness() {
   # killing it from orphaning a long sleep that holds the suite's output open.
   "$FAKE_CLAUDE" -c 'while :; do sleep 0.2; done' >/dev/null 2>&1 &
   other=$!
+  fm_test_track_bg_pid "$other"
   printf '%s\n' "$other" > "$dir/state/.lock"
   out=$(printf '%s\n' '{"session_id":"s"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
   owner_after=$(cat "$dir/state/.lock")
@@ -445,7 +455,7 @@ test_defers_to_verified_live_owner() {
   dir=$(make_primary_dir "$TMP_ROOT/defer-live-owner")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
-  owner=$(start_fake_owner "$dir")
+  start_fake_owner "$dir"; owner=$FAKE_OWNER_PID
   hold_owner_lock "$dir" "$owner"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   kill "$owner" 2>/dev/null || true
@@ -479,7 +489,7 @@ test_wedged_owner_is_retired_and_replaced() {
   dir=$(make_primary_dir "$TMP_ROOT/wedged-owner")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
-  owner=$(start_fake_owner "$dir")
+  start_fake_owner "$dir"; owner=$FAKE_OWNER_PID
   hold_owner_lock "$dir" "$owner"
   touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
@@ -503,7 +513,7 @@ test_owner_with_fresh_beacon_is_deferred_to() {
   dir=$(make_primary_dir "$TMP_ROOT/fresh-beacon-owner")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
-  owner=$(start_fake_owner "$dir")
+  start_fake_owner "$dir"; owner=$FAKE_OWNER_PID
   hold_owner_lock "$dir" "$owner"
   touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
   touch "$dir/state/.last-watcher-beat"

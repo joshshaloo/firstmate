@@ -17,6 +17,12 @@ set -u
 . "$ROOT/bin/fm-supervision-lib.sh"
 
 fm_test_tmproot TMP_ROOT fm-turnend-guard
+# The stand-in auto-arms loop forever and return their pids through a command
+# substitution, so no pid this shell holds can reach them. Marking the fixture
+# root makes every descendant reapable and provable by its own environment.
+FM_TURNEND_GUARD_FIXTURE_ROOT="$TMP_ROOT"
+export FM_TURNEND_GUARD_FIXTURE_ROOT
+fm_test_reap_env_at_exit "FM_TURNEND_GUARD_FIXTURE_ROOT=$TMP_ROOT" "turn-end guard auto-arm fixtures"
 fm_git_identity fmtest fmtest@example.invalid
 
 REQUIRED_REASON='repair missing watcher supervision with bin/fm-watch-arm.sh as its own Claude Code background task'

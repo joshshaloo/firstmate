@@ -284,7 +284,7 @@ IFS= read -r -d '' NO_MISTAKES_RULE <<'EOF' || true
      An ask-user finding still goes to firstmate under rule 6.
    - If it reports `checks-passed` or `passed`, follow the normal successful definition of done; if genuinely failed or cancelled, report `failed: {run ID and outcome}` and stop; if confirmed absent, report `blocked: {run ID or branch and evidence of absence}` and stop.
      Advancement does not override a terminal outcome, and a timeout alone never proves absence or failure.
-   - If the status read itself times out, wait briefly and re-read that same run rather than declaring it dead.
+   - If the status read itself times out, check the same read-only home view: if it reports the daemon stopped or cannot establish its liveness, report `blocked: {daemon state and run ID}` and stop; otherwise wait briefly and re-read that same run rather than declaring it dead.
      For a different daemon/query error or an identity mismatch that prevents safe reattachment, report `blocked: {exact error and last known run ID/step; current state unknown}` and stop without touching the daemon or starting another run.
 EOF
 NO_MISTAKES_RULE=${NO_MISTAKES_RULE%$'\n'}

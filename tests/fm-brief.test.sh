@@ -303,7 +303,9 @@ test_worker_same_run_timeout_recovery() {
     assert_grep 'Advancement does not override a terminal outcome' "$brief" \
       "$variant: historical progress could hide terminal failure"
     assert_grep "instead of rule 5's repeated-obstacle stop" "$brief" "$variant: old retry limit still wins"
-    assert_grep 'If the status read itself times out, wait briefly and re-read that same run' "$brief" \
+    assert_grep 'If the status read itself times out, check the same read-only home view: if it reports the daemon stopped or cannot establish its liveness, report `blocked: {daemon state and run ID}` and stop' "$brief" \
+      "$variant: a hung daemon could leave status-read recovery looping without a liveness verdict"
+    assert_grep 'otherwise wait briefly and re-read that same run rather than declaring it dead' "$brief" \
       "$variant: a second read timeout is still treated as fatal"
     assert_grep 'current state unknown' "$brief" "$variant: unreadable state could be mistaken for dead"
     assert_no_grep 'On ANY no-mistakes' "$brief" "$variant: blanket daemon-error stop survived"

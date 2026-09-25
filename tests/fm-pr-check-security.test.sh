@@ -3466,7 +3466,10 @@ test_persistent_secondmate_retirement_is_poll_only() {
   FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] || fail "persistent secondmate merged watcher failed: $(cat "$dir/watch.err")"
+  # Several watcher exits are deliberately silent on stderr (signal traps, check
+  # launch refusal), so a failure must name its exit code, wake output, and the
+  # watcher's own triage trail to identify which path fired.
+  [ "$rc" -eq 0 ] || fail "persistent secondmate merged watcher failed: rc=$rc stderr=[$(cat "$dir/watch.err")] stdout=[$(cat "$dir/watch.out")] triage=[$(tail -n 5 "$state/.watch-triage.log" 2>/dev/null)]"
   assert_poll_absent "$state" domain
   [ "$(shasum -a 256 "$state/domain.meta")" = "$meta_before" ] || fail "retirement changed secondmate metadata"
   [ "$(shasum -a 256 "$state/domain.status")" = "$status_before" ] || fail "retirement changed secondmate status"

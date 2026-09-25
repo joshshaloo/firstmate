@@ -99,11 +99,11 @@ tests/fm-crew-state.test.sh
 
 ## Turn-end guard
 
-The direct and passive mechanisms were validated across all five harnesses on 2026-07-08 through 2026-07-12, with Claude's replacement Stop-owned path revalidated on 2026-07-24.
+The direct and passive mechanisms were validated across all five harnesses on 2026-07-08 through 2026-07-12, with Claude's replacement Stop-owned path revalidated on 2026-07-24 and its guard handshake on 2026-09-25.
 
 | Harness | Version verified | Mechanism | Observed result |
 | --- | --- | --- | --- |
-| Claude | 2.1.219 | Cooperative blocking `Stop` guard plus `asyncRewake` auto-arm | A fresh unsupervised session ran session start first, reclaimed a stale dead-owner lock, completed two tokenless rewake cycles with no model arm command or guard continuation, and left a competing live owner unchanged. |
+| Claude | 2.1.281 | Cooperative blocking `Stop` guard plus `asyncRewake` auto-arm | A fresh unsupervised session ran session start first, reclaimed a stale dead-owner lock, completed two tokenless rewake cycles on a slowed auto-arm with no model arm command, guard continuation, or false blind-turn block, and left a competing live owner unchanged with a declared reason. |
 | Codex | 0.142.1 | Blocking `Stop` hook | Hook process root stayed anchored to the trusted checkout and one continuation ran. |
 | OpenCode | 1.17.6 | Passive `session.idle` callback | Throwing could not block, while `promptAsync` scheduled one TUI follow-up; headless remained fail-open. |
 | Pi | 0.80.5 | Passive `agent_settled` callback | Exactly one guard follow-up ran for an unhealthy cycle, with no recursion across tool turns. |
@@ -144,6 +144,37 @@ Observed output:
 ```text
 2.1.219 (Claude Code)
 ok - Claude 2.1.219 (Claude Code) live E2E reclaimed a stale session lock through session start, completed two tokenless Stop-owned rewake cycles, and preserved the competing-live-owner boundary
+```
+
+The Stop-hook interaction the `--claude` handshake depends on was measured on 2026-09-25 against Claude Code 2.1.281 (installed) and 2.1.240 (the version current on 2026-08-23, installed into a scratch npm prefix), in interactive tmux sessions and `claude -p`.
+A scratch project registered one synchronous `Stop` hook that slept one second and exited 2 on its first firing, and one `asyncRewake: true` hook that logged its start and finish.
+
+```text
+autoarm start 1790372338.775078340 pid=1559949
+guard start 1790372338.771530749 active=false
+guard BLOCK
+autoarm end 1790372340.778868042
+```
+
+Both versions started the two hooks within a millisecond of each other, and the async hook ran to completion even though its sibling blocked the stop, so blocking does not suppress a sibling hook and hook order inside the group is irrelevant.
+Both hooks of one event received byte-identical payloads (matching `cksum`), which carry `session_id`, `prompt_id`, `stop_hook_active`, and `last_assistant_message`, so a payload-derived key identifies one Stop event across its hooks.
+An async hook that exits 2 rewoke the idle session on every firing, and each later firing resolved the same outermost session pid through `fm_harness_ancestry_pid`.
+A synchronous `Stop` hook with no `timeout` field ran for 75 seconds to completion, so the default hook timeout exceeds the guard's bounded verdict wait.
+
+The same day, a scratch Firstmate home ran the tracked hook registration under Claude Code 2.1.281 with the auto-arm stalled three seconds, the shape of the heavily loaded host recorded in a primary session where each false blind-turn block coincided with a slow Stop (1.3 to 59.7 seconds) and the auto-arm starting a watcher in the same second.
+The pre-fix scripts printed `TURN WOULD END BLIND` with `The Stop-owned auto-arm did not claim this home either` while the auto-arm then claimed and armed, and the model reached for a duplicate manual arm.
+The fixed scripts ended the same turn with no block, a `phase=claimed` record for that event, and a live watcher.
+With `FM_CLAUDE_AUTOARM_RENEW_AFTER=20`, the owner retired its quiet cycle at the bound, logged `reason=arm-interrupted` for it, and rewoke the session with `firstmate watcher renewal`; the model drained and ended the turn, and the next Stop's firing claimed a fresh cycle.
+With another live harness pid in `state/.lock`, the block named `another live harness session holds this home's session lock`.
+
+The opt-in live regression covers the slow-host case against the installed harness:
+
+```sh
+FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh
+```
+
+```text
+ok - Claude 2.1.281 (Claude Code) live E2E reclaimed a stale session lock through session start, completed two tokenless Stop-owned rewake cycles on a slow host without a false blind-turn block, and preserved the competing-live-owner boundary with a declared reason
 ```
 
 Current entry points:

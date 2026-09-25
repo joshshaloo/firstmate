@@ -6,7 +6,8 @@
 # session lock can run fm-session-start.sh first; session start reclaims the
 # dead owner; at least two tokenless auto-arm and rewake cycles then complete
 # with zero model-issued arm commands; and the cooperative guard consumes no
-# forced continuation while the hook's launch is healthy.
+# forced continuation while the hook's launch is healthy, even when the host is
+# slow enough that the auto-arm claims seconds after the guard starts.
 # The project and FM_HOME are isolated; Claude keeps using its existing managed
 # authentication. No live fleet home, worktree, or session is touched.
 # shellcheck disable=SC2016 # the model, not this test shell, reads the prompt text
@@ -17,12 +18,8 @@ if [ "${FM_CLAUDE_LIVE_E2E:-0}" != 1 ]; then
   exit 0
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-fail() {
-  printf 'not ok - %s\n' "$1" >&2
-  exit 1
-}
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 command -v claude >/dev/null 2>&1 || fail "claude not found"
 
@@ -70,6 +67,17 @@ printf '%s\n' "$P" | jq -r '.tool_input.command // "unknown"' >> "$FM_HOME/state
 exit 0
 SH
 chmod +x "$PROJECT/bin/tool-logger.sh"
+
+# Loaded-host stall: delay the auto-arm's session-identity step, which the
+# synchronous guard does not share, so the auto-arm claims seconds after the
+# guard starts - the shape that made the guard report a working auto-arm as
+# missing. The guard must wait for this event's verdict instead.
+cat >> "$PROJECT/bin/fm-session-lock-lib.sh" <<'SH'
+
+# Live E2E lab fixture only: a slow host.
+eval "$(declare -f fm_session_lock_owned_by_self | sed '1s/fm_session_lock_owned_by_self/fm_live_e2e_owned_by_self/')"
+fm_session_lock_owned_by_self() { sleep 3; fm_live_e2e_owned_by_self "$@"; }
+SH
 
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" "$HOME_DIR/data"
 printf 'project=fixture\nwindow=fixture\nbackend=tmux\n' > "$HOME_DIR/state/task.meta"
@@ -138,6 +146,9 @@ fi
 [ "$(sed -n 's/^.*outcome=\([a-z][a-z]*\) .*$/\1/p' "$HOME_DIR/state/.claude-autoarm-epoch" 2>/dev/null)" = rewake ] \
   || fail "auto-arm epoch ledger must record the rewake outcome"
 [ ! -e "$HOME_DIR/state/.claude-autoarm.lock" ] || fail "auto-arm owner lock was left behind"
+grep -qs 'phase=claimed' "$HOME_DIR"/state/.claude-autoarm-claims/* \
+  || fail "the auto-arm never published a claim for the guard's handshake"
+[ ! -e "$HOME_DIR/state/.claude-autoarm-streak" ] || fail "a healthy slow auto-arm was counted as a failure streak"
 
 # Live-owner negative control: a separate supported-harness process owns a
 # second isolated home while another Stop hook fires from the same primary
@@ -147,8 +158,10 @@ FAKE_CLAUDE="$LAB/claude"
 ln -s /bin/bash "$FAKE_CLAUDE"
 mkdir -p "$LIVE_OWNER_HOME/state" "$LIVE_OWNER_HOME/config"
 printf 'project=fixture\n' > "$LIVE_OWNER_HOME/state/task.meta"
-"$FAKE_CLAUDE" -c 'sleep 3; :' &
+# The owner lives until this control ends it, outlasting the slow-host stall.
+"$FAKE_CLAUDE" -c 'while :; do sleep 0.2; done' >/dev/null 2>&1 &
 LIVE_OWNER_PID=$!
+fm_test_track_bg_pid "$LIVE_OWNER_PID"
 printf '%s\n' "$LIVE_OWNER_PID" > "$LIVE_OWNER_HOME/state/.lock"
 LIVE_OWNER_RC=0
 printf '%s\n' '{"session_id":"live-owner-control"}' \
@@ -159,6 +172,9 @@ printf '%s\n' '{"session_id":"live-owner-control"}' \
 [ ! -e "$LIVE_OWNER_HOME/state/arm-ran" ] || fail "competing Stop hook armed while another live session owned the home"
 [ ! -e "$LIVE_OWNER_HOME/state/.claude-autoarm-epoch" ] || fail "competing Stop hook wrote an epoch while another live session owned the home"
 [ ! -s "$LAB/live-owner.out" ] && [ ! -s "$LAB/live-owner.err" ] || fail "competing Stop hook produced a rewake while another live session owned the home"
-wait "$LIVE_OWNER_PID"
+grep -qs 'reason=session-lock-held-by-another-live-session' "$LIVE_OWNER_HOME"/state/.claude-autoarm-claims/* \
+  || fail "competing Stop hook did not tell the guard why it declined"
+kill "$LIVE_OWNER_PID" 2>/dev/null || true
+wait "$LIVE_OWNER_PID" 2>/dev/null || true
 
-printf 'ok - Claude %s live E2E reclaimed a stale session lock through session start, completed two tokenless Stop-owned rewake cycles, and preserved the competing-live-owner boundary\n' "$CLAUDE_VERSION"
+printf 'ok - Claude %s live E2E reclaimed a stale session lock through session start, completed two tokenless Stop-owned rewake cycles on a slow host without a false blind-turn block, and preserved the competing-live-owner boundary with a declared reason\n' "$CLAUDE_VERSION"

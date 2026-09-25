@@ -17,6 +17,12 @@ set -u
 . "$ROOT/bin/fm-supervision-lib.sh"
 
 fm_test_tmproot TMP_ROOT fm-turnend-guard
+# The stand-in auto-arms loop forever and return their pids through a command
+# substitution, so no pid this shell holds can reach them. Marking the fixture
+# root makes every descendant reapable and provable by its own environment.
+FM_TURNEND_GUARD_FIXTURE_ROOT="$TMP_ROOT"
+export FM_TURNEND_GUARD_FIXTURE_ROOT
+fm_test_reap_env_at_exit "FM_TURNEND_GUARD_FIXTURE_ROOT=$TMP_ROOT" "turn-end guard auto-arm fixtures"
 fm_git_identity fmtest fmtest@example.invalid
 
 REQUIRED_REASON='repair missing watcher supervision with bin/fm-watch-arm.sh as its own Claude Code background task'
@@ -107,6 +113,9 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-claude-autoarm-claim-lib.sh" "$dir/bin/fm-claude-autoarm-claim-lib.sh"
+  # Present so auto-arm owner verification can resolve this home's hook script.
+  cp "$ROOT/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-claude-stop-autoarm.sh"
   mkdir -p "$dir/docs"
   cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
   chmod +x "$dir/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-supervision-instructions.sh" "$dir/bin/fm-harness.sh"
@@ -950,10 +959,40 @@ EOF
 # cooperates with the Stop-owned auto-arm instead: allow on health, live owner
 # claim, or a fresh rewake epoch; bounded re-block only when none materialize.
 
+claude_payload() {
+  printf '{"stop_hook_active":%s,"session_id":"sess-claude-mode"}' "$1"
+}
+
 run_hook_claude() {
   local dir=$1 stop_active=$2 home
   home=$(cd "$dir" && pwd)
-  printf '{"stop_hook_active":%s,"session_id":"sess-claude-mode"}' "$stop_active" | CLAUDECODE=1 FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" --claude 2>&1
+  claude_payload "$stop_active" | CLAUDECODE=1 FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" --claude 2>&1
+}
+
+# Start a stand-in for the Stop auto-arm: a background process whose argv names
+# this home's hook script (so owner verification accepts it) and which runs
+# <body> with the claim-lib API and this event's key in scope. Prints its pid.
+# $1 = fixture dir, $2 = stop_hook_active of the payload it answers, $3 = body.
+start_fake_autoarm() {
+  local dir=$1 stop_active=$2 body=$3 home
+  home=$(cd "$dir" && pwd)
+  FAKE_STATE="$home/state" FAKE_PAYLOAD="$(claude_payload "$stop_active")" FAKE_LIB="$home/bin/fm-claude-autoarm-claim-lib.sh" \
+    bash -c '
+      . "$FAKE_LIB"
+      KEY=$(fm_claude_stop_event_key "$FAKE_PAYLOAD")
+      publish() { fm_claude_claim_publish "$FAKE_STATE" "$KEY" "$@"; }
+      '"$body" "$home/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>&1 &
+  printf '%s\n' "$!"
+}
+
+stop_fake_autoarm() {
+  kill "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+
+hold_owner_lock() {  # <dir> <pid>
+  mkdir -p "$1/state/.claude-autoarm.lock"
+  printf '%s\n' "$2" > "$1/state/.claude-autoarm.lock/pid"
 }
 
 # The 2026-07-21 incident regression: after a spent forced continuation the old
@@ -985,16 +1024,62 @@ test_hook_claude_mode_allows_when_autoarm_owner_alive() {
   local dir pid out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-owner")
   : > "$dir/state/task1.meta"
-  sleep 60 &
-  pid=$!
-  mkdir -p "$dir/state/.claude-autoarm.lock"
-  printf '%s\n' "$pid" > "$dir/state/.claude-autoarm.lock/pid"
+  pid=$(start_fake_autoarm "$dir" false 'while :; do sleep 0.1; done')
+  hold_owner_lock "$dir" "$pid"
   out=$(run_hook_claude "$dir" false); status=$?
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "--claude mode must allow when the auto-arm owner process is alive"
+  stop_fake_autoarm "$pid"
+  expect_code 0 "$status" "--claude mode must allow when a verified auto-arm owner process is alive"
   [ -z "$out" ] || fail "--claude owner-claimed allow produced output: $out"
   pass "fm-turnend-guard --claude: allows the stop when the Stop auto-arm owner holds this home"
+}
+
+# A recycled pid must never impersonate an owner: before verification, any live
+# process recorded in the owner lock allowed every stop while nothing armed.
+test_hook_claude_mode_recycled_owner_pid_does_not_allow() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-recycled-owner")
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  hold_owner_lock "$dir" "$pid"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "--claude mode must not accept a live non-auto-arm pid as the owner"
+  assert_contains "$out" "never reported for this turn end" "a recycled owner pid must fall through to the missing-auto-arm reason"
+  pass "fm-turnend-guard --claude: a recycled pid in the owner lock is not proof of recovery"
+}
+
+# A verified owner that has held its claim past the grace window while no
+# healthy watcher exists is wedged, not recovering.
+test_hook_claude_mode_wedged_owner_does_not_allow() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-wedged-owner")
+  : > "$dir/state/task1.meta"
+  pid=$(start_fake_autoarm "$dir" false 'while :; do sleep 0.1; done')
+  hold_owner_lock "$dir" "$pid"
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" false); status=$?
+  stop_fake_autoarm "$pid"
+  expect_code 2 "$status" "--claude mode must not accept a wedged owner as recovery"
+  pass "fm-turnend-guard --claude: a wedged auto-arm owner does not allow a blind stop"
+}
+
+# An owner delivering a just-fired wake has no live watcher for up to one poll,
+# but a fresh beacon; the guard must agree with the auto-arm that it is live.
+test_hook_claude_mode_old_owner_with_fresh_beacon_allows() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-fresh-beacon-owner")
+  : > "$dir/state/task1.meta"
+  pid=$(start_fake_autoarm "$dir" false 'while :; do sleep 0.1; done')
+  hold_owner_lock "$dir" "$pid"
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" false); status=$?
+  stop_fake_autoarm "$pid"
+  expect_code 0 "$status" "--claude mode must accept an old owner whose watcher beacon is fresh"
+  [ -z "$out" ] || fail "--claude fresh-beacon owner allow produced output: $out"
+  pass "fm-turnend-guard --claude: an old owner with a fresh beacon still owns recovery"
 }
 
 test_hook_claude_mode_allows_on_fresh_rewake_epoch() {
@@ -1005,7 +1090,10 @@ test_hook_claude_mode_allows_on_fresh_rewake_epoch() {
   out=$(run_hook_claude "$dir" true); status=$?
   expect_code 0 "$status" "--claude mode must allow the stop whose rewake the auto-arm already owns"
   [ -z "$out" ] || fail "--claude rewake-epoch allow produced output: $out"
-  pass "fm-turnend-guard --claude: fresh rewake epoch prevents a duplicate continuation for the same event"
+  printf 'epoch=4 owner_pid=999 outcome=renewal updated_at=%s\n' "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
+  out=$(run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "--claude mode must allow the stop whose lifetime renewal rewake is already pending"
+  pass "fm-turnend-guard --claude: fresh rewake or renewal epoch prevents a duplicate continuation for the same event"
 }
 
 test_hook_claude_mode_stale_rewake_epoch_blocks() {
@@ -1063,27 +1151,114 @@ test_hook_claude_mode_allow_resets_budget() {
   pass "fm-turnend-guard --claude: any allow resets the consecutive-block budget"
 }
 
-test_hook_claude_mode_waits_for_late_claim() {
-  local dir helper out status holder
-  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-wait")
+# The live-evidence regression: on a loaded host the auto-arm took seconds to
+# claim, the guard's fixed sub-second window expired first, and it reported the
+# auto-arm missing in the same second the auto-arm started a watcher. The guard
+# must wait for this event's verdict, not a fixed guess.
+test_hook_claude_mode_waits_for_slow_autoarm_verdict() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-slow")
   : > "$dir/state/task1.meta"
-  (
-    sleep 0.4
-    mkdir -p "$dir/state/.claude-autoarm.lock"
-    sleep 60 &
-    printf '%s\n' $! > "$dir/state/.claude-autoarm.lock/pid"
-    printf '%s\n' $! > "$dir/holder.pid"
-    wait
-  ) &
-  helper=$!
-  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=3000 run_hook_claude "$dir" false); status=$?
-  holder=$(cat "$dir/holder.pid" 2>/dev/null || true)
-  kill "$holder" 2>/dev/null || true
-  kill "$helper" 2>/dev/null || true
-  wait "$helper" 2>/dev/null || true
-  expect_code 0 "$status" "--claude must wait briefly for a late auto-arm claim instead of forcing a continuation"
-  [ -z "$out" ] || fail "--claude late-claim wait produced output: $out"
-  pass "fm-turnend-guard --claude: bounded claim wait avoids a token-consuming forced continuation"
+  pid=$(start_fake_autoarm "$dir" false 'sleep 0.3; publish started; sleep 1.5; publish claimed; while :; do sleep 0.1; done')
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=1000 run_hook_claude "$dir" false); status=$?
+  stop_fake_autoarm "$pid"
+  expect_code 0 "$status" "--claude must wait for a started auto-arm to claim past the first-report window"
+  [ -z "$out" ] || fail "--claude slow-claim wait produced output: $out"
+  [ ! -e "$dir/state/.claude-autoarm-streak" ] || fail "a claimed event must not count toward the failure streak"
+  pass "fm-turnend-guard --claude: waits for a slow auto-arm's verdict instead of reporting it missing"
+}
+
+test_hook_claude_mode_blocks_with_declined_reason() {
+  local dir pid out status started elapsed
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-declined")
+  : > "$dir/state/task1.meta"
+  pid=$(start_fake_autoarm "$dir" false 'publish started; publish declined session-lock-held-by-another-live-session; while :; do sleep 0.1; done')
+  started=$(date +%s)
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=20000 FM_CLAUDE_AUTOARM_DECIDE_WAIT_MS=20000 run_hook_claude "$dir" false); status=$?
+  elapsed=$(( $(date +%s) - started ))
+  stop_fake_autoarm "$pid"
+  expect_code 2 "$status" "--claude must block when the auto-arm declines this event"
+  assert_contains "$out" "another live harness session holds this home" "the block must name the auto-arm's declined reason"
+  [ "$elapsed" -lt 10 ] || fail "a declined verdict must block without waiting out the bounds (took ${elapsed}s)"
+  pass "fm-turnend-guard --claude: a declined auto-arm blocks immediately with its concrete reason"
+}
+
+test_hook_claude_mode_blocks_when_autoarm_dies_undecided() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-died")
+  : > "$dir/state/task1.meta"
+  pid=$(start_fake_autoarm "$dir" false 'publish started; sleep 0.5')
+  out=$(FM_CLAUDE_AUTOARM_DECIDE_WAIT_MS=20000 run_hook_claude "$dir" false); status=$?
+  stop_fake_autoarm "$pid"
+  expect_code 2 "$status" "--claude must block when the auto-arm exits without deciding"
+  assert_contains "$out" "exited before claiming or declining" "the block must name the undecided exit"
+  pass "fm-turnend-guard --claude: an auto-arm that dies undecided is reported, not waited on"
+}
+
+test_hook_claude_mode_bounds_an_undecided_autoarm() {
+  local dir pid out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-undecided")
+  : > "$dir/state/task1.meta"
+  pid=$(start_fake_autoarm "$dir" false 'publish started; while :; do sleep 0.1; done')
+  out=$(FM_CLAUDE_AUTOARM_DECIDE_WAIT_MS=700 run_hook_claude "$dir" false); status=$?
+  stop_fake_autoarm "$pid"
+  expect_code 2 "$status" "--claude must stop waiting at the decision bound"
+  assert_contains "$out" "has not claimed recovery within the wait bound" "the block must name the undecided wait"
+  pass "fm-turnend-guard --claude: the decision wait is bounded"
+}
+
+test_hook_claude_mode_afk_blocks_without_waiting() {
+  local dir out status started elapsed
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-afk")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/.afk"
+  started=$(date +%s)
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=20000 run_hook_claude "$dir" false); status=$?
+  elapsed=$(( $(date +%s) - started ))
+  expect_code 2 "$status" "--claude must still block a blind stop in away mode"
+  assert_contains "$out" "away mode is active" "the away-mode block must say the daemon owns the watcher"
+  [ "$elapsed" -lt 10 ] || fail "away mode must not wait for an auto-arm that is inert by contract (took ${elapsed}s)"
+  [ ! -e "$dir/state/.claude-autoarm-streak" ] || fail "away mode must not count as an auto-arm failure"
+  pass "fm-turnend-guard --claude: away mode blocks at once without charging the auto-arm"
+}
+
+# The detection check: a guard firing turn after turn while its paired auto-arm
+# never owns recovery must escalate on its own, across degraded allows, and
+# clear only on proof of recovery.
+test_hook_claude_mode_persistent_failure_escalates() {
+  local dir out status i pid identity
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-streak")
+  : > "$dir/state/task1.meta"
+  for i in 1 2; do
+    out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" false); status=$?
+    expect_code 2 "$status" "streak block $i must exit 2"
+    case "$out" in *"PERSISTENT FAILURE"*) fail "streak must not escalate before the threshold (block $i)" ;; esac
+  done
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" false); status=$?
+  expect_code 2 "$status" "third consecutive failure must still block"
+  assert_contains "$out" "PERSISTENT FAILURE: the Stop auto-arm has not owned recovery on 3 consecutive turn ends" "the third consecutive failure must escalate"
+  assert_contains "$out" "report it to the captain as a blocker" "the escalation must route the defect to the captain"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "the budget must still allow degraded after three blocks"
+  assert_contains "$out" "PERSISTENT FAILURE" "the degraded allow must carry the escalation"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" false); status=$?
+  assert_contains "$out" "on 5 consecutive turn ends" "the streak must survive a degraded allow"
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "could not identify live watcher holder"
+  }
+  record_watcher_lock "$dir" "$pid" "$identity"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(run_hook_claude "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$dir/state/.watch.lock"
+  expect_code 0 "$status" "a healthy watcher must allow"
+  [ ! -e "$dir/state/.claude-autoarm-streak" ] || fail "proof of recovery must clear the failure streak"
+  pass "fm-turnend-guard --claude: a persistent auto-arm failure escalates on its own and clears on recovery"
 }
 
 test_hook_claude_mode_secondmate_reblocks_like_primary() {
@@ -1093,13 +1268,10 @@ test_hook_claude_mode_secondmate_reblocks_like_primary() {
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
   expect_code 2 "$status" "--claude mode must re-block in a marked secondmate home exactly like the main primary"
   assert_contains "$out" "TURN WOULD END BLIND" "--claude secondmate re-block must carry the blind-turn banner"
-  sleep 60 &
-  pid=$!
-  mkdir -p "$dir/state/.claude-autoarm.lock"
-  printf '%s\n' "$pid" > "$dir/state/.claude-autoarm.lock/pid"
+  pid=$(start_fake_autoarm "$dir" false 'while :; do sleep 0.1; done')
+  hold_owner_lock "$dir" "$pid"
   out=$(run_hook_claude "$dir" false); status=$?
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  stop_fake_autoarm "$pid"
   expect_code 0 "$status" "--claude mode must allow a claimed secondmate home"
   pass "fm-turnend-guard --claude: secondmate home re-blocks unclaimed and allows auto-arm-claimed stops"
 }
@@ -1148,9 +1320,17 @@ test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
+test_hook_claude_mode_recycled_owner_pid_does_not_allow
+test_hook_claude_mode_wedged_owner_does_not_allow
+test_hook_claude_mode_old_owner_with_fresh_beacon_allows
 test_hook_claude_mode_allows_on_fresh_rewake_epoch
 test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_block_budget_then_degraded_allow
 test_hook_claude_mode_allow_resets_budget
-test_hook_claude_mode_waits_for_late_claim
+test_hook_claude_mode_waits_for_slow_autoarm_verdict
+test_hook_claude_mode_blocks_with_declined_reason
+test_hook_claude_mode_blocks_when_autoarm_dies_undecided
+test_hook_claude_mode_bounds_an_undecided_autoarm
+test_hook_claude_mode_afk_blocks_without_waiting
+test_hook_claude_mode_persistent_failure_escalates
 test_hook_claude_mode_secondmate_reblocks_like_primary

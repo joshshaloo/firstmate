@@ -10,7 +10,7 @@ Each adapter starts the next arm before delivering the wake prompt, checks curre
 A failed follow-up never cancels continuity restoration.
 Pi same-process session replacement follows the generation-owner contract in `.pi/extensions/fm-primary-pi-watch.ts`.
 Claude's `.claude/settings.json` Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) owns routine tokenless re-arm.
-The hook fires on every Stop, and an eligible primary with supervision need admits one home-scoped owner that foregrounds `bin/fm-watch-arm.sh` inside the hook-owned process tree.
+The hook fires on every Stop, and an eligible primary with supervision need admits one home-scoped owner that runs `bin/fm-watch-arm.sh` as a tracked, never-detached child inside the hook-owned process tree and waits on it.
 A numeric session-lock owner that fails the shared `fm_harness_pid_alive` predicate is reclaimed through `bin/fm-lock.sh` before auto-arm state changes, while a live owner, absent lock, or malformed lock keeps the competing hook inert.
 The stale-owner claim occurs only after the existing AFK and supervision-need gates pass.
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
@@ -18,6 +18,20 @@ A typed `watcher: FAILED` close also wakes the idle session unless a final ident
 On that healthy verdict the hook re-arms so it attaches to the surviving watcher and keeps owning wake translation, and it classifies the close of that re-attached cycle by the same rules, including the health check itself.
 The hook's `REARM_MAX` constant (fixed at 3, deliberately not an environment knob) bounds those re-arms per firing; an exhausted bound, a close with no health proof, or a re-arm that proves neither a started nor an attached watcher and returns no actionable wake falls back to the exit-2 failure alarm.
 That alarm reports the unresolved absorbed-wake chain when the closing cycle proved a live watcher and reports supervision down only when none was proven, so the banner never contradicts the measurement behind it.
+
+Every firing that passes the scope, away-mode, and supervision-need gates reports its progress for its Stop event through `bin/fm-claude-autoarm-claim-lib.sh`: started, then claimed, deferred to a verified live owner, or declined with a named reason.
+That handshake is how the turn-end guard tells a slow auto-arm from an absent one; [`turnend-guard.md`](turnend-guard.md) owns what the guard does with each verdict.
+The single-flight owner lock is self-healing.
+A recorded owner counts only while its pid is a live process running this home's auto-arm script, so a recycled pid is stolen as stale instead of wedging every later firing.
+A verified owner is wedged only on durable evidence: it has held its claim for the grace window and `state/.last-watcher-beat` has also been missing or stale for the grace window.
+A momentarily absent watcher is not that evidence, because an owner delivering a just-fired wake has no watcher yet a fresh beacon, and ambiguous evidence reads as live.
+The next firing signals a wedged owner once, waits for it to retire, and takes the claim.
+
+Claude kills an async hook at its configured timeout, and a killed hook can neither rewake the session nor start a successor, so a quiet cycle that outlived the timeout would leave an idle session blind until the next human message.
+The owner therefore retires its own cycle before that timeout, which it reads from its own entry in the tracked `.claude/settings.json`, signalling the arm once so the arm stops its watcher and records the interrupted cycle.
+It then exits 2 with a `firstmate watcher renewal` banner; the handling turn only drains and ends normally, and that turn's Stop starts a fresh firing with a full lifetime.
+An actionable reason that races the retirement still takes the ordinary wake path.
+A firing that is itself killed records `outcome=killed` in the epoch ledger and stops its arm rather than orphaning it.
 
 ## Actionable wake ordering
 
@@ -61,8 +75,8 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
-`tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, exit-2 translation, the healthy-watcher recheck on every typed-failed close, the bounded re-arms that keep re-attaching to the surviving watcher across consecutive absorbed wakes, the default-closed alarm when a re-attach is unconfirmed or the bound is exhausted, and each alarm banner matching the health proof behind it.
-`FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
+`tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, the published claim and declined reasons, deferral to a verified owner, recycled-pid and wedged-owner recovery, deferral to an old owner whose watcher beacon is fresh, a single retirement signal per wedged owner, the lifetime renewal and its settings-derived bound, a harness kill, exit-2 translation, the healthy-watcher recheck on every typed-failed close, the bounded re-arms that keep re-attaching to the surviving watcher across consecutive absorbed wakes, the default-closed alarm when a re-attach is unconfirmed or the bound is exhausted, and each alarm banner matching the health proof behind it.
+`FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles on a deliberately slowed auto-arm without a false blind-turn block, and checks the competing-live-owner negative control and its declared reason.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard.
 
 ## Active limits and verification

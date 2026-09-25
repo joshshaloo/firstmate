@@ -15,6 +15,13 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fm_test_tmproot TMP_ROOT fm-claude-stop-autoarm
+# The quiet arm fixture and the stand-in owners loop forever, and most of them
+# are forked by the hook under test or returned through a command substitution,
+# so no pid this shell holds can reach them. Marking the fixture root makes
+# every descendant reapable and provable by its own environment.
+FM_CLAUDE_AUTOARM_FIXTURE_ROOT="$TMP_ROOT"
+export FM_CLAUDE_AUTOARM_FIXTURE_ROOT
+fm_test_reap_env_at_exit "FM_CLAUDE_AUTOARM_FIXTURE_ROOT=$TMP_ROOT" "claude stop auto-arm fixtures"
 fm_git_identity fmtest fmtest@example.invalid
 
 FAKEBIN=$(fm_fakebin "$TMP_ROOT/fakebin")
@@ -30,6 +37,7 @@ install_autoarm_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-claude-autoarm-claim-lib.sh" "$dir/bin/fm-claude-autoarm-claim-lib.sh"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
   cp "$ROOT/bin/fm-lock.sh" "$dir/bin/fm-lock.sh"
   chmod +x "$dir/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-lock.sh"
@@ -227,6 +235,18 @@ printf 'signal: task.status done: slow fixture\n'
 exit 0
 SH
       ;;
+    quiet)
+      # A parked cycle that never closes on its own, like a quiet fleet. Like
+      # the real arm, its TERM handler resets the trap and then does slow
+      # bookkeeping, so a second TERM would cut that bookkeeping short.
+      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+echo "$$" >> "$FM_HOME/state/arm-ran"
+trap 'trap - TERM; sleep 1.5; echo interrupted > "$FM_HOME/state/arm-interrupted"; exit 143' TERM
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+while :; do sleep 0.1; done
+SH
+      ;;
     meta-vanishes)
       cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
@@ -253,6 +273,25 @@ SH
       ;;
   esac
   chmod +x "$dir/bin/fm-watch-arm.sh"
+}
+
+# The one claim record this home holds for the single event a test fired.
+claim_record() {
+  cat "$1"/state/.claude-autoarm-claims/* 2>/dev/null || true
+}
+
+# A stand-in auto-arm process: argv names this home's hook script, so owner
+# verification accepts it. Sets FAKE_OWNER_PID in the calling shell, so the
+# owner is tracked there rather than in a command substitution's subshell.
+start_fake_owner() {
+  bash -c 'while :; do sleep 0.1; done' "$1/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>&1 &
+  FAKE_OWNER_PID=$!
+  fm_test_track_bg_pid "$FAKE_OWNER_PID"
+}
+
+hold_owner_lock() {  # <dir> <pid>
+  mkdir -p "$1/state/.claude-autoarm.lock"
+  printf '%s\n' "$2" > "$1/state/.claude-autoarm.lock/pid"
 }
 
 epoch_outcome() {
@@ -314,10 +353,12 @@ test_inert_when_lock_held_by_other_harness() {
   dir=$(make_primary_dir "$TMP_ROOT/other-lock")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
-  # The trailing no-op keeps the fake harness process alive instead of allowing
-  # bash to exec the final sleep into a non-harness process.
-  "$FAKE_CLAUDE" -c 'sleep 60; :' &
+  # The loop keeps the fake harness process itself alive (bash cannot exec a
+  # loop into a non-harness process), and short sleeps plus closed output keep
+  # killing it from orphaning a long sleep that holds the suite's output open.
+  "$FAKE_CLAUDE" -c 'while :; do sleep 0.2; done' >/dev/null 2>&1 &
   other=$!
+  fm_test_track_bg_pid "$other"
   printf '%s\n' "$other" > "$dir/state/.lock"
   out=$(printf '%s\n' '{"session_id":"s"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
   owner_after=$(cat "$dir/state/.lock")
@@ -327,6 +368,8 @@ test_inert_when_lock_held_by_other_harness() {
   [ "$owner_after" = "$other" ] || fail "hook replaced another live harness owner: expected $other, got $owner_after"
   [ ! -e "$dir/state/arm-ran" ] || fail "hook armed while another session owned the lock"
   [ ! -e "$dir/state/.claude-autoarm-epoch" ] || fail "hook wrote an epoch while another session owned the lock"
+  assert_contains "$(claim_record "$dir")" "phase=declined" "the guard must hear that this firing declined"
+  assert_contains "$(claim_record "$dir")" "reason=session-lock-held-by-another-live-session" "the declined record must name why"
   pass "auto-arm: inert without arm, rewake, or lock replacement when another live harness owns the home"
 }
 
@@ -405,6 +448,176 @@ test_inert_when_fleet_idle() {
   pass "auto-arm: inert with nothing in flight and no X-mode need"
 }
 
+# --- owner-lock self-healing --------------------------------------------------
+
+test_defers_to_verified_live_owner() {
+  local dir owner out status
+  dir=$(make_primary_dir "$TMP_ROOT/defer-live-owner")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  start_fake_owner "$dir"; owner=$FAKE_OWNER_PID
+  hold_owner_lock "$dir" "$owner"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$owner" 2>/dev/null || true
+  wait "$owner" 2>/dev/null || true
+  expect_code 0 "$status" "a firing must defer while a verified owner is recovering"
+  [ ! -e "$dir/state/arm-ran" ] || fail "a deferring firing must not arm a second cycle"
+  assert_contains "$(claim_record "$dir")" "phase=deferred" "the deferring firing must tell the guard recovery is owned"
+  pass "auto-arm: defers to a verified live owner and says so"
+}
+
+# Before verification, a recycled pid in the owner lock made every firing exit
+# as if an owner were live while nothing armed: a silent wedge.
+test_recycled_owner_pid_is_stolen() {
+  local dir other out status
+  dir=$(make_primary_dir "$TMP_ROOT/recycled-owner")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 30 >/dev/null 2>&1 &
+  other=$!
+  hold_owner_lock "$dir" "$other"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$other" 2>/dev/null || true
+  wait "$other" 2>/dev/null || true
+  expect_code 2 "$status" "a recycled owner pid must be reclaimed and the cycle armed"
+  [ -e "$dir/state/arm-ran" ] || fail "the hook did not arm after reclaiming a recycled owner pid"
+  pass "auto-arm: a live pid that is not this home's auto-arm never wedges the single-flight lock"
+}
+
+test_wedged_owner_is_retired_and_replaced() {
+  local dir owner out status
+  dir=$(make_primary_dir "$TMP_ROOT/wedged-owner")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  start_fake_owner "$dir"; owner=$FAKE_OWNER_PID
+  hold_owner_lock "$dir" "$owner"
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  if kill -0 "$owner" 2>/dev/null; then
+    kill -KILL "$owner" 2>/dev/null || true
+    wait "$owner" 2>/dev/null || true
+    fail "the wedged owner was not retired"
+  fi
+  wait "$owner" 2>/dev/null || true
+  expect_code 2 "$status" "a wedged owner must be replaced by a firing that arms"
+  [ -e "$dir/state/arm-ran" ] || fail "the replacement firing did not arm"
+  pass "auto-arm: an owner holding its claim past grace with a stale watcher beacon is retired and replaced"
+}
+
+# An owner delivering a just-fired wake has no live watcher for up to one poll,
+# but its watcher beat moments ago. Retiring it then lost the wake: the owner
+# died on TERM before its exit-2 rewake and the queued wake went unannounced.
+test_owner_with_fresh_beacon_is_deferred_to() {
+  local dir owner out status
+  dir=$(make_primary_dir "$TMP_ROOT/fresh-beacon-owner")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  start_fake_owner "$dir"; owner=$FAKE_OWNER_PID
+  hold_owner_lock "$dir" "$owner"
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  if ! kill -0 "$owner" 2>/dev/null; then
+    wait "$owner" 2>/dev/null || true
+    fail "an owner whose watcher beat within grace was retired"
+  fi
+  kill "$owner" 2>/dev/null || true
+  wait "$owner" 2>/dev/null || true
+  expect_code 0 "$status" "a firing must defer to an old owner whose watcher beacon is fresh"
+  [ ! -e "$dir/state/arm-ran" ] || fail "a deferring firing must not arm a second cycle"
+  assert_contains "$(claim_record "$dir")" "phase=deferred" "the deferring firing must tell the guard recovery is owned"
+  pass "auto-arm: an old owner with no live watcher but a fresh beacon is deferred to, not retired"
+}
+
+# A retiring owner's TERM handler runs cleanup that waits on its arm; a second
+# TERM interrupted that wait and cut the cleanup short.
+test_wedged_owner_is_signalled_once() {
+  local dir owner out status terms
+  dir=$(make_primary_dir "$TMP_ROOT/wedged-owner-once")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  terms="$dir/state/owner-terms"
+  TERMS_FILE="$terms" bash -c '
+    trap "echo term >> \"\$TERMS_FILE\"; retiring=1" TERM
+    retiring=0 left=10
+    while [ "$left" -gt 0 ]; do
+      sleep 0.1
+      [ "$retiring" -eq 0 ] || left=$((left - 1))
+    done
+  ' "$dir/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>&1 &
+  owner=$!
+  hold_owner_lock "$dir" "$owner"
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock/pid"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  if kill -0 "$owner" 2>/dev/null; then
+    kill -KILL "$owner" 2>/dev/null || true
+    wait "$owner" 2>/dev/null || true
+    fail "the wedged owner was not retired"
+  fi
+  wait "$owner" 2>/dev/null || true
+  expect_code 2 "$status" "a retiring owner must be replaced by a firing that arms"
+  [ "$(grep -c '^term$' "$terms" 2>/dev/null)" = 1 ] \
+    || fail "a wedged owner must be signalled exactly once, got $(grep -c '^term$' "$terms" 2>/dev/null || echo 0) TERMs"
+  pass "auto-arm: a wedged owner is signalled once and given time to retire"
+}
+
+# --- lifetime -----------------------------------------------------------------
+
+test_lifetime_bound_renews_before_harness_kill() {
+  local dir out status arm
+  dir=$(make_primary_dir "$TMP_ROOT/renewal")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" quiet
+  out=$(FM_CLAUDE_AUTOARM_RENEW_AFTER=1 run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" "a quiet cycle at the lifetime bound must end in a renewal rewake"
+  assert_contains "$out" "firstmate watcher renewal" "the rewake must carry the renewal banner"
+  assert_contains "$out" "do NOT run bin/fm-watch-arm.sh" "renewal must leave re-arming to the next Stop"
+  [ "$(epoch_outcome "$dir")" = renewal ] || fail "epoch must record outcome=renewal, got: $(epoch_outcome "$dir")"
+  [ -e "$dir/state/arm-interrupted" ] || fail "the renewal must let the quiet arm finish its own TERM handling (signal it once)"
+  arm=$(head -1 "$dir/state/arm-ran")
+  ! kill -0 "$arm" 2>/dev/null || fail "the retired arm is still running"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "owner lock must be released after renewal"
+  pass "auto-arm: a quiet cycle is retired and renewed before the hook timeout can kill it"
+}
+
+test_lifetime_bound_derives_from_tracked_hook_timeout() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/renewal-settings")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" quiet
+  mkdir -p "$dir/.claude"
+  printf '%s\n' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"exec \"$CLAUDE_PROJECT_DIR\"/bin/fm-turnend-guard.sh --claude"},{"type":"command","command":"exec \"$CLAUDE_PROJECT_DIR\"/bin/fm-claude-stop-autoarm.sh","asyncRewake":true,"timeout":2}]}]}}' > "$dir/.claude/settings.json"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" "the renewal bound must come from the auto-arm hook's own timeout"
+  assert_contains "$out" "firstmate watcher renewal" "a settings-derived bound must renew the same way"
+  pass "auto-arm: the lifetime bound is derived from the tracked Stop hook timeout"
+}
+
+test_harness_kill_releases_claim_and_arm() {
+  local dir hook arm i
+  dir=$(make_primary_dir "$TMP_ROOT/harness-kill")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" quiet
+  printf '%s\n' '{"session_id":"kill"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+      "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+    ' >/dev/null 2>&1 &
+  i=0
+  while [ ! -s "$dir/state/arm-ran" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  hook=$(cat "$dir/state/.claude-autoarm.lock/pid" 2>/dev/null || true)
+  arm=$(head -1 "$dir/state/arm-ran" 2>/dev/null || true)
+  [ -n "$hook" ] && [ -n "$arm" ] || fail "fixture never reached the armed state"
+  kill -TERM "$hook"
+  i=0
+  while kill -0 "$hook" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  wait 2>/dev/null || true
+  ! kill -0 "$arm" 2>/dev/null || fail "a killed hook must not orphan its arm"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "a killed hook must release the single-flight lock"
+  [ "$(epoch_outcome "$dir")" = killed ] || fail "epoch must record outcome=killed, got: $(epoch_outcome "$dir")"
+  pass "auto-arm: a harness kill records itself and leaves no orphaned arm or held claim"
+}
+
 # --- the armed cycle ----------------------------------------------------------
 
 test_actionable_close_rewakes_with_reason() {
@@ -421,6 +634,7 @@ test_actionable_close_rewakes_with_reason() {
   [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
   [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "owner lock must be released after the cycle"
   [ -e "$dir/state/arm-ran" ] || fail "hook never foregrounded the arm wrapper"
+  assert_contains "$(claim_record "$dir")" "phase=claimed" "the owning firing must publish its claim for the guard"
   pass "auto-arm: actionable close translates to exactly one exit-2 rewake with reason"
 }
 
@@ -626,6 +840,14 @@ test_inert_when_afk
 test_stale_lock_recovery_preserves_afk_and_need_gates
 test_resolves_outermost_claude_pid_in_nested_bgspare_chain
 test_inert_when_fleet_idle
+test_defers_to_verified_live_owner
+test_recycled_owner_pid_is_stolen
+test_wedged_owner_is_retired_and_replaced
+test_owner_with_fresh_beacon_is_deferred_to
+test_wedged_owner_is_signalled_once
+test_lifetime_bound_renews_before_harness_kill
+test_lifetime_bound_derives_from_tracked_hook_timeout
+test_harness_kill_releases_claim_and_arm
 test_actionable_close_rewakes_with_reason
 test_failed_close_rewakes_with_failure_banner
 test_absorbed_wake_reattaches_to_surviving_watcher

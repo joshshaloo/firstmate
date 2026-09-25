@@ -8,6 +8,7 @@ When this session owns supervision and away mode is not active:
 3. On a `Stop hook feedback` wake (`signal:`, `stale:`, `check:`, or `heartbeat`), run `bin/fm-wake-drain.sh` first and handle the wake.
    Do not run `bin/fm-watch-arm.sh` after an ordinary wake; the next turn end re-arms automatically when supervision is still needed.
    Do not invent a wake from an attach-status line alone; drain and act only on real wake records or a real watcher reason line.
+   A `firstmate watcher renewal` wake means the hook retired a quiet cycle before its lifetime bound: drain, handle anything returned, and end the turn normally without arming.
 4. On a `Stop hook feedback` watcher-failure wake (`watcher: FAILED ...`), treat it as an alarm: drain, then repair supervision before ending the turn.
    Its banner reports supervision down when no live watcher was proven, or an unresolved absorbed-wake chain when one still holds this home but the hook stopped translating its wakes; both need the same repair.
 5. Manual arm is recovery only.
@@ -20,9 +21,10 @@ When this session owns supervision and away mode is not active:
    No PreToolUse hook denies fleet commands based on watcher status.
    [`watcher-continuity.md`](../watcher-continuity.md) owns the exact session-lock recovery boundary.
 8. The turn-end guard (`bin/fm-turnend-guard.sh --claude`) remains the final backstop.
-   It allows the stop when a watcher is healthy, when the auto-arm already owns recovery for this event epoch, or when a fresh rewake is recorded; it re-blocks only when none of those materialize, within a bounded budget.
+   It allows the stop when a watcher is healthy or the auto-arm's own verdict for this turn end shows it owns recovery, waiting for a slow auto-arm; otherwise it re-blocks with the concrete reason, within a bounded budget.
+   A `PERSISTENT FAILURE` line in its banner means the auto-arm has repeatedly failed to own recovery: repair supervision, then report it to the captain as a blocker.
 9. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
 
-The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook foregrounds.
+The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook runs as a tracked background child, waits on, and retires at its lifetime bound.
 Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
 See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close failure contract and the Claude ownership model.

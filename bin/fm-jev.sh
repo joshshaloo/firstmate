@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Ask Jev one System One request of typed questions and print the typed answers.
-# Usage: fm-jev.sh --state <file|-> --questions <file|-> [--model <id>] [--timeout <seconds>]
+# Usage: fm-jev.sh --state <file|-> --questions <file|-> [--model <id>] [--timeout <seconds>] [--no-retry]
 #
 # Jev is a System One decision model: it answers typed questions (Choice, Noul,
 # Score) over a state and returns calibrated probabilities. It does not generate
@@ -43,7 +43,7 @@ MAX_RETRY_DELAY=30
 
 usage() {
   cat <<'EOF'
-Usage: fm-jev.sh --state <file|-> --questions <file|-> [--model <id>] [--timeout <seconds>]
+Usage: fm-jev.sh --state <file|-> --questions <file|-> [--model <id>] [--timeout <seconds>] [--no-retry]
 
 Ask Jev one request of typed questions over one state and print the typed
 answers as a single JSON line on stdout.
@@ -63,6 +63,7 @@ question, or credential ever appears in a command argument.
                         OpenRouter variant id such as vendor/model:beta is
                         accepted and nothing else is.
   --timeout <seconds>   per-attempt timeout, 1-300, default 20.
+  --no-retry            exactly one transport attempt (for bounded observers).
 
 Output, on success only, one compact JSON line:
 
@@ -81,7 +82,8 @@ Contract:
   - No policy here. This prints probabilities. Thresholds, weights, and the
     resulting decision stay in the caller's own code, where they can be read,
     changed, and tested without re-running inference.
-  - One bounded attempt plus one retry on 429 or 5xx, honoring Retry-After.
+  - One bounded attempt plus one retry on 429 or 5xx, honoring Retry-After,
+    unless --no-retry requests exactly one attempt.
   - The key is read only from $HOME/.config/firstmate/openrouter.env, which must
     be a regular file, not a symlink, and mode 0600. It is never accepted as an
     argument and never printed.
@@ -105,10 +107,12 @@ STATE_PATH=
 QUESTIONS_PATH=
 MODEL=$DEFAULT_MODEL
 TIMEOUT=$DEFAULT_TIMEOUT
+RETRY=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
+    --no-retry) RETRY=0; shift ;;
     --state) [ "$#" -ge 2 ] || die 2 "--state needs a file or -"; STATE_PATH=$2; shift 2 ;;
     --questions) [ "$#" -ge 2 ] || die 2 "--questions needs a file or -"; QUESTIONS_PATH=$2; shift 2 ;;
     --model) [ "$#" -ge 2 ] || die 2 "--model needs a model id"; MODEL=$2; shift 2 ;;
@@ -264,7 +268,7 @@ attempt() {
 }
 
 CODE=$(attempt); CURL_RC=$?
-if [ "$CURL_RC" = 0 ]; then
+if [ "$CURL_RC" = 0 ] && [ "$RETRY" = 1 ]; then
   case "$CODE" in
     429|5[0-9][0-9])
       sleep "$(retry_delay)"

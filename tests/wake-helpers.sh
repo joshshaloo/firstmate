@@ -20,6 +20,13 @@ if [ -z "${FM_ROOT_OVERRIDE:-}" ]; then
   export FM_ROOT_OVERRIDE
 fi
 
+# Watcher shadow triage must never read an operator credential during a wake
+# fixture. A Jev-specific suite can replace this with its own private test key
+# and PATH transport stub after loading the shared harness.
+fm_test_tmproot _fm_jev_keyless_dir fm-wake-jev-keyless
+# shellcheck disable=SC2154 # Assigned by fm_test_tmproot above.
+export FM_JEV_ENV_FILE="$_fm_jev_keyless_dir/absent.env"
+
 # Wedge-alarm notifier recorder (safety seam). The away-mode wedge alarm fires a
 # real OS-level desktop notification by default. Point its FM_WEDGE_ALARM_EXEC
 # seam at a recorder for every

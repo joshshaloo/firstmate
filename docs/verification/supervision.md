@@ -201,6 +201,37 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+## Jev declared-wait shadow observation
+
+Verified on 2026-09-25 with GNU Bash 5.3.9, jq 1.8.2, GNU coreutils timeout 9.11, and ShellCheck 0.11.0.
+The transport is a hermetic `curl` fixture through the real `fm-jev.sh` helper; these tests measure integration safety, not model accuracy.
+The observer's current contract and provisional settings are owned by `bin/fm-watch-jev.sh --help`.
+
+```sh
+bash tests/fm-watch-jev.test.sh
+bash tests/fm-jev.test.sh
+bash tests/fm-watch-triage.test.sh
+bash tests/fm-wake-queue.test.sh
+```
+
+Selected exact output from the shadow suite:
+
+```text
+ok - shadow always surfaces; default simulated absorb bound forces every third pass
+ok - a corrupt streak forces a surface before repairing simulated state
+ok - Choice confidence below the configured floor is a recorded miss, equality is allowed
+ok - outer watcher-owned timeout bounds a slow helper, including its process tree
+ok - dependency-free timeout fallback also records a miss and surfaces
+ok - real watcher queue, reason, cadence and stale markers are unchanged for shadow absorb, miss and forced surface
+ok - shared observation path preserves surfaces across all harness/backend metadata combinations
+```
+
+The shared watcher cadence path is exercised across metadata for Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi on tmux, Herdr, Zellij, Orca, and cmux.
+These are metadata-only compatibility fixtures, not live adapter or service verification.
+The observer does not call a harness or backend; the existing `fm-watch-arm.sh` reason/exit transport and native transition paths are unchanged.
+Away mode, initial signals, run-step transitions, wedges, checks, and guard alarms do not enter this observer.
+Live calibration and any later suppression approval must use actual shadow outcomes rather than these synthetic answers.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.

@@ -205,6 +205,16 @@ assert_refused 'persistent 429'
 [ "$(wc -l < "$CURL_LOG")" = 2 ] || fail "a 429 must be retried exactly once (attempts: $(wc -l < "$CURL_LOG"))"
 pass 'a 429 is retried exactly once, then refuses and prints no answer'
 
+# Bounded shadow observers need exactly one transport attempt, while ordinary
+# callers retain the existing retry contract.
+for STATUS in 429 503; do
+  : > "$CURL_LOG"
+  CODE=$STATUS HEADER='Retry-After: 0' run_jev 1 "--no-retry refuses HTTP $STATUS without retry" --no-retry
+  assert_refused 'single-attempt refusal'
+  [ "$(wc -l < "$CURL_LOG")" = 1 ] || fail '--no-retry made more than one transport attempt'
+done
+pass '--no-retry preserves failure diagnostics but performs only one transport attempt'
+
 # --- fail closed: malformed and incomplete responses ------------------------
 
 BODY='<html>gateway timeout</html>' run_jev 1 'a non-JSON response refuses'

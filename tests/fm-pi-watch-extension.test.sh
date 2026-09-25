@@ -1317,8 +1317,8 @@ for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
 if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("config fixture did not open its log");
 if (readFileSync(process.env.FM_ARM_LOG, "utf8") !== "") throw new Error("config fixture wrote before release");
 writeFileSync(process.env.FM_CONFIG_RELEASE_FILE, "release\n");
-// Redirection creates the log before printf writes it. Await the coordinator's
-// observation of the fixture output, which is emitted only after that write.
+// Redirection creates the log before printf writes it. Await the coordinator
+// to observe the fixture output, which is emitted only after that write.
 const readiness = await completion;
 if (readiness !== "external") throw new Error(`config fixture did not finish: ${readiness}`);
 const text = readFileSync(process.env.FM_ARM_LOG, "utf8");
@@ -1940,7 +1940,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
-// The real OpenCode host outlives unref'ed plugin timers. Keep those real
+// The real OpenCode host outlives unreferenced plugin timers. Keep those real
 // timers referenced in this standalone process, without changing their delays.
 // Unlike a perpetual keepalive, this still lets an undelivered prompt fail as
 // an unsettled top-level await once the plugin has no work left to do.

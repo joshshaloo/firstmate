@@ -8,6 +8,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-classify-lib.sh
+. "$SCRIPT_DIR/fm-classify-lib.sh"
 
 usage() {
   cat <<'EOF'
@@ -23,7 +25,8 @@ bypass it. Away-mode triage remains owned by the daemon and also bypasses it.
 Snapshot (all fields required; unknown/invalid context skips inference):
   task: safe task id; deterministic: "SURFACE"; origin: "pause-cadence";
   events: last 1-3 nonblank status events, oldest first;
-  declared_wait: latest event; paused_verb: configured external-wait verb;
+  declared_wait: latest event; paused_verb: configured external-wait verb,
+    never a verb fm-classify-lib.sh reserves (status_verb_is_reserved);
   age_seconds: nonnegative integer; metadata_ok: boolean;
   open_event: boolean (full status fold, not merely the last three events);
   override: boolean (recorded authoritative run-step transition);
@@ -51,12 +54,24 @@ Private artifacts in the state directory (single watcher is the sole writer):
     timestamp, task, wait fingerprint, deterministic/actual/hypothetical
     verdicts, policy/miss reason,
     choice/probabilities, three Noul values, confidence, responding model,
-    latency_ms, configured thresholds, same-wait surfaced count and simulated
-    streak. Malformed/missing answers have null evidence, not invented values.
+    latency_ms, provider usage, configured thresholds, same-wait surfaced
+    count and simulated streak. Malformed/missing answers have null evidence,
+    not invented values. Each entry is at most 4 KiB, so the cap holds.
+    usage: prompt_tokens, completion_tokens, total_tokens and cost (USD)
+      exactly as the provider returned them through fm-jev.sh, each a bounded
+      number or null; usage_state marks each field "returned", "absent"
+      (missing or null) or "malformed" (wrong type or out of bounds), so a
+      returned 0 is never confused with a missing value. Both are null when no
+      fm-jev.sh answer exists (no call, helper error, timeout). Cost is never
+      computed, estimated, priced or defaulted here: absent cost stays absent.
+      Summing returned cost over observed wakes, with the absent/malformed
+      coverage beside it, is how real per-wake and weekly spend is measured.
   .jev-shadow-<task>.json: wait fingerprint, actual surfaced count, and simulated
     streak. Counts cover observed cadence surfaces since the current wait was
     first observed, not reconstructed historical signals. A changed wait resets
-    the count; a miss resets the streak. A corrupt counter forces a miss/surface
+    the count; a miss resets the streak. It is published only by one atomic
+    rename after the audit entry, so an interrupted observation leaves no
+    counter behind. An existing corrupt or empty counter forces a miss/surface
     before repairing the counter. Neither file is an authority or a watcher
     suppression marker.
 
@@ -89,9 +104,7 @@ jq -es '
     and .metadata_ok == true and .open_event == false and .override == false
     and .check_state == "" and .pr_state == ""
     and (.age_seconds | uint)
-    and (.paused_verb | type == "string" and test("^[A-Za-z][A-Za-z0-9_-]*$")
-      and (. == "blocked" or . == "needs-decision" or . == "done" or . == "failed"
-        or . == "check" or . == "captain-held" or . == "resolved" | not))
+    and (.paused_verb | type == "string" and test("^[A-Za-z][A-Za-z0-9_-]*$"))
     and (.events | type == "array" and length > 0 and length <= 3
       and all(.[]; type == "string" and length > 0))
     and (.declared_wait | type == "string" and length > 0)
@@ -100,22 +113,23 @@ jq -es '
     and (.declared_wait | split(":")[1:] | join(":") | test("\\S"))
     and ([.events[] | contains("[key=")] | any | not)
   )' "$TMPD/input" >/dev/null 2>&1 || exit 0
+! status_verb_is_reserved "$(jq -r .paused_verb "$TMPD/input")" || exit 0
 TASK=$(jq -r .task "$TMPD/input")
 LOG="$STATE/.jev-shadow.jsonl"
 COUNTER="$STATE/.jev-shadow-$TASK.json"
+# Artifacts are private and owned by this watcher: absent, or a regular
+# single-link file. Never follow a link or truncate a foreign file to log.
+private_artifact_ok() {  # <path>
+  [ ! -L "$1" ] || return 1
+  [ -e "$1" ] || return 0
+  [ -f "$1" ] && [ "$(find "$1" -prune -links 1 -print 2>/dev/null)" = "$1" ]
+}
+private_artifact_ok "$LOG" && private_artifact_ok "$COUNTER" || exit 0
 COUNTER_FRESH=0
 [ -e "$COUNTER" ] || COUNTER_FRESH=1
-# Reject links and special files before writes. Artifacts are private and owned
-# by this watcher; never truncate a foreign file to make logging work.
-for f in "$LOG" "$COUNTER"; do
-  [ ! -L "$f" ] && { [ ! -e "$f" ] || [ -f "$f" ]; } || exit 0
-  if [ -e "$f" ]; then
-    [ "$(find "$f" -prune -links 1 -print 2>/dev/null)" = "$f" ] || exit 0
-  else
-    ( set -C; : > "$f" ) 2>/dev/null || exit 0
-  fi
-  chmod 600 "$f" || exit 0
-done
+[ -e "$LOG" ] || ( set -C; : > "$LOG" ) 2>/dev/null || exit 0
+chmod 600 "$LOG" || exit 0
+[ "$COUNTER_FRESH" = 1 ] || chmod 600 "$COUNTER" || exit 0
 
 # Fingerprints contain no status text. The watcher already requires a hashing
 # utility; prefer SHA-256 here for opaque same-wait identity, never authorization.
@@ -147,6 +161,7 @@ BOUND=${FM_JEV_SHADOW_MAX_ABSORBS:-2}
 MISS=; HYPOTHETICAL=SURFACE; POLICY=miss
 LATENCY=0
 printf 'null\n' > "$TMPD/evidence"
+printf 'null\n' > "$TMPD/usage"
 if [ "$COUNTER_OK" = 0 ]; then
   MISS=invalid_counter
 elif ! jq -en --arg timeout "$TIMEOUT" --arg floor "$FLOOR" --arg bound "$BOUND" '
@@ -171,10 +186,30 @@ JSON
   # Millisecond timing from the already required jq, portable across GNU/BSD date.
   START=$(jq -n 'now * 1000 | floor')
   RC=0
-  fm_run_timed "$TIMEOUT" "$SCRIPT_DIR/fm-jev.sh" \
-    --state "$TMPD/state" --questions "$TMPD/questions" --timeout "$TIMEOUT" --no-retry \
-    > "$TMPD/answer" 2>/dev/null || RC=$?
+  # The answer redirection lives inside the bounded child, never on this shell's
+  # own stdout, so a signal trapped during the call still prints SURFACE.
+  # shellcheck disable=SC2016 # Expanded by the child shell.
+  fm_run_timed "$TIMEOUT" sh -c 'out=$1; shift; exec "$@" > "$out"' _ "$TMPD/answer" \
+    "$SCRIPT_DIR/fm-jev.sh" --state "$TMPD/state" --questions "$TMPD/questions" \
+    --timeout "$TIMEOUT" --no-retry 2>/dev/null || RC=$?
   LATENCY=$(jq -n --argjson start "$START" '[(now * 1000 | floor) - $start, 0] | max')
+  if [ "$RC" = 0 ]; then
+    # Provider-returned spend is recorded for every answer, including answers
+    # that later become misses, because the request was still billed.
+    jq -cs '
+      def tokens: type == "number" and . >= 0 and . < 1000000000 and . == floor;
+      def dollars: type == "number" and . >= 0 and . < 1000;
+      if length == 1 and (.[0] | type == "object") then
+        .[0].usage as $u
+        | def field($name; valid):
+            if $u == null or (($u | type) == "object" and $u[$name] == null) then {state: "absent", value: null}
+            elif ($u | type) == "object" and ($u[$name] | valid) then {state: "returned", value: $u[$name]}
+            else {state: "malformed", value: null} end;
+          {prompt_tokens: field("prompt_tokens"; tokens), completion_tokens: field("completion_tokens"; tokens),
+           total_tokens: field("total_tokens"; tokens), cost: field("cost"; dollars)}
+        | {usage: map_values(.value), usage_state: map_values(.state)}
+      else null end' "$TMPD/answer" > "$TMPD/usage" 2>/dev/null || printf 'null\n' > "$TMPD/usage"
+  fi
   if [ "$RC" != 0 ]; then
     if [ "$RC" = 124 ]; then MISS=timeout; else MISS=helper_error; fi
   elif ! jq -es '
@@ -219,7 +254,7 @@ jq -cn --arg task "$TASK" --arg miss "$MISS" --arg verdict "$HYPOTHETICAL" \
   --arg identity "$IDENTITY" --arg policy "$POLICY" \
   --arg floor "$FLOOR" --arg bound "$BOUND" --arg timeout "$TIMEOUT" \
   --argjson count "$SURFACED" --argjson streak "$STREAK" --argjson latency "$LATENCY" \
-  --slurpfile evidence "$TMPD/evidence" '
+  --slurpfile evidence "$TMPD/evidence" --slurpfile usage "$TMPD/usage" '
   def setting: if test("^[0-9]+(\\.[0-9]+)?$") and length < 16 then tonumber else null end;
   {timestamp: (now | todateiso8601), task: $task, deterministic: "SURFACE", actual: "SURFACE",
    hypothetical: $verdict, policy_reason: $policy, wait_fingerprint: $identity,
@@ -227,18 +262,23 @@ jq -cn --arg task "$TASK" --arg miss "$MISS" --arg verdict "$HYPOTHETICAL" \
    choice: $evidence[0].choice, probabilities: $evidence[0].probabilities,
    external_wait: $evidence[0].external_wait, new_fact: $evidence[0].new_fact,
    stuck: $evidence[0].stuck, confidence: $evidence[0].confidence, model: $evidence[0].model,
-   latency_ms: $latency, same_wait_surfaced: $count, simulated_streak: $streak,
+   latency_ms: $latency, usage: $usage[0].usage, usage_state: $usage[0].usage_state,
+   same_wait_surfaced: $count, simulated_streak: $streak,
    confidence_floor: ($floor | setting), external_wait_floor: 0.95, risk_ceiling: 0.05,
    max_absorbs: ($bound | setting), timeout_seconds: ($timeout | setting)}' \
   > "$TMPD/entry" || exit 0
 # Bounded newest-complete-line ring, including the new line. Never retain a
-# partial JSON record at the front after byte truncation.
-{ tail -c 1044480 "$LOG"; cat "$TMPD/entry"; } > "$TMPD/log"
-if [ "$(wc -c < "$LOG")" -gt 1044480 ]; then
+# partial JSON record at the front after byte truncation. The retained prefix
+# leaves room for one maximal entry, so the file never exceeds AUDIT_CAP.
+AUDIT_CAP=1048576
+ENTRY_MAX=4096
+[ "$(wc -c < "$TMPD/entry")" -le "$ENTRY_MAX" ] || exit 0
+{ tail -c "$((AUDIT_CAP - ENTRY_MAX))" "$LOG"; cat "$TMPD/entry"; } > "$TMPD/log"
+if [ "$(wc -c < "$LOG")" -gt "$((AUDIT_CAP - ENTRY_MAX))" ]; then
   tail -n +2 "$TMPD/log" > "$TMPD/trimmed"
   mv "$TMPD/trimmed" "$TMPD/log"
 fi
-mv "$TMPD/log" "$LOG" || exit 0
+private_artifact_ok "$LOG" && mv "$TMPD/log" "$LOG" || exit 0
 jq -cn --arg identity "$IDENTITY" --argjson surfaced "$SURFACED" --argjson streak "$STREAK" \
   '{identity: $identity, surfaced: $surfaced, streak: $streak}' > "$TMPD/counter" \
-  && mv "$TMPD/counter" "$COUNTER"
+  && private_artifact_ok "$COUNTER" && mv "$TMPD/counter" "$COUNTER"

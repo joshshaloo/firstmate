@@ -27,7 +27,7 @@ export CURL_LOG="$TMP_ROOT/calls" CAPTURE="$TMP_ROOT/request"
 export FM_JEV_ENV_FILE="$TMP_ROOT/credentials"
 printf 'OPENROUTER_API_KEY=never-log-this-secret\n' > "$FM_JEV_ENV_FILE"
 chmod 600 "$FM_JEV_ENV_FILE"
-GOOD='{"model":"typesafe/jev-1.13-20260917","answers":{"external_wait":{"type":"noul","noul":0.99},"new_fact":{"type":"noul","noul":0.01},"stuck":{"type":"noul","noul":0.01},"action":{"type":"choice","choice":"no_action","probabilities":{"no_action":0.98,"supervisor_action":0.01,"captain_decision":0.01},"confidence":0.97}}}'
+GOOD='{"model":"typesafe/jev-1.13-20260917","answers":{"external_wait":{"type":"noul","noul":0.99},"new_fact":{"type":"noul","noul":0.01},"stuck":{"type":"noul","noul":0.01},"action":{"type":"choice","choice":"no_action","probabilities":{"no_action":0.98,"supervisor_action":0.01,"captain_decision":0.01},"confidence":0.97}},"usage":{"prompt_tokens":612,"completion_tokens":9,"total_tokens":621,"cost":0.0000483}}'
 BODY="$GOOD"
 SNAPSHOT='{"task":"a","deterministic":"SURFACE","origin":"pause-cadence","events":["paused: vendor reset","paused: vendor reset"],"declared_wait":"paused: vendor reset","paused_verb":"paused","age_seconds":3600,"metadata_ok":true,"open_event":false,"override":false,"check_state":"","pr_state":""}'
 
@@ -75,6 +75,26 @@ run_observer
 assert_entry '.miss == null and .hypothetical == "ABSORB" and .simulated_streak == 1'
 pass 'a corrupt streak forces a surface before repairing simulated state'
 
+new_case interrupted
+: > "$CURL_LOG"
+printf '%s\n' "$SNAPSHOT" | PATH="$FAKEBIN:$BASE_PATH" FM_FAKE_CURL_BODY="$BODY" DELAY=3 \
+  FM_JEV_SHADOW_TIMEOUT=10 "$OBSERVER" --state-dir "$CASE" > "$CASE/interrupted.out" &
+observer_pid=$!
+for _ in $(seq 1 100); do [ -s "$CURL_LOG" ] && break; sleep 0.1; done
+[ -s "$CURL_LOG" ] || fail 'interrupted observation never reached transport'
+kill -TERM "$observer_pid"
+wait "$observer_pid" 2>/dev/null || true
+[ "$(cat "$CASE/interrupted.out")" = SURFACE ] || fail 'interrupted observer changed actual verdict'
+[ ! -e "$CASE/.jev-shadow-a.json" ] || fail 'interrupted first observation left a counter behind'
+run_observer
+assert_entry '.miss == null and .hypothetical == "ABSORB" and .same_wait_surfaced == 1'
+: > "$CASE/.jev-shadow-a.json"
+: > "$CURL_LOG"
+run_observer
+assert_entry '.miss == "invalid_counter" and .hypothetical == "SURFACE"'
+[ ! -s "$CURL_LOG" ] || fail 'empty counter consulted Jev'
+pass 'a counter is published only by the final write; an existing empty counter is still corrupt'
+
 new_case confidence
 BODY=$(printf '%s' "$GOOD" | jq '.answers.action.confidence = 0.94') run_observer
 assert_entry '.miss == "low_confidence" and .hypothetical == "SURFACE" and .simulated_streak == 0 and .confidence == 0.94'
@@ -83,6 +103,33 @@ assert_entry '.miss == null and .hypothetical == "ABSORB"'
 FM_JEV_SHADOW_CONFIDENCE=0.99 run_observer
 assert_entry '.miss == "low_confidence" and .confidence_floor == 0.99'
 pass 'Choice confidence below the configured floor is a recorded miss, equality is allowed'
+
+new_case usage
+run_observer
+assert_entry '.usage == {prompt_tokens:612,completion_tokens:9,total_tokens:621,cost:0.0000483}
+  and .usage_state == {prompt_tokens:"returned",completion_tokens:"returned",total_tokens:"returned",cost:"returned"}'
+BODY=$(printf '%s' "$GOOD" | jq '.usage.cost = 0 | .usage.completion_tokens = 0') run_observer
+assert_entry '.usage.cost == 0 and .usage_state.cost == "returned" and .usage.completion_tokens == 0'
+BODY=$(printf '%s' "$GOOD" | jq 'del(.usage.cost) | .usage.total_tokens = null') run_observer
+assert_entry '.usage.cost == null and .usage_state.cost == "absent" and .usage_state.total_tokens == "absent"
+  and .usage.prompt_tokens == 612 and .usage_state.prompt_tokens == "returned"'
+BODY=$(printf '%s' "$GOOD" | jq 'del(.usage)') run_observer
+assert_entry '.miss == null and (.usage | all(.[]; . == null)) and (.usage_state | all(.[]; . == "absent"))'
+BODY=$(printf '%s' "$GOOD" | jq '.usage = {prompt_tokens:"612",completion_tokens:1.5,total_tokens:-1,cost:"0.00005"}') run_observer
+assert_entry '(.usage | all(.[]; . == null)) and (.usage_state | all(.[]; . == "malformed"))'
+BODY=$(printf '%s' "$GOOD" | jq '.usage.cost = -0.1 | .usage.prompt_tokens = 1e12') run_observer
+assert_entry '.usage_state.cost == "malformed" and .usage_state.prompt_tokens == "malformed" and .usage.cost == null'
+BODY=$(printf '%s' "$GOOD" | jq '.usage = "cheap"') run_observer
+assert_entry '(.usage_state | all(.[]; . == "malformed"))'
+BODY=$(printf '%s' "$GOOD" | jq '.answers.action.confidence = 0.5') run_observer
+assert_entry '.miss == "low_confidence" and .usage.cost == 0.0000483'
+BODY=$(printf '%s' "$GOOD" | jq '.answers.stuck.noul = "high"') run_observer
+assert_entry '.miss == "malformed_answer" and .usage.total_tokens == 621'
+FM_JEV_ENV_FILE="$TMP_ROOT/absent" run_observer
+assert_entry '.miss == "helper_error" and .usage == null and .usage_state == null'
+FM_JEV_SHADOW_TIMEOUT=0 run_observer
+assert_entry '.miss == "invalid_config" and .usage == null and .usage_state == null'
+pass 'provider usage is recorded as returned, never estimated; zero, absent and malformed stay distinct'
 
 for mutation in '.answers.external_wait.noul = 0.94' '.answers.new_fact.noul = 0.06' '.answers.stuck.noul = 0.06' \
   '.answers.action.choice = "captain_decision" | .answers.action.probabilities = {no_action:0.01,supervisor_action:0.01,captain_decision:0.98}' \
@@ -166,6 +213,19 @@ done
 SNAPSHOT=$BASE_SNAPSHOT
 pass 'all always-surface classes and missing context bypass inference entirely'
 
+for reserved in working resolved captain-held settled:FM_CLASSIFY_RESOLVE_VERB parked:FM_CLASSIFY_CAPTAIN_HELD_VERB; do
+  verb=${reserved%%:*}
+  new_case reserved-verb
+  SNAPSHOT=$(printf '%s' "$BASE_SNAPSHOT" | jq --arg verb "$verb" '.paused_verb=$verb | .events=[$verb + ": vendor reset"] | .declared_wait=.events[-1]')
+  case "$reserved" in *:*) export "${reserved#*:}=$verb" ;; esac
+  run_observer
+  unset FM_CLASSIFY_RESOLVE_VERB FM_CLASSIFY_CAPTAIN_HELD_VERB
+  [ ! -s "$CURL_LOG" ] || fail "reserved pause verb consulted Jev: $reserved"
+  [ ! -s "$CASE/.jev-shadow.jsonl" ] || fail "reserved pause verb logged a consultation: $reserved"
+done
+SNAPSHOT=$BASE_SNAPSHOT
+pass 'a pause verb reserved by the classifier, including configured resolve/captain-held verbs, bypasses inference'
+
 new_case custom-verb
 SNAPSHOT=$(printf '%s' "$BASE_SNAPSHOT" | jq '.paused_verb="waiting" | .events=["waiting: vendor reset"] | .declared_wait=.events[-1]') run_observer
 assert_entry '.miss == null'
@@ -187,6 +247,14 @@ jq -nc 'range(0;18000) | {padding:("x" * 70)}' > "$CASE/.jev-shadow.jsonl"
 run_observer
 [ "$(wc -c < "$CASE/.jev-shadow.jsonl")" -le 1048576 ] || fail 'audit cap exceeded'
 jq -e . "$CASE/.jev-shadow.jsonl" >/dev/null || fail 'audit rotation broke JSON lines'
+# Real usage-bearing entries: rotation keeps complete newest records only.
+entry=$(last_entry)
+[ "${#entry}" -le 4096 ] || fail 'a usage-bearing entry exceeds the per-entry bound'
+for _ in $(seq 1 $((1048576 / ${#entry} + 50))); do printf '%s\n' "$entry"; done > "$CASE/.jev-shadow.jsonl"
+BODY=$(printf '%s' "$GOOD" | jq '.usage.cost = 0.0000999') run_observer
+[ "$(wc -c < "$CASE/.jev-shadow.jsonl")" -le 1048576 ] || fail 'usage-bearing audit cap exceeded'
+jq -se 'all(.[]; .usage_state.cost == "returned") and .[-1].usage.cost == 0.0000999' \
+  "$CASE/.jev-shadow.jsonl" >/dev/null || fail 'usage-bearing rotation broke JSON lines or lost the newest entry'
 if [ "$(uname)" = Darwin ]; then mode=$(stat -f %Lp "$CASE/.jev-shadow.jsonl"); else mode=$(stat -c %a "$CASE/.jev-shadow.jsonl"); fi
 [ "$mode" = 600 ] || fail 'audit file is not private'
 pass 'audit rejects symlinks, caps size at complete records and remains private'

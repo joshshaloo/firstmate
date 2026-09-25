@@ -185,6 +185,22 @@ test_stale_is_terminal_classifier() {
   pass "stale_is_terminal: terminal status surfaces, non-terminal and no-status are benign"
 }
 
+test_status_verb_is_reserved_classifier() {
+  local verb
+  for verb in '' 'done' needs-decision blocked failed working resolved captain-held; do
+    status_verb_is_reserved "$verb" || fail "status_verb_is_reserved allowed '$verb'"
+  done
+  status_verb_is_reserved paused && fail "the default pause verb classified reserved"
+  status_verb_is_reserved waiting && fail "an unrelated verb classified reserved"
+  FM_CLASSIFY_RESOLVE_VERB=settled status_verb_is_reserved settled \
+    || fail "configured resolve verb not reserved"
+  FM_CLASSIFY_CAPTAIN_HELD_VERB=parked status_verb_is_reserved parked \
+    || fail "configured captain-held verb not reserved"
+  FM_CLASSIFY_RESOLVE_VERB=settled status_verb_is_reserved resolved \
+    || fail "default resolve verb released by an override"
+  pass "status_verb_is_reserved: terminal, working, and default/configured resolve and captain-held verbs"
+}
+
 test_scan_captain_relevant_statuses_classifier() {
   local dir state out
   dir=$(make_case classify-scan); state="$dir/state"
@@ -2027,6 +2043,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
 
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
+test_status_verb_is_reserved_classifier
 test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
 test_uncaptured_decision_keys

@@ -72,6 +72,7 @@ The declared-wait recheck observer is **shadow only**: it records Jev evidence w
 `bin/fm-watch-jev.sh --help` owns its eligible snapshot, bounded-call configuration, provisional thresholds, simulated consecutive-absorb bound, and private audit artifacts.
 There is no suppression switch; enabling suppression requires a separate code change and explicit captain approval based on the recorded wake-triage shadow outcomes.
 The review-authority benchmark below is not evidence that absorbing supervision wakes is safe: a missed escalation is the dangerous error for this decision.
+Its audit records the provider-returned usage and cost of each observed wake exactly as returned, with absent and malformed fields marked rather than estimated, so wake spend is measured rather than extrapolated from a benchmark.
 `tests/fm-watch-jev.test.sh` verifies the observer and the unchanged watcher surface without network calls.
 
 ## Calibration

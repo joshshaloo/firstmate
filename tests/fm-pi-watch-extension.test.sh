@@ -1278,22 +1278,26 @@ EOF
 }
 
 test_opencode_primary_watch_plugin_sources_effective_config() {
-  local plugin repo home log out status
+  local plugin repo home log release out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-effective-config-root"
   home="$TMP_ROOT/opencode-effective-config-home"
   log="$TMP_ROOT/opencode-effective-config.log"
+  release="$TMP_ROOT/opencode-effective-config.release"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   printf 'export FM_POLL=7\n' > "$home/config/x-mode.env"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'poll=%s\n' "${FM_POLL:-missing}" >> "${FM_ARM_LOG:?}"
+# Force the reader to encounter the redirect-open/printf-write gap.
+exec 3>> "${FM_ARM_LOG:?}"
+while [ ! -e "$FM_CONFIG_RELEASE_FILE" ]; do sleep 0.02; done
+printf 'poll=%s\n' "${FM_POLL:-missing}" >&3
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_CONFIG_RELEASE_FILE="$release" node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1306,13 +1310,17 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+const completion = globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
 for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
-if (!existsSync(process.env.FM_ARM_LOG)) {
-  console.error("watch arm did not run");
-  process.exit(1);
-}
+if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("config fixture did not open its log");
+if (readFileSync(process.env.FM_ARM_LOG, "utf8") !== "") throw new Error("config fixture wrote before release");
+writeFileSync(process.env.FM_CONFIG_RELEASE_FILE, "release\n");
+// Redirection creates the log before printf writes it. Await the coordinator
+// to observe the fixture output, which is emitted only after that write.
+const readiness = await completion;
+if (readiness !== "external") throw new Error(`config fixture did not finish: ${readiness}`);
 const text = readFileSync(process.env.FM_ARM_LOG, "utf8");
 if (!text.includes("poll=7")) {
   console.error(text);
@@ -1321,7 +1329,7 @@ if (!text.includes("poll=7")) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must source FM_HOME config outside the repo root"
+  [ "$status" -eq 0 ] || fail "OpenCode watch plugin must source FM_HOME config outside the repo root: $out"
   [ -z "$out" ] || fail "OpenCode effective-config test printed output: $out"
   pass "OpenCode watcher plugin sources the effective config"
 }
@@ -1932,29 +1940,44 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
-let prompt = "";
+// The real OpenCode host outlives unreferenced plugin timers. Keep those real
+// timers referenced in this standalone process, without changing their delays.
+// Unlike a perpetual keepalive, this still lets an undelivered prompt fail as
+// an unsettled top-level await once the plugin has no work left to do.
+const set = globalThis.setTimeout;
+globalThis.setTimeout = (...args) => {
+  const timer = set(...args);
+  timer.unref = () => timer;
+  return timer;
+};
+const { promise: delivery, resolve: delivered } = Promise.withResolvers();
 const client = {
   session: {
     promptAsync: async (request) => {
-      prompt += request.body.parts[0].text;
+      delivered(request.body.parts[0].text);
     },
   },
 };
-const hooks = await mod.FmPrimaryWatchArm({
-  client,
-  directory: process.env.WORKTREE,
-  worktree: process.env.WORKTREE,
-});
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !prompt; i += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 10));
+try {
+  const hooks = await mod.FmPrimaryWatchArm({
+    client,
+    directory: process.env.WORKTREE,
+    worktree: process.env.WORKTREE,
+  });
+  writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+  // Three login shells, git probes, and prompt encoding have no cumulative
+  // 2.5s completion contract. Delivery, not elapsed polling, seals the result.
+  // The existing suite/CI watchdog bounds a genuinely hung subprocess.
+  const prompt = await delivery;
+  const rows = existsSync(process.env.FM_ARM_LOG)
+    ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
+    : [];
+  if (rows.length !== 3) throw new Error(`retry limit launched ${rows.length} arm cycles: ${rows.join(" | ")}`);
+  if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
+} finally {
+  globalThis.setTimeout = set;
 }
-const rows = existsSync(process.env.FM_ARM_LOG)
-  ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
-  : [];
-if (rows.length !== 3) throw new Error(`retry limit launched ${rows.length} arm cycles: ${rows.join(" | ")}`);
-if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was not surfaced: ${prompt}`);
 EOF
 )
   status=$?

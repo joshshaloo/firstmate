@@ -55,6 +55,9 @@
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock.
+# Declared-pause cadence rechecks also collect Jev shadow evidence, AFTER the
+# deterministic SURFACE decision. bin/fm-watch-jev.sh --help owns that observer;
+# its output can never change a wake, and no suppression setting exists.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -349,9 +352,62 @@ handle_paused_stale() {  # <window> <task> <hash>
     reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on the pause cadence not a wedge; confirm the wait still holds)"
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
+    observe_paused_stale "$task" "$key" "$age"
     wake "$reason"
   fi
   triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
+}
+
+# Snapshot only records this watcher already uses. The observer gets no paths to
+# tasks, no pane access, and no opportunity to retrieve more evidence. In
+# particular do NOT call crew-state again for shadow enrichment: transitions
+# already recorded by pause_state_class are a deterministic exclusion.
+# Only the cadence recheck reaches this hook. A first signal is new information,
+# a wedge is evidence of a stuck worker, and a run-step override needs action;
+# none is a "does the same wait still hold?" consultation.
+observe_paused_stale() {  # <task> <window-key> <age>
+  local task=$1 key=$2 age=$3 status events last open meta check_state override=false
+  afk_present && return 0
+  case "$task" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  [ -f "$STATE/$task.status" ] && [ -r "$STATE/$task.status" ] \
+    && [ -f "$STATE/$task.meta" ] && [ -r "$STATE/$task.meta" ] || return 0
+  status=$(cat "$STATE/$task.status" 2>/dev/null) || return 0
+  last=$(printf '%s\n' "$status" | grep -v '^[[:space:]]*$' | tail -1)
+  status_is_paused "$last" || return 0
+  # A historical keyed decision still open behind the pause must never reach
+  # Jev, even when it is older than the bounded event tail sent to the model.
+  open=$(printf '%s\n' "$status" | _fm_status_fold_stream decisions "$task") || return 0
+  [ -z "$open" ] || return 0
+  events=$(printf '%s\n' "$status" | grep -v '^[[:space:]]*$' | tail -3)
+  meta=$(cat "$STATE/$task.meta" 2>/dev/null) || return 0
+  # Parse, never source; reject missing/duplicate/malformed metadata rather than
+  # inventing an endpoint. Unknown extension keys are allowed, not interpreted.
+  printf '%s\n' "$meta" | jq -Res '
+    split("\n") | map(select(length > 0))
+    | select(length > 0 and all(.[]; test("^[A-Za-z_][A-Za-z0-9_]*=.*$")))
+    | map(capture("^(?<key>[^=]+)=(?<value>.*)$")) as $pairs
+    | ($pairs | map(.key)) as $keys
+    | ($pairs | from_entries) as $meta
+    | ($keys | length) == ($keys | unique | length)
+      and ($meta.window | type == "string" and length > 0)
+      and ($meta.harness | type == "string" and length > 0)
+    ' >/dev/null 2>&1 || return 0
+  [ ! -s "$STATE/.paused-runstep-surfaced-$key" ] || override=true
+  check_state=
+  if [ -e "$STATE/.check-surfaced-$task" ]; then
+    [ -f "$STATE/.check-surfaced-$task" ] && [ -r "$STATE/.check-surfaced-$task" ] || return 0
+    check_state=$(cat "$STATE/.check-surfaced-$task" 2>/dev/null) || return 0
+  fi
+  # Errors are observational misses only. The queue entry above already exists;
+  # this function cannot alter it, return an absorb verdict, or veto wake().
+  jq -cn --arg task "$task" --arg events "$events" --arg last "$last" \
+    --arg verb "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}" \
+    --argjson age "$age" --argjson override "$override" --arg check "$check_state" '
+      {task: $task, deterministic: "SURFACE", origin: "pause-cadence",
+       events: ($events | split("\n")), declared_wait: $last, paused_verb: $verb,
+       age_seconds: $age, metadata_ok: true, open_event: false,
+       override: $override, check_state: $check, pr_state: ""}' \
+    | "$SCRIPT_DIR/fm-watch-jev.sh" --state-dir "$STATE" >/dev/null 2>&1 || true
 }
 
 clear_pause_state() {  # <window>

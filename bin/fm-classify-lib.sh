@@ -145,6 +145,23 @@ status_is_paused() {  # <status-line>
   [ "$verb" = "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}" ]
 }
 
+# 0 if a status verb already carries a meaning in this vocabulary other than a
+# declared external wait: the terminal captain verbs and working unconditionally,
+# plus the resolution and captain-held transfer verbs in both their default and
+# configured spellings. A consumer that must only ever act on a genuine pause
+# declaration refuses a pause verb configured to collide with any of them. An
+# empty verb has no declared meaning, so it is reserved too (closed by default).
+status_verb_is_reserved() {  # <verb>
+  local verb=$1
+  case "$verb" in
+    ''|done|needs-decision|blocked|failed|working) return 0 ;;
+    "$FM_CLASSIFY_RESOLVE_VERB_DEFAULT"|"$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT") return 0 ;;
+    "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}") return 0 ;;
+    "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}") return 0 ;;
+  esac
+  return 1
+}
+
 # 0 if a status line declares either an external-wait pause or a verified
 # captain-held transfer.
 # Both declarations can intentionally leave an exited crew's endpoint idle, so

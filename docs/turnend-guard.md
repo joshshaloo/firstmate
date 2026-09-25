@@ -51,12 +51,20 @@ In the default Codex mode, a true value lets the second stop finish after one fo
 
 Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
 Claude Code sets `stop_hook_active=true` on every stop after any stop-hook continuation, including `asyncRewake` rewakes, which re-opened the 2026-07-21 blind window under the default one-shot behavior.
-The Claude mode waits up to `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` (default 800 milliseconds) and allows the stop when the watcher is healthy, `state/.claude-autoarm.lock` has a live owner, or `state/.claude-autoarm-epoch` contains a fresh rewake outcome.
+Claude runs every hook of one Stop event in parallel with identical payload bytes, and a blocking hook does not stop its siblings from launching, so hook order inside the Stop group carries no meaning.
+The Claude mode therefore waits for the auto-arm's own verdict for the same Stop event rather than for a fixed time, through the handshake owned by `bin/fm-claude-autoarm-claim-lib.sh`.
+It allows the stop when the watcher is healthy, when the auto-arm claimed this event or deferred to a verified live owner, when a verified owner in `state/.claude-autoarm.lock` is live and not wedged, or when `state/.claude-autoarm-epoch` records a fresh rewake or renewal outcome.
+An owner counts only while its pid runs this home's auto-arm script, so a recycled pid never reads as recovery, and a verified owner that has held its claim past the grace window with no healthy watcher is wedged rather than live.
+It waits up to `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` (default 10000 milliseconds) for the auto-arm's first report and up to `FM_CLAUDE_AUTOARM_DECIDE_WAIT_MS` (default 30000 milliseconds) for its decision, so a slow auto-arm on a loaded host is waited for instead of reported missing.
+It blocks at once, naming the concrete reason, when the auto-arm declines, dies undecided, never reports, stays undecided past the bound, or away mode makes the auto-arm inert.
 The Stop auto-arm applies that same identity-matched fresh-beacon predicate to its own verdict: on every typed `watcher: FAILED` close it rechecks health, so a cycle that started, beat, and left a live watcher after an absorbed wake counts as healthy instead of waking the model with a `supervision is down` alarm.
 The suppression is default closed, so a close that cannot prove both a live watcher and a hook still translating its wakes stays an exit-2 alarm.
 [`watcher-continuity.md`](watcher-continuity.md) owns the re-arm chain behind that verdict, its bound, and which alarm banner each close prints.
 When none of those proofs appears, it re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override), then allows degraded with a visible `systemMessage`.
 Any allow resets the budget.
+Separately, `state/.claude-autoarm-streak` counts consecutive turn ends on which the auto-arm did not own recovery, across degraded allows and sessions, and clears only on proof that it did.
+From `FM_CLAUDE_AUTOARM_STREAK_ESCALATE` (default 3) consecutive failures, the block and degraded-allow messages escalate the pattern as a supervision defect the model must report to the captain, so a paired auto-arm that stops working cannot sit unnoticed behind a routine-looking alarm.
+Away mode does not count toward the streak because the auto-arm is inert there by contract.
 
 OpenCode, Pi, and pi-signed expose passive callbacks for this purpose.
 Their adapters fail open at the hook boundary to protect the user session but schedule one bounded follow-up when the predicate blocks.
@@ -93,7 +101,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 
 ## Regression coverage
 
-`tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the cooperative `--claude` claim wait, epoch allow, re-block budget, Pi logical-run latching, missing-`jq` behavior, all five primary registrations, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
+`tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the cooperative `--claude` verdict wait including a slow auto-arm, declined, undecided, and never-started verdicts, verified and wedged owners, the persistent-failure escalation, epoch allow, re-block budget, Pi logical-run latching, missing-`jq` behavior, all five primary registrations, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
 `tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
 `tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.
 `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` is the opt-in isolated Pi path.

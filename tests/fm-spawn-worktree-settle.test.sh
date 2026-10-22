@@ -39,6 +39,8 @@ case "$*" in
     printf '%s\n' "$n" > "$countfile"
     if [ "$n" -le "${FM_FAKE_PANE_STALE_READS:-0}" ]; then
       printf '%s\n' "${FM_FAKE_PANE_STALE:-}"
+    elif [ -f "${FM_FAKE_PANE_PATH_FILE:-}" ]; then
+      cat "$FM_FAKE_PANE_PATH_FILE"
     else
       printf '%s\n' "${FM_FAKE_PANE_PATH:-}"
     fi
@@ -54,12 +56,18 @@ case "${1:-}" in
       for arg in "$@"; do
         case "$arg" in
           *'treehouse get'*) bash -c "$arg" >> "$FM_FAKE_TREEHOUSE_OUTPUT" 2>&1 ;;
+          exit) [ -z "${FM_FAKE_PANE_PATH_FILE:-}" ] || printf '%s\n' "$FM_FAKE_PROJECT" > "$FM_FAKE_PANE_PATH_FILE" ;;
         esac
       done
     fi
     exit 0 ;;
   capture-pane)
-    [ ! -f "${FM_FAKE_TREEHOUSE_OUTPUT:-}" ] || cat "$FM_FAKE_TREEHOUSE_OUTPUT"
+    [ -f "${FM_FAKE_TREEHOUSE_OUTPUT:-}" ] || exit 0
+    if [ -n "${FM_FAKE_PANE_FOLD:-}" ]; then
+      fold -w "$FM_FAKE_PANE_FOLD" "$FM_FAKE_TREEHOUSE_OUTPUT"
+    else
+      cat "$FM_FAKE_TREEHOUSE_OUTPUT"
+    fi
     exit 0 ;;
 esac
 exit 0
@@ -152,6 +160,66 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+POOL_FULL_MESSAGE="all 16 worktrees are in use or dirty (max_trees = 16). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml"
+
+# write_failing_treehouse <fakebin>: the first FM_TEST_TREEHOUSE_GRANTS calls
+# move the pane into FM_FAKE_WORKTREE; every later call prints the optional
+# FM_TEST_TREEHOUSE_PRELUDE and then FM_TEST_TREEHOUSE_ERROR, and fails.
+write_failing_treehouse() {
+  cat > "$1/treehouse" <<'SH'
+#!/usr/bin/env bash
+n=0
+[ ! -f "$FM_TEST_TREEHOUSE_CALLS" ] || n=$(cat "$FM_TEST_TREEHOUSE_CALLS")
+n=$((n + 1))
+printf '%s\n' "$n" > "$FM_TEST_TREEHOUSE_CALLS"
+if [ "$n" -le "${FM_TEST_TREEHOUSE_GRANTS:-0}" ]; then
+  printf '%s\n' "$FM_FAKE_WORKTREE" > "$FM_FAKE_PANE_PATH_FILE"
+  exit 0
+fi
+[ -z "${FM_TEST_TREEHOUSE_PRELUDE:-}" ] || printf '%s\n' "$FM_TEST_TREEHOUSE_PRELUDE"
+printf '%s\n' "$FM_TEST_TREEHOUSE_ERROR" >&2
+exit 1
+SH
+  chmod +x "$1/treehouse"
+}
+
+# claim_settle_slot <task-id> <worktree>: record <worktree> as another task's.
+claim_settle_slot() {
+  fm_write_meta "$HOME_DIR/state/$1.meta" \
+    "window=firstmate:fm-$1" \
+    "endpoint_task_id=$1" \
+    "worktree=$2" \
+    "project=$PROJ_DIR" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off" \
+    "tasktmp=/tmp/fm-$1" \
+    "model=default" \
+    "effort=default"
+}
+
+# run_failing_get <id> <error> [env...]: spawn against write_failing_treehouse
+# with the pane starting in the project and no inter-poll sleep.
+run_failing_get() {
+  local id=$1 message=$2
+  shift 2
+  printf '%s\n' "$PROJ_DIR" > "$HOME_DIR/pane-path"
+  rm -f "$HOME_DIR/pane-output" "$HOME_DIR/treehouse-calls" "$COUNTFILE"
+  write_failing_treehouse "$FAKEBIN_DIR"
+  (
+    # shellcheck disable=SC2163  # the extra arguments are NAME=value assignments.
+    export "$@" FM_TEST_TREEHOUSE_ERROR="$message" FM_TEST_TREEHOUSE_CALLS="$HOME_DIR/treehouse-calls" \
+      FM_FAKE_TREEHOUSE_OUTPUT="$HOME_DIR/pane-output" FM_FAKE_PANE_PATH_FILE="$HOME_DIR/pane-path" \
+      FM_FAKE_PROJECT="$PROJ_DIR" FM_FAKE_WORKTREE="$WT_DIR" FM_SPAWN_WORKTREE_POLL_INTERVAL=0
+    run_settle_spawn "$id"
+  )
+}
+
+first_error_line() {  # <output>
+  printf '%s\n' "$1" | grep -m1 '^error:'
+}
+
 # Exercise the sent command as well as the polling loop. A fake failed get
 # leaves the pane in the project, just like an exhausted treehouse pool.
 test_treehouse_failure_is_reported_immediately() {
@@ -159,33 +227,74 @@ test_treehouse_failure_is_reported_immediately() {
   id=settle-pool-full
   rec=$(make_settle_case pool-full "$id" 0)
   read_settle_record "$rec"
-  WT_DIR="$PROJ_DIR"
-  message="all 16 worktrees are in use or dirty (max_trees = 16). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml"
-  cat > "$FAKEBIN_DIR/treehouse" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$FM_TEST_TREEHOUSE_ERROR" >&2
-exit 1
-SH
-  out=$(FM_TEST_TREEHOUSE_ERROR="$message" FM_FAKE_TREEHOUSE_OUTPUT="$HOME_DIR/pane-output" \
-    FM_SPAWN_WORKTREE_POLL_INTERVAL=0 run_settle_spawn "$id")
+  claim_settle_slot occupant-pool "$WT_DIR"
+
+  out=$(run_failing_get "$id" "$POOL_FULL_MESSAGE")
   status=$?
   expect_code 1 "$status" "pool exhaustion should stop spawn"
-  assert_contains "$out" "error: $message" "treehouse error was not preserved verbatim"
-  assert_contains "$out" "Run 'treehouse status' in $PROJ_DIR and free or return a slot." "missing recovery hint"
+  [ "$(first_error_line "$out")" = "error: $POOL_FULL_MESSAGE" ] \
+    || fail "treehouse error was not reported first and verbatim: $out"
+  assert_contains "$out" "claimed by occupant-pool" "pool exhaustion dropped the protected-record context"
+  assert_contains "$out" "Run 'treehouse status' in $PROJ_DIR and free or return a slot, or increase max_trees in treehouse.toml." \
+    "missing capacity recovery hint"
   assert_not_contains "$out" "within 60 polls" "pool exhaustion fell through to timeout"
   [ "$(< "$COUNTFILE")" = 1 ] || fail "failed get was not detected on the first poll"
   assert_absent "$HOME_DIR/state/$id.meta" "failed get published metadata"
-  pass "pool exhaustion fails on the first poll with the original treehouse error"
+  pass "pool exhaustion fails on the first poll with the original treehouse error and the records holding slots"
 
-  rm -f "$COUNTFILE"
   message="Error: cannot read treehouse.toml: permission denied"
-  out=$(FM_TEST_TREEHOUSE_ERROR="$message" FM_FAKE_TREEHOUSE_OUTPUT="$HOME_DIR/pane-output" \
-    FM_SPAWN_WORKTREE_POLL_INTERVAL=0 run_settle_spawn "$id")
+  out=$(run_failing_get "$id" "$message")
   status=$?
   expect_code 1 "$status" "other treehouse failures should stop spawn"
-  assert_contains "$out" "error: $message" "generic treehouse error was not preserved"
+  [ "$(first_error_line "$out")" = "error: $message" ] \
+    || fail "generic treehouse error was not reported first and verbatim: $out"
+  assert_contains "$out" "check that treehouse itself is working in $PROJ_DIR" "missing non-capacity recovery hint"
+  assert_not_contains "$out" "free or return a slot" "non-capacity failure got slot advice"
+  assert_not_contains "$out" "claimed by occupant-pool" "non-capacity failure blamed task records"
   [ "$(< "$COUNTFILE")" = 1 ] || fail "generic failure was not detected on the first poll"
-  pass "non-pool treehouse failures are also reported immediately"
+  pass "non-pool treehouse failures are reported immediately without slot advice"
+}
+
+# A slot refused for its claim, then an exhausted pool on the re-ask, keeps the
+# refusal report that names what this spawn was actually offered.
+test_pool_full_after_refused_claim_keeps_refusal_report() {
+  local rec id out status
+  id=settle-pool-full-refused
+  rec=$(make_settle_case pool-full-refused "$id" 0)
+  read_settle_record "$rec"
+  claim_settle_slot occupant-refused "$WT_DIR"
+
+  out=$(run_failing_get "$id" "$POOL_FULL_MESSAGE" FM_TEST_TREEHOUSE_GRANTS=1)
+  status=$?
+  expect_code 1 "$status" "pool exhaustion after a refused slot should stop spawn"
+  assert_contains "$out" "warning: treehouse offered" "first attempt did not refuse the claimed slot"
+  [ "$(first_error_line "$out")" = "error: $POOL_FULL_MESSAGE" ] \
+    || fail "treehouse error was not reported first and verbatim: $out"
+  assert_contains "$out" "every worktree treehouse offered this spawn is already claimed" "refusal report was dropped"
+  assert_contains "$out" "claimed by occupant-refused" "refusal report did not name the claimant"
+  assert_not_contains "$out" "within 60 polls" "pool exhaustion fell through to timeout"
+  [ "$(< "$HOME_DIR/treehouse-calls")" = 2 ] || fail "expected exactly one re-ask after the refused slot"
+  assert_absent "$HOME_DIR/state/$id.meta" "failed get published metadata"
+  pass "pool exhaustion on a re-ask keeps the refused-claim report"
+}
+
+# Non-tmux captures return visual rows. The failure marker carries the pane
+# width, so the wrapped diagnostic is rejoined without absorbing other output.
+test_wrapped_failure_is_rejoined() {
+  local rec id out status
+  id=settle-pool-full-wrapped
+  rec=$(make_settle_case pool-full-wrapped "$id" 0)
+  read_settle_record "$rec"
+
+  out=$(run_failing_get "$id" "$POOL_FULL_MESSAGE" COLUMNS=40 FM_FAKE_PANE_FOLD=40 \
+    FM_TEST_TREEHOUSE_PRELUDE="Looking for a free worktree")
+  status=$?
+  expect_code 1 "$status" "wrapped pool exhaustion should stop spawn"
+  [ "$(first_error_line "$out")" = "error: $POOL_FULL_MESSAGE" ] \
+    || fail "wrapped treehouse error was not rejoined verbatim: $out"
+  assert_not_contains "$out" "Looking for a free worktree" "rejoin absorbed unrelated output"
+  assert_contains "$out" "increase max_trees in treehouse.toml." "wrapped capacity failure lost its recovery hint"
+  pass "a soft-wrapped treehouse diagnostic is reported whole"
 }
 
 test_plain_timeout_is_unchanged() {
@@ -210,6 +319,8 @@ test_plain_timeout_is_unchanged() {
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
 test_treehouse_failure_is_reported_immediately
+test_pool_full_after_refused_claim_keeps_refusal_report
+test_wrapped_failure_is_rejoined
 test_plain_timeout_is_unchanged
 
 echo "# all fm-spawn-worktree-settle tests passed"

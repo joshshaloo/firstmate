@@ -1652,6 +1652,67 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     } >&2
   }
 
+  # Treehouse's own wording for an exhausted pool; only that failure earns
+  # slot-freeing advice and the occupancy context that names who holds slots.
+  WT_POOL_FULL_TEXT='worktrees are in use or dirty'
+
+  # Reads a pane capture on stdin and prints the diagnostic `treehouse get`
+  # emitted between <marker> and its failure marker, or nothing while get has
+  # not failed. The failure marker carries the pane width, so a row filling it
+  # exactly is a soft wrap and is rejoined with the next row; captures that are
+  # already joined (tmux -J) only rejoin in that same exact-width case.
+  wt_get_failure() {  # <marker>
+    awk -v marker="$1" -v pool_full="$WT_POOL_FULL_TEXT" '
+      { sub(/[[:space:]]+$/, "") }
+      $0 == marker { active=1; n=0; next }
+      active && $1 == marker "_FAILED" {
+        cols = ($2 ~ /^[0-9]+$/) ? $2 + 0 : 0
+        first=""; error=""
+        for (i = 1; i <= n; i++) {
+          line = rows[i]
+          while (cols > 0 && length(rows[i]) == cols && i < n && rows[i + 1] != "") {
+            i++
+            line = line rows[i]
+          }
+          if (line == "") continue
+          if (first == "") first = line
+          if (error == "" && (tolower(line) ~ /(^|[[:space:]])error:/ || index(line, pool_full))) error = line
+        }
+        if (error != "") print error
+        else if (first != "") print first
+        else print "treehouse get failed without an error message"
+        exit
+      }
+      active { rows[++n] = $0 }
+    '
+  }
+
+  wt_report_get_failure() {  # <treehouse-diagnostic>
+    local protected
+    printf 'error: %s\n' "$1" >&2
+    case "$1" in
+      *"$WT_POOL_FULL_TEXT"*) ;;
+      *)
+        printf "treehouse get failed without allocating a worktree; check that treehouse itself is working in %s, then retry. Inspect target %s.\n" "$PROJ_ABS" "$T" >&2
+        return 0
+        ;;
+    esac
+    if [ -n "$WT_REFUSED_REPORT" ]; then
+      wt_claim_refuse "treehouse reports its pool exhausted"
+      return 0
+    fi
+    protected=$(spawn_protected_worktree_report)
+    {
+      if [ -n "$protected" ]; then
+        printf "This home's task records hold the worktree(s) below from reuse:\n"
+        printf '%s\n' "$protected"
+        printf 'Those records are authoritative occupancy regardless of treehouse process detection, and spawn never discards one.\n'
+        printf 'Recover or tear down the named task(s) to release their worktrees.\n'
+      fi
+      printf "Run 'treehouse status' in %s and free or return a slot, or increase max_trees in treehouse.toml. Inspect target %s.\n" "$PROJ_ABS" "$T"
+    } >&2
+  }
+
   # The pane must be back in the project checkout before another `treehouse get`
   # is sent: two lines landing in the pty together let readline swallow the get
   # along with the buffered `exit`, and the pool would look exhausted when it was
@@ -1678,7 +1739,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     # later attempt. The failure marker proves get returned unsuccessfully;
     # successful get still enters its interactive shell exactly as before.
     wt_output_marker="FM_TREEHOUSE_GET_$$_${wt_attempt}"
-    spawn_send_text_line "$WT_TARGET" "printf '\\n%s\\n' '${wt_output_marker}'; treehouse get || printf '\\n%s\\n' '${wt_output_marker}_FAILED'"
+    spawn_send_text_line "$WT_TARGET" "printf '\\n%s\\n' '${wt_output_marker}'; treehouse get || printf '\\n%s %s\\n' '${wt_output_marker}_FAILED' \"\$COLUMNS\""
 
     # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
     # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -1726,23 +1787,10 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       else
         wt_pane=$(fm_backend_capture "$BACKEND" "$T" 200 "$W" 2>/dev/null || true)
       fi
-      wt_error=$(printf '%s\n' "$wt_pane" | awk -v marker="$wt_output_marker" '
-        $0 == marker { active=1; first=""; error=""; next }
-        active && $0 == marker "_FAILED" {
-          if (error != "") print error
-          else if (first != "") print first
-          else print "treehouse get failed without an error message"
-          exit
-        }
-        active && NF {
-          if (first == "") first=$0
-          if (error == "" && (tolower($0) ~ /(^|[[:space:]])error:/ || $0 ~ /worktrees are in use or dirty/)) error=$0
-        }
-      ')
+      wt_error=$(printf '%s\n' "$wt_pane" | wt_get_failure "$wt_output_marker")
       if [ -n "$wt_error" ]; then
         spawn_cleanup_worktree_record_guards
-        printf 'error: %s\n' "$wt_error" >&2
-        printf "Run 'treehouse status' in %s and free or return a slot.\n" "$PROJ_ABS" >&2
+        wt_report_get_failure "$wt_error"
         exit 1
       fi
       sleep "$WT_POLL_INTERVAL"

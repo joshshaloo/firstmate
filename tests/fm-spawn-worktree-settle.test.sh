@@ -49,7 +49,18 @@ case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
-  send-keys) exit 0 ;;
+  send-keys)
+    if [ -n "${FM_FAKE_TREEHOUSE_OUTPUT:-}" ]; then
+      for arg in "$@"; do
+        case "$arg" in
+          *'treehouse get'*) bash -c "$arg" >> "$FM_FAKE_TREEHOUSE_OUTPUT" 2>&1 ;;
+        esac
+      done
+    fi
+    exit 0 ;;
+  capture-pane)
+    [ ! -f "${FM_FAKE_TREEHOUSE_OUTPUT:-}" ] || cat "$FM_FAKE_TREEHOUSE_OUTPUT"
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -141,7 +152,64 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+# Exercise the sent command as well as the polling loop. A fake failed get
+# leaves the pane in the project, just like an exhausted treehouse pool.
+test_treehouse_failure_is_reported_immediately() {
+  local rec id out status message
+  id=settle-pool-full
+  rec=$(make_settle_case pool-full "$id" 0)
+  read_settle_record "$rec"
+  WT_DIR="$PROJ_DIR"
+  message="all 16 worktrees are in use or dirty (max_trees = 16). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml"
+  cat > "$FAKEBIN_DIR/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$FM_TEST_TREEHOUSE_ERROR" >&2
+exit 1
+SH
+  out=$(FM_TEST_TREEHOUSE_ERROR="$message" FM_FAKE_TREEHOUSE_OUTPUT="$HOME_DIR/pane-output" \
+    FM_SPAWN_WORKTREE_POLL_INTERVAL=0 run_settle_spawn "$id")
+  status=$?
+  expect_code 1 "$status" "pool exhaustion should stop spawn"
+  assert_contains "$out" "error: $message" "treehouse error was not preserved verbatim"
+  assert_contains "$out" "Run 'treehouse status' in $PROJ_DIR and free or return a slot." "missing recovery hint"
+  assert_not_contains "$out" "within 60 polls" "pool exhaustion fell through to timeout"
+  [ "$(< "$COUNTFILE")" = 1 ] || fail "failed get was not detected on the first poll"
+  assert_absent "$HOME_DIR/state/$id.meta" "failed get published metadata"
+  pass "pool exhaustion fails on the first poll with the original treehouse error"
+
+  rm -f "$COUNTFILE"
+  message="Error: cannot read treehouse.toml: permission denied"
+  out=$(FM_TEST_TREEHOUSE_ERROR="$message" FM_FAKE_TREEHOUSE_OUTPUT="$HOME_DIR/pane-output" \
+    FM_SPAWN_WORKTREE_POLL_INTERVAL=0 run_settle_spawn "$id")
+  status=$?
+  expect_code 1 "$status" "other treehouse failures should stop spawn"
+  assert_contains "$out" "error: $message" "generic treehouse error was not preserved"
+  [ "$(< "$COUNTFILE")" = 1 ] || fail "generic failure was not detected on the first poll"
+  pass "non-pool treehouse failures are also reported immediately"
+}
+
+test_plain_timeout_is_unchanged() {
+  local rec id out status
+  id=settle-timeout
+  rec=$(make_settle_case timeout "$id" 0)
+  read_settle_record "$rec"
+  WT_DIR="$PROJ_DIR"
+  # Keep the default 60 polls, eliminating only the sleep duration. Old error
+  # text in scrollback must not be diagnosed as this command's failure.
+  printf 'Error: old failure\n' > "$HOME_DIR/pane-output"
+  out=$(FM_FAKE_TREEHOUSE_OUTPUT="$HOME_DIR/pane-output" \
+    FM_SPAWN_WORKTREE_POLL_INTERVAL=0 run_settle_spawn "$id")
+  status=$?
+  expect_code 1 "$status" "a pane that never moves should time out"
+  assert_contains "$out" "error: treehouse get did not enter a worktree within 60 polls; inspect window" "timeout diagnostic changed"
+  [ "$(< "$COUNTFILE")" = 60 ] || fail "quiet get did not receive all 60 polls"
+  assert_absent "$HOME_DIR/state/$id.meta" "timeout published metadata"
+  pass "no failure output retains the complete timeout path"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_treehouse_failure_is_reported_immediately
+test_plain_timeout_is_unchanged
 
 echo "# all fm-spawn-worktree-settle tests passed"

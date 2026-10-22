@@ -1674,7 +1674,11 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   while :; do
     wt_attempt=$((wt_attempt + 1))
     spawn_prove_worktree_record_guards || exit 1
-    spawn_send_text_line "$WT_TARGET" 'treehouse get'
+    # Delimit this attempt's output so old errors in scrollback cannot abort a
+    # later attempt. The failure marker proves get returned unsuccessfully;
+    # successful get still enters its interactive shell exactly as before.
+    wt_output_marker="FM_TREEHOUSE_GET_$$_${wt_attempt}"
+    spawn_send_text_line "$WT_TARGET" "printf '\\n%s\\n' '${wt_output_marker}'; treehouse get || printf '\\n%s\\n' '${wt_output_marker}_FAILED'"
 
     # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
     # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -1715,6 +1719,31 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
         candidate="$p_real"
       else
         candidate=""
+      fi
+      if [ "$BACKEND" = tmux ]; then
+        # Join terminal soft wraps so long treehouse diagnostics stay verbatim.
+        wt_pane=$(tmux capture-pane -p -J -t "$WT_TARGET" -S -200 2>/dev/null || true)
+      else
+        wt_pane=$(fm_backend_capture "$BACKEND" "$T" 200 "$W" 2>/dev/null || true)
+      fi
+      wt_error=$(printf '%s\n' "$wt_pane" | awk -v marker="$wt_output_marker" '
+        $0 == marker { active=1; first=""; error=""; next }
+        active && $0 == marker "_FAILED" {
+          if (error != "") print error
+          else if (first != "") print first
+          else print "treehouse get failed without an error message"
+          exit
+        }
+        active && NF {
+          if (first == "") first=$0
+          if (error == "" && (tolower($0) ~ /(^|[[:space:]])error:/ || $0 ~ /worktrees are in use or dirty/)) error=$0
+        }
+      ')
+      if [ -n "$wt_error" ]; then
+        spawn_cleanup_worktree_record_guards
+        printf 'error: %s\n' "$wt_error" >&2
+        printf "Run 'treehouse status' in %s and free or return a slot.\n" "$PROJ_ABS" >&2
+        exit 1
       fi
       sleep "$WT_POLL_INTERVAL"
     done

@@ -1659,9 +1659,10 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # Reads a pane capture on stdin and prints the diagnostic `treehouse get`
   # emitted between <marker> and its failure marker, or nothing while get has
   # not failed. The row before the failure marker carries the pane width (blank
-  # when the shell does not know it), so a row filling that width is a soft wrap and is rejoined with the next row. Captures trim trailing
-  # blanks, so a row one short of the width wrapped at a space and rejoins
-  # with that space restored. Captures that are already joined (tmux -J) only
+  # when the shell does not know it), so a row filling that width is a soft
+  # wrap and is rejoined with the next row. Captures trim trailing blanks, so a
+  # row one short of the width wrapped at a space and rejoins with that space
+  # restored. Captures that are already joined (tmux -J) only
   # rejoin in those same width-bound cases.
   wt_get_failure() {  # <marker>
     awk -v marker="$1" -v pool_full="$WT_POOL_FULL_TEXT" '

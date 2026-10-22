@@ -64,7 +64,7 @@ case "${1:-}" in
   capture-pane)
     [ -f "${FM_FAKE_TREEHOUSE_OUTPUT:-}" ] || exit 0
     if [ -n "${FM_FAKE_PANE_FOLD:-}" ]; then
-      fold -w "$FM_FAKE_PANE_FOLD" "$FM_FAKE_TREEHOUSE_OUTPUT"
+      fold -w "$FM_FAKE_PANE_FOLD" "$FM_FAKE_TREEHOUSE_OUTPUT" | sed 's/[[:space:]]*$//'
     else
       cat "$FM_FAKE_TREEHOUSE_OUTPUT"
     fi
@@ -278,23 +278,28 @@ test_pool_full_after_refused_claim_keeps_refusal_report() {
   pass "pool exhaustion on a re-ask keeps the refused-claim report"
 }
 
-# Non-tmux captures return visual rows. The failure marker carries the pane
-# width, so the wrapped diagnostic is rejoined without absorbing other output.
+# Non-tmux captures return visual rows with trailing blanks trimmed. The
+# failure marker carries the pane width, so the wrapped diagnostic is rejoined
+# without absorbing other output: at width 40 no wrap lands on a space, at 70
+# the wrap column is a space, and at 31 a space-wrap splits the pool-full
+# phrase itself.
 test_wrapped_failure_is_rejoined() {
-  local rec id out status
-  id=settle-pool-full-wrapped
-  rec=$(make_settle_case pool-full-wrapped "$id" 0)
-  read_settle_record "$rec"
+  local rec id out status width
+  for width in 40 70 31; do
+    id=settle-pool-full-wrapped-$width
+    rec=$(make_settle_case "pool-full-wrapped-$width" "$id" 0)
+    read_settle_record "$rec"
 
-  out=$(run_failing_get "$id" "$POOL_FULL_MESSAGE" COLUMNS=40 FM_FAKE_PANE_FOLD=40 \
-    FM_TEST_TREEHOUSE_PRELUDE="Looking for a free worktree")
-  status=$?
-  expect_code 1 "$status" "wrapped pool exhaustion should stop spawn"
-  [ "$(first_error_line "$out")" = "error: $POOL_FULL_MESSAGE" ] \
-    || fail "wrapped treehouse error was not rejoined verbatim: $out"
-  assert_not_contains "$out" "Looking for a free worktree" "rejoin absorbed unrelated output"
-  assert_contains "$out" "increase max_trees in treehouse.toml." "wrapped capacity failure lost its recovery hint"
-  pass "a soft-wrapped treehouse diagnostic is reported whole"
+    out=$(run_failing_get "$id" "$POOL_FULL_MESSAGE" COLUMNS="$width" FM_FAKE_PANE_FOLD="$width" \
+      FM_TEST_TREEHOUSE_PRELUDE="Looking for a free worktree")
+    status=$?
+    expect_code 1 "$status" "wrapped pool exhaustion should stop spawn at width $width"
+    [ "$(first_error_line "$out")" = "error: $POOL_FULL_MESSAGE" ] \
+      || fail "wrapped treehouse error was not rejoined verbatim at width $width: $out"
+    assert_not_contains "$out" "Looking for a free worktree" "rejoin absorbed unrelated output at width $width"
+    assert_contains "$out" "increase max_trees in treehouse.toml." "wrapped capacity failure lost its recovery hint at width $width"
+  done
+  pass "a soft-wrapped treehouse diagnostic is reported whole, including wraps at a space"
 }
 
 test_plain_timeout_is_unchanged() {

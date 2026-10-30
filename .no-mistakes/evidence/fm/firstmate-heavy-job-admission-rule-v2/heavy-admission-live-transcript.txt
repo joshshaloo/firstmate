@@ -1,0 +1,36 @@
+Real executable: /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M679F6XR3BV160Q4S77G7175/bin/fm-heavy-admission.sh
+
+=== healthy check admits ===
+exit=0 elapsed=0s
+stdout: heavy-admission: decision=admit reason=ok policy=on config=/tmp/fm-heavy-live.BL427p/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=100.0 warnings=0 dry_run=0 jest_max_workers=2 playwright_workers=1 home=/tmp/fm-heavy-live.BL427p/home ts=1793394434
+
+=== hanging disk read: direct check is bounded and fails closed ===
+exit=1 elapsed=11s
+stdout: heavy-admission: decision=hold reason=unreadable:disk policy=on config=/tmp/fm-heavy-live.BL427p/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=unknown warnings=0 dry_run=0 jest_max_workers=2 playwright_workers=1 home=/tmp/fm-heavy-live.BL427p/home ts=1793394445
+
+=== hanging disk read: dry-run is bounded and fails closed ===
+exit=1 elapsed=10s
+stdout: heavy-admission: decision=hold reason=unreadable:disk policy=on config=/tmp/fm-heavy-live.BL427p/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=unknown warnings=0 dry_run=1 jest_max_workers=2 playwright_workers=1 home=/tmp/fm-heavy-live.BL427p/home ts=1793394455
+
+=== blocked evidence-log open is best effort ===
+exit=0 elapsed=3s
+stdout: heavy-admission: decision=admit reason=ok policy=on config=/tmp/fm-heavy-live.BL427p/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=100.0 warnings=0 dry_run=0 jest_max_workers=2 playwright_workers=1 home=/tmp/fm-heavy-live.BL427p/home ts=1793394456
+stderr: fm-heavy-admission: evidence log operation exceeded its 2s deadline; skipped this log write
+
+=== unresolved root policy reports unknown ===
+exit=0 elapsed=0s
+stdout: unknown
+
+=== unresolved root check holds closed ===
+exit=1 elapsed=0s
+stdout: heavy-admission: decision=hold reason=unreadable:root-home policy=unknown config=none peak_gib=unknown samples=0 load1=na load5=na mem_available_gib=na mem_psi_some_avg60=na io_psi_full_avg60=na disk_free_gib=na warnings=na dry_run=0 jest_max_workers=2 playwright_workers=1 home=/tmp/fm-heavy-live.BL427p/unknown-home ts=1793394458
+
+=== unresolved root brief retains heavy-phase guard ===
+# Heavy phases
+This machine admits heavy phases one at a time against measured host headroom.
+Before each dependency install, whole-repo test run, production build, browser matrix, or the start of a fresh no-mistakes run, run `FM_HOME='/tmp/fm-heavy-live.BL427p/unknown-home' '/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M679F6XR3BV160Q4S77G7175/bin/fm-heavy-admission.sh' wait` and start the phase only after it exits 0; reattaching to a run you already started is not a start.
+Add `--peak-gib <n>` when you have measured that phase's memory peak.
+Exit 1 means the host is still holding: append `paused [at=<epoch>]: heavy phase queued on host admission` once, then keep running the same wait until it admits.
+Never skip, shrink, or split required checks to avoid a hold.
+When you run Jest or Playwright yourself, pass the admit line's `jest_max_workers` as `--maxWorkers` and `playwright_workers` as `--workers`.
+Reasoning, editing, and targeted checks need no admission.

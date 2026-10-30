@@ -1,0 +1,53 @@
+LIVE SHARED-SLOT VALIDATION
+worktree=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M67F30X8E94YD18712WDP89M
+lab_session=primary on private fm-lab socket
+
+SCENARIO 1: Claimed owner tears down past a stale dead endpoint record
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.PRovSz
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M67F30X8E94YD18712WDP89M/.pi/extensions/fm-primary-turnend-guard.ts -e /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M67F30X8E94YD18712WDP89M/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+warning: task stale's recorded worktree also names /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M67F30X8E94YD18712WDP89M/.live-slot-validation/treehouse-home/.treehouse/project-ca329e/1/project, but that slot's owner claim names owner, which took the slot after stale's record was written, and stale's recorded endpoint is not live; stale's record is stale and is left in place for its own teardown.
+teardown: reaping leaked worktree process(es) for owner: 848645 848651
+teardown: force-killing leaked worktree process(es) for owner: 848645 848651
+A new version of treehouse is available: v2.1.0 → v3.1.8
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+teardown owner complete (window primary:fm-owner, worktree /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M67F30X8E94YD18712WDP89M/.live-slot-validation/treehouse-home/.treehouse/project-ca329e/1/project)
+Backlog: owner just finished (this home keeps no markdown backlog at /tmp/fm-lab.PRovSz/data/backlog.md). Update /tmp/fm-lab.PRovSz/data/backlog.md - move owner to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+exit=0
+A new version of treehouse is available: v2.1.0 → v3.1.8
+Run "treehouse update" to update
+
+1     available    ~/.treehouse/project-ca329e/1/project
+observed: owner record removed; stale record retained; claim removed; Treehouse slot returned
+
+SCENARIO 2: Matching task id from another home cannot be adopted by relaunch
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.PRovSz
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: task relaunch's recorded worktree has a slot claim from another Firstmate home; refusing to adopt a slot whose owner cannot be verified
+exit=1 pane_before=bash pane_after=bash
+observed: relaunch refused and the endpoint remained an idle shell; no replacement launched
+
+SCENARIO 3: Relaunch refuses while the shared project allocation/return lock is held
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.PRovSz
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: another Treehouse slot allocation or return is in progress for /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M67F30X8E94YD18712WDP89M/.live-slot-validation/project; refusing to race it
+exit=1
+observed: contention refused before replacement launch and left task state intact
+
+SCENARIO 4: Owner teardown refuses when the contradictory tmux endpoint is missing but not provably gone
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.PRovSz
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+REFUSED: task owner2's recorded worktree /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M67F30X8E94YD18712WDP89M/.live-slot-validation/treehouse-home/.treehouse/project-ca329e/1/project is also task stale2's recorded worktree.
+Returning that pool slot would kill stale2's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh owner2; bin/fm-crew-state.sh stale2), then re-run teardown.
+exit=1
+observed: both records, the claim, the endpoint, and the leased slot were preserved on refusal
+
+ALL LIVE SCENARIOS PASSED

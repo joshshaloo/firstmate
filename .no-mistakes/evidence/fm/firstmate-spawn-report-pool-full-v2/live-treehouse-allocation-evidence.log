@@ -1,0 +1,140 @@
+SCENARIO: stable unrelated path cannot outrank later real allocation failure
+spawn_exit=1
+stale_path=/tmp/fm-lab.2K5Rli/projects/unrelated-stale
+task_meta=absent
+observed_live_pane_timeline:
+13:19:33 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:19:33 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:19:34 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:19:34 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:19:34 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:19:34 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:19:35 pane=/tmp/fm-lab.2K5Rli/projects/failure-project ready=none
+13:19:35 pane=/tmp/fm-lab.2K5Rli/projects/failure-project ready=none
+13:19:35 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:35 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:36 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:36 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:36 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:37 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:37 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:37 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:37 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:38 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:38 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:38 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:38 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:39 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:39 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:39 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:39 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:40 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:40 pane=/tmp/fm-lab.2K5Rli/projects/unrelated-stale ready=none
+13:19:40 pane=/tmp/fm-lab.2K5Rli/projects/failure-project ready=none
+13:19:41 pane=/tmp/fm-lab.2K5Rli/projects/failure-project ready=none
+13:19:41 pane=/tmp/fm-lab.2K5Rli/projects/failure-project ready=none
+13:19:41 pane=/tmp/fm-lab.2K5Rli/projects/failure-project ready=none
+13:19:41 pane=/tmp/fm-lab.2K5Rli/projects/failure-project ready=none
+spawn_output:
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.2K5Rli
+warning: /tmp/fm-lab.2K5Rli/data/live-failure-2010003/launch-brief.md records no ship branch; defaulting to legacy branch fm/live-failure-2010003
+warning: /tmp/fm-lab.2K5Rli/data/live-failure-2010003/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+error: all 1 worktrees are in use or dirty (max_trees = 1). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml
+Run 'treehouse status' in /tmp/fm-lab.2K5Rli/projects/failure-project and free or return a slot, or increase max_trees in treehouse.toml.
+
+
+SCENARIO: successful allocation accepted only when ready evidence matches settled worktree
+spawn_exit=0
+stale_path=/tmp/fm-lab.L3PNZW/projects/unrelated-stale
+invocation_ready_worktree=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+published_worktree=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+ready_marker_left=none
+observed_live_pane_timeline:
+13:20:15 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:15 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:15 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:15 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:15 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:16 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:16 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:16 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:16 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:16 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:16 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:16 pane=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX ready=none
+13:20:16 pane=/tmp/fm-lab.L3PNZW/projects/success-project ready=none
+13:20:17 pane=/tmp/fm-lab.L3PNZW/projects/success-project ready=none
+13:20:17 pane=/tmp/fm-lab.L3PNZW/projects/success-project ready=none
+13:20:17 pane=/tmp/fm-lab.L3PNZW/projects/success-project ready=none
+13:20:17 pane=/tmp/fm-lab.L3PNZW/projects/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:17 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:17 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:17 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:17 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:17 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:18 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:18 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:18 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:18 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:18 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:18 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:18 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:18 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:19 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:20 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:20 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:20 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:20 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:20 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:20 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:20 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:20 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:21 pane=/tmp/fm-lab.L3PNZW/projects/unrelated-stale ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:21 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:21 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:21 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:21 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:21 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:21 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:21 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:22 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:23 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:23 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:23 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:23 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:23 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:23 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:23 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:23 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:24 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:24 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:24 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:24 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:24 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+13:20:24 pane=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project ready=none
+spawn_output:
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /tmp/fm-lab.L3PNZW
+warning: /tmp/fm-lab.L3PNZW/data/live-success-2063260/launch-brief.md records no ship branch; defaulting to legacy branch fm/live-success-2063260
+warning: /tmp/fm-lab.L3PNZW/data/live-success-2063260/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned live-success-2063260 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-live-success-2063260 worktree=/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project
+treehouse_status:
+A new version of treehouse is available: v2.1.0 → v3.1.8
+Run "treehouse update" to update
+
+[{"name":"1","path":"/tmp/fm-lab.L3PNZW/treehouse/.treehouse/success-project-81cef8/1/success-project","status":"in-use","lease_id":"","lease_holder":"","leased_at":null,"processes":[{"pid":2066723,"name":"bash"},{"pid":2072502,"name":"codex"}]}]

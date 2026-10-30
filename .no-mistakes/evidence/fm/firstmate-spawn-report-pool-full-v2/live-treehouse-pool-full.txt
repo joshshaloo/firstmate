@@ -1,0 +1,19 @@
+Scenario: full Treehouse pool blocks Firstmate spawn
+
+Treehouse pool before spawn:
+A new version of treehouse is available: v2.0.1 → v3.1.7
+Run "treehouse update" to update
+
+1     leased       ~/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX/.validation/treehouse-pool/.treehouse/project-36ea72/1/project  (held by occupied-live)
+
+Firstmate private-tmux transcript:
+/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX/.validation/run-live.sh
+bash-5.3$ /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX/.validation/run-live.sh
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX/.validation/lab-home
+error: all 1 worktrees are in use or dirty (max_trees = 1). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml
+Run 'treehouse status' in /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX/.validation/project and free or return a slot, or increase max_trees in treehouse.toml.
+
+FM_LIVE_RC=1
+bash-5.3$ 
+
+Task metadata after refusal: absent (/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M6758JMP3K082KQQA08WH2HX/.validation/lab-home/state/live-pool-full.meta)

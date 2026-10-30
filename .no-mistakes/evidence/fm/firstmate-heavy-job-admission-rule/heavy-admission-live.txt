@@ -1,0 +1,54 @@
+SCENARIO 1: policy off admits without host readings
+heavy-admission: decision=admit reason=policy-off policy=off config=none peak_gib=unknown samples=0 load1=na load5=na mem_available_gib=na mem_psi_some_avg60=na io_psi_full_avg60=na disk_free_gib=na warnings=na dry_run=0 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home ts=1793390342
+exit=0
+
+SCENARIO 2: healthy policy admits once and serial ramp holds the next launch
+heavy-admission: decision=admit reason=ok policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=100.0 warnings=0 dry_run=0 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home ts=1793390342
+exit=0
+heavy-admission: decision=hold reason=ramp:remaining=119s policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/config/heavy-admission peak_gib=unknown samples=0 load1=na load5=na mem_available_gib=na mem_psi_some_avg60=na io_psi_full_avg60=na disk_free_gib=na warnings=na dry_run=0 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home ts=1793390343
+exit=1
+persisted ramp:
+-rw-r--r-- 1 josh josh 11 Oct 30 12:59 .live-heavy-admission/home/state/heavy-admission.last
+persisted decisions:
+heavy-admission: decision=admit reason=ok policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=100.0 warnings=0 dry_run=0 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home ts=1793390342
+heavy-admission: decision=hold reason=ramp:remaining=119s policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/config/heavy-admission peak_gib=unknown samples=0 load1=na load5=na mem_available_gib=na mem_psi_some_avg60=na io_psi_full_avg60=na disk_free_gib=na warnings=na dry_run=0 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home ts=1793390343
+
+SCENARIO 3: incomplete journal coverage fails closed
+heavy-admission: decision=hold reason=unreadable:journal policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=100.0 warnings=unknown dry_run=1 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home ts=1793390343
+exit=1
+
+SCENARIO 4: direct dry-run bounds a blocked disk read and fails closed
+heavy-admission: decision=hold reason=unreadable:disk policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=unknown warnings=0 dry_run=1 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home ts=1793390354
+exit=1
+elapsed_seconds=11
+
+SCENARIO 5: generated worker briefs follow off, unknown, and on policy states
+scaffolded: /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/data/live-heavy-off/brief.md (ship, mode=no-mistakes; replace {TASK} and {FIRSTMATE_SPEC})
+exit=0
+off_brief_heavy_section=absent
+scaffolded: /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/data/live-heavy-unknown/brief.md (ship, mode=no-mistakes; replace {TASK} and {FIRSTMATE_SPEC})
+exit=0
+# Heavy phases
+This machine admits heavy phases one at a time against measured host headroom.
+Before each dependency install, whole-repo test run, production build, browser matrix, or the start of a fresh no-mistakes run, run `FM_HOME='/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home' '/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/bin/fm-heavy-admission.sh' wait` and start the phase only after it exits 0; reattaching to a run you already started is not a start.
+Add `--peak-gib <n>` when you have measured that phase's memory peak.
+Exit 1 means the host is still holding: append `paused [at=<epoch>]: heavy phase queued on host admission` once, then keep running the same wait until it admits.
+Never skip, shrink, or split required checks to avoid a hold.
+When you run Jest or Playwright yourself, pass the admit line's `jest_max_workers` as `--maxWorkers` and `playwright_workers` as `--workers`.
+Reasoning, editing, and targeted checks need no admission.
+scaffolded: /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home/data/live-heavy-on/brief.md (scout; replace {TASK} and {FIRSTMATE_SPEC})
+exit=0
+# Heavy phases
+This machine admits heavy phases one at a time against measured host headroom.
+Before each dependency install, whole-repo test run, production build, browser matrix, or the start of a fresh no-mistakes run, run `FM_HOME='/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-admission/home' '/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/bin/fm-heavy-admission.sh' wait` and start the phase only after it exits 0; reattaching to a run you already started is not a start.
+Add `--peak-gib <n>` when you have measured that phase's memory peak.
+Exit 1 means the host is still holding: append `paused [at=<epoch>]: heavy phase queued on host admission` once, then keep running the same wait until it admits.
+Never skip, shrink, or split required checks to avoid a hold.
+When you run Jest or Playwright yourself, pass the admit line's `jest_max_workers` as `--maxWorkers` and `playwright_workers` as `--workers`.
+Reasoning, editing, and targeted checks need no admission.
+
+SCENARIO 6: wait queues behind the ramp and admits after it clears
+heavy-admission: decision=admit reason=ok policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-wait/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=100.0 warnings=0 dry_run=0 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-wait/home ts=1793390364
+heavy-admission: decision=hold reason=ramp:remaining=1s policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-wait/home/config/heavy-admission peak_gib=unknown samples=0 load1=na load5=na mem_available_gib=na mem_psi_some_avg60=na io_psi_full_avg60=na disk_free_gib=na warnings=na dry_run=0 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-wait/home ts=1793390364
+heavy-admission: decision=admit reason=ok policy=on config=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-wait/home/config/heavy-admission peak_gib=unknown samples=1 load1=3.00 load5=4.00 mem_available_gib=40.0 mem_psi_some_avg60=0.00 io_psi_full_avg60=0.50 disk_free_gib=100.0 warnings=0 dry_run=0 jest_max_workers=2 playwright_workers=1 home=/home/josh/.no-mistakes/worktrees/dccc52c2392d/01M674M4KYJ81QT6E1YE5QQ6JV/.live-heavy-wait/home ts=1793390366
+exit=0

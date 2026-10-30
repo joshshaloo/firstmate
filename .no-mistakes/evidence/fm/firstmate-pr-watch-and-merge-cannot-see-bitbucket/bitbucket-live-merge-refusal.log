@@ -1,0 +1,6 @@
+$ bin/fm-pr-merge.sh task-live https://bitbucket.org/atlassian/atlassian-connect-express/pull-requests/560
+exit=2
+stdout:
+stderr:
+error: Bitbucket Cloud merge refused: no atomic head guard is available on this forge, so the verified head cannot be bound at merge time; merge manually after checking the head (this is not an atomic guarantee), and note that bkt closes the source branch by default
+state files:

@@ -1,0 +1,6 @@
+target=https://bitbucket.org/tbgi/envy-forge/pull-requests/1090
+before=1090	OPEN	f77e34bbdc11
+merge_exit=2
+merge_message=error: Bitbucket Cloud merge refused: no atomic head guard is available on this forge, so the verified head cannot be bound at merge time; merge manually after checking the head (this is not an atomic guarantee), and note that bkt closes the source branch by default
+after=1090	OPEN	f77e34bbdc11
+remote_unchanged=yes

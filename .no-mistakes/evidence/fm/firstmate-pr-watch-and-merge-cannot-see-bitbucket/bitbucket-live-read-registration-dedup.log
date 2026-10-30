@@ -1,0 +1,11 @@
+bkt_version=bkt version 0.30.0
+target=https://bitbucket.org/tbgi/envy-forge/pull-requests/1090
+registration=passed
+recorded_url=https://bitbucket.org/tbgi/envy-forge/pull-requests/1090
+recorded_full_head=f77e34bbdc11169dc3b920212b1221acb4e3b589
+authenticated_poll_artifacts=passed
+first_cycle=check: /home/josh/.no-mistakes/worktrees/dccc52c2392d/01M678WGRCMEZ9K7KFS8P8EDZF/.live-bitbucket-validation/home/state/live-bitbucket.check.sh: checks passed at f77e34bbdc11
+unchanged_observation_deduplicated=passed
+second_cycle=stop-cycle
+pr_state_after=OPEN
+live_limit=PR currently has terminal successful checks; pending silence remains fixture-covered

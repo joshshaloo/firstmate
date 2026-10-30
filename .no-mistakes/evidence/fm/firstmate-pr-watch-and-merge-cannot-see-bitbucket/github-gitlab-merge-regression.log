@@ -1,0 +1,2 @@
+ok - fm-pr-merge records pr= and pr_head= for a verified GitHub merge
+ok - fm-pr-merge merges a GitLab merge request through glab instead of refusing it

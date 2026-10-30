@@ -1,0 +1,9 @@
+$ bkt --version
+bkt version 0.30.0
+exit=0
+$ bkt auth status
+No hosts configured. Run `bkt auth login` to add one.
+exit=0
+$ BKT_HOST=https://bitbucket.org bkt pr view 560 --workspace atlassian --repo atlassian-connect-express --json
+Error: BKT_HOST is set but BKT_TOKEN is not; did you forget to set BKT_TOKEN?
+exit=1

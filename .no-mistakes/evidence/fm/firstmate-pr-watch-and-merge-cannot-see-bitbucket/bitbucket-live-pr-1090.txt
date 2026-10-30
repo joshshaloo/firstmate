@@ -1,0 +1,14 @@
+bkt_version=bkt version 0.30.0
+target=https://bitbucket.org/tbgi/envy-forge/pull-requests/1090
+registering canonical watch through bin/fm-pr-check.sh
+armed: state/live-bitbucket.check.sh
+recorded_pr=https://bitbucket.org/tbgi/envy-forge/pull-requests/1090
+recorded_full_head=f77e34bbdc11169dc3b920212b1221acb4e3b589
+poll_artifacts=valid
+poll_1=checks passed at f77e34bbdc11
+poll_2=checks passed at f77e34bbdc11
+notification_first_rc=0
+notification_repeat_rc=2 (2 means deduplicated)
+notification_marker_lines=1
+poll_remains_armed=yes
+remote_read_after=1090	OPEN	f77e34bbdc11	tbgi/envy-forge

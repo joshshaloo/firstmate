@@ -1,0 +1,2 @@
+ok - Bitbucket arms authenticated identity/head records, classifies only proven states, and never merges
+ok - Bitbucket notifications deduplicate across restarts/rearms, retire exact merges, and preserve artifact authentication
